@@ -75,17 +75,10 @@ class ChatResponse(BaseModel):
     done: bool = False
     done_reason: Optional[str] = None
     total_duration: Optional[int] = None
-        load time = Optional[int] = None
+    load_time: Optional[int] = None
     duration: Optional[float] = None
 
     model_config = ConfigDict(extra="allow")
-
-    @field_validator("message")
-    @classmethod
-    def validate_message(cls, v: ResponseMessage) -> ResponseMessage:
-        if v is None:
-            raise ValueError("message cannot be None")
-        return v
 
 
 class GenerateResponse(BaseModel):
@@ -110,8 +103,8 @@ class RawChatRequest(BaseModel):
     model: str
     messages: List[Dict[str, Any]]
     stream: bool = False
-    format: str = None
-    options: Dict[str, Any] = None
+    format: Optional[str] = None
+    options: Optional[Dict[str, Any]] = None
 
 
 class RawGenerateRequest(BaseModel):
@@ -120,8 +113,8 @@ class RawGenerateRequest(BaseModel):
     model: str
     prompt: str
     stream: bool = False
-    format: str = None
-    options: Dict[str, Any] = None
+    format: Optional[str] = None
+    options: Optional[Dict[str, Any]] = None
 
 
 # Helper functions
