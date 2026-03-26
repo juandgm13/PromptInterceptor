@@ -10,8 +10,6 @@ from typing import Optional, Dict, Any
 import hashlib
 import shutil
 
-from python_json_logger import JsonFormatter
-
 from .config import get_config
 
 
