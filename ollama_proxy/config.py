@@ -6,11 +6,16 @@ import json
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
-from python_json_logger import JsonFormatter
 
 
 class Config(BaseModel):
     """Configuration model for the proxy."""
+
+    # Project metadata
+    project_name: str = "PyProxy"
+    project_description: str = "Ollama Traffic Interceptor & Model Switcher"
+    project_version: str = "0.1.0"
+    debug: bool = False
 
     # Server configuration
     proxy_port: int = 8080
@@ -41,23 +46,10 @@ class Config(BaseModel):
 
     # Dashboard settings
     dashboard_enabled: bool = True
-    dashboard_port: int = 8080
+    dashboard_port: int = 9090
 
     # Model names to watch for rules
     model_names: List[str] = Field(default_factory=lambda: ["llama3", "mistral"])
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "proxy_port": 8080,
-                "target": "http://localhost:11434",
-                "mode": "passthrough",
-                "timeout": 120,
-                "log_dir": "logs",
-                "dashboard_enabled": True,
-                "rules": []
-            }
-        }
 
 
 def load_config(path: Optional[Path] = None) -> Config:
@@ -65,7 +57,6 @@ def load_config(path: Optional[Path] = None) -> Config:
     config_path = path or Path(__file__).parent / "config.json"
 
     if not config_path.exists():
-        # Return default config
         return Config()
 
     try:
@@ -93,7 +84,7 @@ _config = None
 
 
 def get_global_config() -> Config:
-    """Get global config instance."""
+    """Get global config instance (cached)."""
     global _config
     if _config is None:
         _config = load_config()
