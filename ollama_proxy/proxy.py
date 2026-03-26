@@ -4,63 +4,29 @@ Core proxy module for PyProxy.
 Handles HTTP proxying, async request forwarding, and response handling.
 """
 
-import asyncio
 import json
-import time
 from typing import Optional, Dict, Any, AsyncIterator
-from pathlib import Path
 
 import httpx
-from fastapi import Request, Response, status
-from fastapi.responses import JSONResponse
+from fastapi import Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from .config import get_config
 from .logger import TrafficLogger
-from .models.request_model import (
-    ChatRequest, GenerateRequest, ChatResponse,
-    GenerateResponse, parse_chat_request, parse_generate_request,
-    create_chat_response, create_generate_response
-)
 from .rules_engine import RuleEngine
 
+# Headers that must not be forwarded verbatim (managed by the HTTP layer)
+_HOP_BY_HOP = frozenset({
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailers", "transfer-encoding", "upgrade",
+    "content-encoding",  # httpx decompresses for us
+    "content-length",    # will be recalculated
+})
 
-async def _parse_stream_response(
-    async_iterable: Any
-) -> AsyncIterator[tuple[str, int, Dict[str, str]]]:
-    """
-    Parse streaming response chunks into events.
 
-    Args:
-        async_iterable: Async generator from Ollama
-
-    Yields:
-        (data, content_type, status) tuples
-    """
-    content_type = "application/x-ndjson"
-    status_code = 200
-    chunk_num = 0
-
-    async for chunk in async_iterable:
-        if isinstance(chunk, bytes):
-            chunk = chunk.decode("utf-8")
-        elif not chunk:
-            continue
-
-        try:
-            if isinstance(chunk, str):
-                try:
-                    parsed = json.loads(chunk)
-                except json.JSONDecodeError:
-                    # Try raw chunk
-                    pass
-                else:
-                    chunk_num += 1
-                    yield chunk, content_type, status_code
-
-        except Exception:
-            pass
-
-    yield "", content_type, status_code
+def _forward_headers(headers: Dict[str, str]) -> Dict[str, str]:
+    """Strip hop-by-hop headers before forwarding."""
+    return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP}
 
 
 async def _fetch_from_ollama(
@@ -69,383 +35,225 @@ async def _fetch_from_ollama(
     path: str,
     headers: Dict[str, str],
     body: Optional[bytes] = None,
-    timeout: int = 120
+    timeout: int = 120,
 ) -> tuple:
     """
-    Fetch data from Ollama backend.
-
-    Args:
-        target: Ollama target URL
-        method: HTTP method
-        path: Request path
-        headers: Request headers
-        body: Request body
-        timeout: Timeout in seconds
+    Fetch data from Ollama backend (non-streaming).
 
     Returns:
-        (status_code, headers, body)
+        (status_code, headers, body_bytes)
     """
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(timeout),
-        follow_redirects=True
+        follow_redirects=True,
     ) as client:
         response = await client.request(
             method,
             target + path,
-            headers=headers,
-            content=body
+            headers=_forward_headers(headers),
+            content=body,
         )
         return (
             response.status_code,
-            response.headers,
-            await response.aread()
+            dict(response.headers),
+            await response.aread(),
         )
 
 
-async def _fetch_streaming(
+async def _stream_from_ollama(
     target: str,
     method: str,
     path: str,
     headers: Dict[str, str],
     body: Optional[bytes] = None,
-    timeout: int = 120
-) -> AsyncIterator[tuple[str, int, Dict[str, str]]]:
+    timeout: int = 120,
+) -> AsyncIterator[bytes]:
     """
-    Fetch streaming response from Ollama.
+    Stream raw bytes from Ollama backend.
 
-    Args:
-        target: Ollama target URL
-        method: HTTP method
-        path: Request path
-        headers: Request headers
-        body: Request body
-        timeout: Timeout in seconds
-
-    Yields:
-        (data, content_type, status) tuples
+    Yields raw byte chunks as received.
     """
-    try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout),
-            follow_redirects=True
-        ) as client:
-            async with client.stream(
-                method,
-                target + path,
-                headers=headers,
-                content=body
-            ) as response:
-                status_code = response.status_code
-                content_type = response.headers.get("content-type", "")
-                yield "", content_type, status_code
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(timeout),
+        follow_redirects=True,
+    ) as client:
+        async with client.stream(
+            method,
+            target + path,
+            headers=_forward_headers(headers),
+            content=body,
+        ) as response:
+            async for chunk in response.aiter_bytes():
+                if chunk:
+                    yield chunk
 
-                async for chunk in response.aiter_bytes():
-                    if chunk:
-                        chunk = chunk.decode("utf-8")
-                        yield chunk, content_type, status_code
 
-    except httpx.ConnectError as e:
-        yield "", "text/plain", 502
+def _error_response(status_code: int, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"error": message},
+    )
 
 
 async def handle_chat_request(
     request: Request,
     rule_engine: RuleEngine,
-    logger: TrafficLogger
+    logger: TrafficLogger,
 ) -> Response:
-    """Handle chat request to Ollama."""
+    """Handle /api/chat request to Ollama (non-streaming)."""
     config = get_config()
-    target = config.target
     body_json = await request.json()
 
-    # Apply rules
     modified, body, request_id = await rule_engine.process_request(
-        "POST",
-        request.url.path,
-        dict(request.headers),
-        body_json
+        "POST", request.url.path, dict(request.headers), body_json
     )
-
     if modified:
         body_json = body
 
+    body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
+
     try:
-        # Forward request
-        response_code, response_headers, body_bytes = await _fetch_from_ollama(
-            target,
-            "POST",
-            request.url.path,
-            dict(request.headers),
-            body_json.encode("utf-8") if body_json else b"",
-            config.timeout
+        response_code, response_headers, response_body = await _fetch_from_ollama(
+            config.target, "POST", request.url.path,
+            dict(request.headers), body_bytes, config.timeout,
         )
 
-        # Log response
-        logger.log_response(
-            request_id,
-            response_code,
-            response_headers,
-            json.loads(body_bytes.decode("utf-8")) if body_bytes else None
-        )
+        try:
+            response_json = json.loads(response_body)
+        except json.JSONDecodeError:
+            response_json = None
 
-        # Build response
-        return JSONResponse(
+        logger.log_response(request_id, response_code, response_headers, response_json)
+
+        return Response(
+            content=response_body,
             status_code=response_code,
-            content=body_bytes,
-            headers=dict(response_headers)
+            headers=_forward_headers(response_headers),
+            media_type=response_headers.get("content-type", "application/json"),
         )
 
     except httpx.TimeoutException:
-        return JSONResponse(
-            status_code=408,
-            content=json.dumps({"error": "Request timeout"}),
-            headers={"content-type": "application/json"}
-        )
-
+        return _error_response(408, "Request timeout")
     except httpx.HTTPStatusError as e:
-        return JSONResponse(
-            status_code=e.response.status_code,
-            content=e.response.json() if e.response.content else {"error": str(e)},
-            headers=dict(e.response.headers)
-        )
-
-    except json.JSONDecodeError:
-        return JSONResponse(
-            status_code=400,
-            content=json.dumps({"error": "Invalid JSON"}),
-            headers={"content-type": "application/json"}
-        )
-
+        return _error_response(e.response.status_code, str(e))
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content=json.dumps({"error": str(e)}),
-            headers={"content-type": "application/json"}
-        )
+        return _error_response(500, str(e))
 
 
 async def handle_generate_request(
     request: Request,
     rule_engine: RuleEngine,
-    logger: TrafficLogger
+    logger: TrafficLogger,
 ) -> Response:
-    """Handle generate request to Ollama."""
+    """Handle /api/generate request to Ollama (non-streaming)."""
     config = get_config()
     body_json = await request.json()
 
-    # Apply rules
     modified, body, request_id = await rule_engine.process_request(
-        "POST",
-        request.url.path,
-        dict(request.headers),
-        body_json
+        "POST", request.url.path, dict(request.headers), body_json
     )
-
     if modified:
         body_json = body
 
+    body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
+
     try:
-        response_code, response_headers, body_bytes = await _fetch_from_ollama(
-            config.target,
-            "POST",
-            request.url.path,
-            dict(request.headers),
-            body_json.encode("utf-8") if body_json else b"",
-            config.timeout
+        response_code, response_headers, response_body = await _fetch_from_ollama(
+            config.target, "POST", request.url.path,
+            dict(request.headers), body_bytes, config.timeout,
         )
 
-        logger.log_response(
-            request_id,
-            response_code,
-            response_headers,
-            json.loads(body_bytes.decode("utf-8")) if body_bytes else None
-        )
+        try:
+            response_json = json.loads(response_body)
+        except json.JSONDecodeError:
+            response_json = None
 
-        return JSONResponse(
+        logger.log_response(request_id, response_code, response_headers, response_json)
+
+        return Response(
+            content=response_body,
             status_code=response_code,
-            content=body_bytes,
-            headers=dict(response_headers)
+            headers=_forward_headers(response_headers),
+            media_type=response_headers.get("content-type", "application/json"),
         )
 
     except httpx.TimeoutException:
-        return JSONResponse(
-            status_code=408,
-            content=json.dumps({"error": "Request timeout"}),
-            headers={"content-type": "application/json"}
-        )
-
+        return _error_response(408, "Request timeout")
     except httpx.HTTPStatusError as e:
-        return JSONResponse(
-            status_code=e.response.status_code,
-            content=e.response.json() if e.response.content else {"error": str(e)},
-            headers=dict(e.response.headers)
-        )
-
-    except json.JSONDecodeError:
-        return JSONResponse(
-            status_code=400,
-            content=json.dumps({"error": "Invalid JSON"}),
-            headers={"content-type": "application/json"}
-        )
-
+        return _error_response(e.response.status_code, str(e))
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content=json.dumps({"error": str(e)}),
-            headers={"content-type": "application/json"}
-        )
+        return _error_response(500, str(e))
 
 
 async def handle_stream_chat(
     request: Request,
     rule_engine: RuleEngine,
-    logger: TrafficLogger
+    logger: TrafficLogger,
 ) -> Response:
-    """Handle streaming chat request."""
+    """Handle /api/chat streaming request."""
     config = get_config()
     body_json = await request.json()
 
-    # Apply rules
     modified, body, request_id = await rule_engine.process_request(
-        "POST",
-        request.url.path,
-        dict(request.headers),
-        body_json
+        "POST", request.url.path, dict(request.headers), body_json
     )
-
     if modified:
         body_json = body
 
-    try:
-        # Stream response
-        async for chunk, content_type, status_code in _fetch_streaming(
-            config.target,
-            "POST",
-            request.url.path,
-            dict(request.headers),
-            body_json.encode("utf-8") if body_json else b"",
-            config.timeout
-        ):
-            logger.log_raw_request(
-                request_id,
-                chunk if chunk else "",
-                dict(request.headers)
-            )
+    body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
+    forward_headers = dict(request.headers)
 
-        logger.log_response(
-            request_id,
-            status_code,
-            dict(request.headers),
-            None
-        )
+    async def generate() -> AsyncIterator[bytes]:
+        try:
+            async for chunk in _stream_from_ollama(
+                config.target, "POST", request.url.path,
+                forward_headers, body_bytes, config.timeout,
+            ):
+                yield chunk
+        except httpx.TimeoutException:
+            yield json.dumps({"error": "Request timeout"}).encode()
+        except httpx.ConnectError:
+            yield json.dumps({"error": "Cannot connect to Ollama"}).encode()
+        except Exception as e:
+            yield json.dumps({"error": str(e)}).encode()
 
-        return Response(
-            content=chunk if chunk else b"",
-            status_code=status_code,
-            media_type=content_type
-        )
+        logger.log_response(request_id, 200, {}, None)
 
-    except httpx.TimeoutException:
-        return JSONResponse(
-            status_code=408,
-            content=json.dumps({"error": "Request timeout"}),
-            headers={"content-type": "application/json"}
-        )
-
-    except httpx.HTTPStatusError as e:
-        return JSONResponse(
-            status_code=e.response.status_code,
-            content=e.response.json() if e.response.content else {"error": str(e)},
-            headers=dict(e.response.headers)
-        )
-
-    except json.JSONDecodeError:
-        return JSONResponse(
-            status_code=400,
-            content=json.dumps({"error": "Invalid JSON"}),
-            headers={"content-type": "application/json"}
-        )
-
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content=json.dumps({"error": str(e)}),
-            headers={"content-type": "application/json"}
-        )
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 
 async def handle_stream_generate(
     request: Request,
     rule_engine: RuleEngine,
-    logger: TrafficLogger
+    logger: TrafficLogger,
 ) -> Response:
-    """Handle streaming generate request."""
+    """Handle /api/generate streaming request."""
     config = get_config()
     body_json = await request.json()
 
-    # Apply rules
     modified, body, request_id = await rule_engine.process_request(
-        "POST",
-        request.url.path,
-        dict(request.headers),
-        body_json
+        "POST", request.url.path, dict(request.headers), body_json
     )
-
     if modified:
         body_json = body
 
-    try:
-        async for chunk, content_type, status_code in _fetch_streaming(
-            config.target,
-            "POST",
-            request.url.path,
-            dict(request.headers),
-            body_json.encode("utf-8") if body_json else b"",
-            config.timeout
-        ):
-            logger.log_raw_request(
-                request_id,
-                chunk if chunk else "",
-                dict(request.headers)
-            )
+    body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
+    forward_headers = dict(request.headers)
 
-        logger.log_response(
-            request_id,
-            status_code,
-            dict(request.headers),
-            None
-        )
+    async def generate() -> AsyncIterator[bytes]:
+        try:
+            async for chunk in _stream_from_ollama(
+                config.target, "POST", request.url.path,
+                forward_headers, body_bytes, config.timeout,
+            ):
+                yield chunk
+        except httpx.TimeoutException:
+            yield json.dumps({"error": "Request timeout"}).encode()
+        except httpx.ConnectError:
+            yield json.dumps({"error": "Cannot connect to Ollama"}).encode()
+        except Exception as e:
+            yield json.dumps({"error": str(e)}).encode()
 
-        return Response(
-            content=chunk if chunk else b"",
-            status_code=status_code,
-            media_type=content_type
-        )
+        logger.log_response(request_id, 200, {}, None)
 
-    except httpx.TimeoutException:
-        return JSONResponse(
-            status_code=408,
-            content=json.dumps({"error": "Request timeout"}),
-            headers={"content-type": "application/json"}
-        )
-
-    except httpx.HTTPStatusError as e:
-        return JSONResponse(
-            status_code=e.response.status_code,
-            content=e.response.json() if e.response.content else {"error": str(e)},
-            headers=dict(e.response.headers)
-        )
-
-    except json.JSONDecodeError:
-        return JSONResponse(
-            status_code=400,
-            content=json.dumps({"error": "Invalid JSON"}),
-            headers={"content-type": "application/json"}
-        )
-
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content=json.dumps({"error": str(e)}),
-            headers={"content-type": "application/json"}
-        )
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
