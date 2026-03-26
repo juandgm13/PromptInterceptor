@@ -9,7 +9,7 @@ import threading
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from .config import get_config
 from .logger import TrafficLogger
@@ -61,9 +61,9 @@ def create_app() -> FastAPI:
 
     @app.get("/dashboard")
     async def dashboard():
-        return JSONResponse(
+        return RedirectResponse(
+            url=f"http://localhost:{config.dashboard_port}/",
             status_code=307,
-            headers={"location": f"http://localhost:{config.dashboard_port}/"},
         )
 
     @app.get("/api/models")
