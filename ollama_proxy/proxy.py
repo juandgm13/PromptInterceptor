@@ -12,6 +12,7 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .config import get_config
+from .interceptor import interceptor
 from .logger import TrafficLogger
 from .rules_engine import RuleEngine
 
@@ -95,6 +96,27 @@ def _error_response(status_code: int, message: str) -> JSONResponse:
     )
 
 
+async def _apply_intercept(
+    request_id: str,
+    method: str,
+    path: str,
+    headers: Dict[str, str],
+    body_json: Optional[Dict[str, Any]],
+) -> tuple:
+    """
+    In intercept mode, pause the request until the dashboard resolves it.
+
+    Returns:
+        (should_drop: bool, body_json: dict|None)
+    """
+    action, resolved_body = await interceptor.intercept(
+        request_id, method, path, headers, body_json
+    )
+    if action == "drop":
+        return (True, None)
+    return (False, resolved_body)
+
+
 async def handle_chat_request(
     request: Request,
     rule_engine: RuleEngine,
@@ -109,6 +131,13 @@ async def handle_chat_request(
     )
     if modified:
         body_json = body
+
+    if config.mode == "intercept":
+        drop, body_json = await _apply_intercept(
+            request_id, "POST", request.url.path, dict(request.headers), body_json
+        )
+        if drop:
+            return Response(status_code=204)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
 
@@ -155,6 +184,13 @@ async def handle_generate_request(
     if modified:
         body_json = body
 
+    if config.mode == "intercept":
+        drop, body_json = await _apply_intercept(
+            request_id, "POST", request.url.path, dict(request.headers), body_json
+        )
+        if drop:
+            return Response(status_code=204)
+
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
 
     try:
@@ -200,6 +236,13 @@ async def handle_stream_chat(
     if modified:
         body_json = body
 
+    if config.mode == "intercept":
+        drop, body_json = await _apply_intercept(
+            request_id, "POST", request.url.path, dict(request.headers), body_json
+        )
+        if drop:
+            return Response(status_code=204)
+
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
     forward_headers = dict(request.headers)
 
@@ -236,6 +279,13 @@ async def handle_stream_generate(
     )
     if modified:
         body_json = body
+
+    if config.mode == "intercept":
+        drop, body_json = await _apply_intercept(
+            request_id, "POST", request.url.path, dict(request.headers), body_json
+        )
+        if drop:
+            return Response(status_code=204)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
     forward_headers = dict(request.headers)

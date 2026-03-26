@@ -8,11 +8,12 @@ handling intercepted requests.
 import json
 import os
 
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, Body
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .config import get_config
+from .config import get_config, save_config
+from .interceptor import interceptor
 from .logger import TrafficLogger
 from .rules_engine import RuleEngine
 from .health import check_proxy_health, check_target_health, get_status
@@ -244,6 +245,40 @@ async def enable_rule(index: int):
 async def disable_rule(index: int):
     if _rule_engine.disable_rule(index):
         return JSONResponse(status_code=200, content={"status": "disabled"})
+    return JSONResponse(status_code=404, content={"status": "not_found"})
+
+
+# ---------------------------------------------------------------------------
+# Interceptor endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/intercept/pending")
+async def intercept_pending():
+    """List all requests currently waiting for a decision."""
+    return {"pending": interceptor.get_pending(), "count": len(interceptor)}
+
+
+@router.post("/intercept/{request_id}/forward")
+async def intercept_forward(request_id: str):
+    """Forward a paused request unchanged."""
+    if interceptor.resolve_forward(request_id):
+        return JSONResponse(status_code=200, content={"status": "forwarded"})
+    return JSONResponse(status_code=404, content={"status": "not_found"})
+
+
+@router.post("/intercept/{request_id}/edit")
+async def intercept_edit(request_id: str, body: dict = Body(...)):
+    """Forward a paused request with a modified body."""
+    if interceptor.resolve_edit(request_id, body):
+        return JSONResponse(status_code=200, content={"status": "edited"})
+    return JSONResponse(status_code=404, content={"status": "not_found"})
+
+
+@router.post("/intercept/{request_id}/drop")
+async def intercept_drop(request_id: str):
+    """Drop a paused request (returns 204 to the original client)."""
+    if interceptor.resolve_drop(request_id):
+        return JSONResponse(status_code=200, content={"status": "dropped"})
     return JSONResponse(status_code=404, content={"status": "not_found"})
 
 
