@@ -209,3 +209,9 @@ __marimo__/
 # Local Ollama setup (not part of project)
 claude-ollama.bat
 
+# Logs
+logs/
+
+# Claude Code
+.claude/
+
