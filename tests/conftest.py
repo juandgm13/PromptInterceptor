@@ -1,0 +1,124 @@
+"""
+Shared fixtures for PyProxy tests.
+"""
+
+import sys
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+# Ensure the repo root is on sys.path so `ollama_proxy` can be imported
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+
+# ---------------------------------------------------------------------------
+# Config fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def test_config(tmp_path):
+    """Config with one model-switching rule, using tmp_path for logs."""
+    from ollama_proxy.config import Config
+    return Config(
+        proxy_port=8080,
+        target="http://localhost:11434",
+        mode="intercept",
+        timeout=30,
+        log_dir=str(tmp_path / "logs"),
+        rules=[
+            {
+                "match": {
+                    "path": "/api/chat",
+                    "jsonpath": "$.model",
+                    "value": ["llama3"],
+                },
+                "replace": {"jsonpath": "$.model", "value": "deepseek-coder"},
+            }
+        ],
+    )
+
+
+@pytest.fixture
+def passthrough_config(tmp_path):
+    """Config with no rules in passthrough mode."""
+    from ollama_proxy.config import Config
+    return Config(
+        log_dir=str(tmp_path / "logs"),
+        mode="passthrough",
+        rules=[],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Logger / engine fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def logger(test_config):
+    from ollama_proxy.logger import TrafficLogger
+    return TrafficLogger(test_config)
+
+
+@pytest.fixture
+def rule_engine(test_config, logger, monkeypatch):
+    import ollama_proxy.rules_engine as re_mod
+    monkeypatch.setattr(re_mod, "get_config", lambda: test_config)
+    from ollama_proxy.rules_engine import RuleEngine
+    return RuleEngine(logger)
+
+
+# ---------------------------------------------------------------------------
+# Mock Request factory
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def make_request():
+    """Return a factory that builds mock FastAPI Request objects."""
+    def _factory(body: dict, path: str = "/api/chat"):
+        req = MagicMock()
+        req.json = AsyncMock(return_value=body)
+        req.url.path = path
+        req.headers = {"content-type": "application/json"}
+        return req
+    return _factory
+
+
+# ---------------------------------------------------------------------------
+# Proxy / dashboard ASGI clients
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def proxy_app(test_config, monkeypatch):
+    """FastAPI proxy app with all get_config calls returning test_config."""
+    import ollama_proxy.main as main_mod
+    import ollama_proxy.proxy as proxy_mod
+    import ollama_proxy.rules_engine as re_mod
+    import ollama_proxy.logger as logger_mod
+    import ollama_proxy.cors_middleware as cors_mod
+    import ollama_proxy.health as health_mod
+
+    for mod in (main_mod, proxy_mod, re_mod, logger_mod, cors_mod, health_mod):
+        monkeypatch.setattr(mod, "get_config", lambda: test_config)
+
+    from ollama_proxy.main import create_app
+    return create_app()
+
+
+@pytest.fixture
+async def proxy_client(proxy_app):
+    from httpx import AsyncClient, ASGITransport
+    async with AsyncClient(
+        transport=ASGITransport(app=proxy_app), base_url="http://test"
+    ) as client:
+        yield client
+
+
+@pytest.fixture
+async def dashboard_client():
+    from httpx import AsyncClient, ASGITransport
+    from ollama_proxy.dashboard import app
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        yield client
