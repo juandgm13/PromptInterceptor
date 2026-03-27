@@ -4,41 +4,32 @@
 
 PromptInterceptor sits between an AI client (Claude Code, Open Code) and an Ollama server, intercepting all HTTP traffic so that requests and responses can be inspected, modified, or paused for manual review.
 
-```
-┌─────────────────┐     HTTP      ┌──────────────────────────┐     HTTP      ┌─────────────┐
-│   AI Client     │ ──────────►  │  PromptInterceptor Proxy  │ ──────────►  │   Ollama    │
-│ (Claude Code /  │  :8080        │  (FastAPI + uvicorn)      │  :11434       │   Server    │
-│  Open Code)     │ ◄──────────   │                          │ ◄──────────   │             │
-└─────────────────┘               └──────────────────────────┘               └─────────────┘
-                                             │
-                                             │ Dashboard API
-                                             ▼
-                                  ┌──────────────────────┐
-                                  │  Dashboard UI         │
-                                  │  (FastAPI :9090)      │
-                                  │  Browser / Web UI     │
-                                  └──────────────────────┘
+```mermaid
+graph LR
+    A["AI Client<br/>(Claude Code / Open Code)"] -- "HTTP :8080" --> B["PromptInterceptor Proxy<br/>(FastAPI + uvicorn)"]
+    B -- "HTTP :11434" --> C["Ollama Server"]
+    C -- response --> B
+    B -- response --> A
+    B --> D["Dashboard UI<br/>(FastAPI :9090)<br/>Browser / Web UI"]
 ```
 
 ## Request Flow
 
-```
-1. AI Client sends POST /api/chat or POST /api/generate
-        │
-2. main.py receives the request
-        │
-3. RuleEngine.process_request()
-   ├─ Checks if mode == "passthrough" → skip rules
-   └─ Applies matching rules (JSONPath-based modifications)
-        │
-4. [Intercept mode only] Interceptor.intercept()
-   └─ Pauses request, waits for dashboard decision (forward/edit/drop)
-        │
-5. proxy.py forwards to Ollama (httpx async)
-        │
-6. Response returned to AI Client
-        │
-7. TrafficLogger records request + response to disk (JSON files)
+```mermaid
+flowchart TD
+    A["1. AI Client sends POST /api/chat or /api/generate"] --> B["2. main.py receives the request"]
+    B --> C["3. RuleEngine.process_request()"]
+    C --> D{"mode?"}
+    D -- passthrough --> E["Skip rules / forward directly"]
+    D -- intercept --> F["Apply matching rules (JSONPath)"]
+    F --> G["4. Interceptor.intercept() — pause request"]
+    G --> H{"Dashboard decision"}
+    H -- forward --> I["5. proxy.py → Ollama (httpx async)"]
+    H -- edit --> I
+    H -- drop --> Z["Return 204 to client"]
+    E --> I
+    I --> J["6. Response returned to AI Client"]
+    J --> K["7. TrafficLogger records to disk (JSON)"]
 ```
 
 ## Modules
