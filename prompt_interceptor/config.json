@@ -12,6 +12,7 @@
   "dashboard_enabled": true,
   "dashboard_port": 9090,
   "model_names": ["llama3", "mistral", "deepseek-coder"],
+  "context_size": 4096,
   "rules": [
     {
       "match": {

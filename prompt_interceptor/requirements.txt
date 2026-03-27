@@ -1,4 +1,4 @@
-# PyProxy dependencies
+# PromptInterceptor dependencies
 fastapi>=0.100.0
 uvicorn[standard]>=0.22.0
 httpx>=0.23.0
@@ -7,5 +7,3 @@ pydantic>=2.5.0
 aiofiles>=23.0.0
 jsonpath-ng>=1.6.0
 python-json-logger>=2.0.0
-typer>=0.9.0
-rich>=13.0.0

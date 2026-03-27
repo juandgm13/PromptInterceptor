@@ -1,5 +1,5 @@
 """
-Configuration management for PyProxy.
+Configuration management for PromptInterceptor.
 """
 
 import json
@@ -50,6 +50,9 @@ class Config(BaseModel):
 
     # Model names to watch for rules
     model_names: List[str] = Field(default_factory=lambda: ["llama3", "mistral"])
+
+    # Context size for the Ollama server (passed as OLLAMA_NUM_CTX env var on start)
+    context_size: int = 4096
 
 
 def load_config(path: Optional[Path] = None) -> Config:
