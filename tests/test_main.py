@@ -17,7 +17,7 @@ def _mock_no_ollama():
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.get = AsyncMock(return_value=mock_resp)
-    return patch("ollama_proxy.health.httpx.AsyncClient", return_value=mock_client)
+    return patch("prompt_interceptor.health.httpx.AsyncClient", return_value=mock_client)
 
 
 @pytest.fixture
@@ -37,7 +37,7 @@ def test_create_app_returns_fastapi(proxy_app):
 
 
 def test_module_level_app_exists():
-    from ollama_proxy.main import app
+    from prompt_interceptor.main import app
     assert isinstance(app, FastAPI)
 
 
@@ -91,7 +91,7 @@ async def test_api_models(client):
 async def test_chat_endpoint(client):
     response_bytes = json.dumps({"model": "llama3", "done": True}).encode()
     with patch(
-        "ollama_proxy.proxy._fetch_from_ollama",
+        "prompt_interceptor.proxy._fetch_from_ollama",
         new=AsyncMock(return_value=(200, {"content-type": "application/json"}, response_bytes)),
     ):
         resp = await client.post(
@@ -104,7 +104,7 @@ async def test_chat_endpoint(client):
 async def test_generate_endpoint(client):
     response_bytes = json.dumps({"response": "hi", "done": True}).encode()
     with patch(
-        "ollama_proxy.proxy._fetch_from_ollama",
+        "prompt_interceptor.proxy._fetch_from_ollama",
         new=AsyncMock(return_value=(200, {"content-type": "application/json"}, response_bytes)),
     ):
         resp = await client.post(
@@ -126,7 +126,7 @@ async def _mock_stream(*args, **kwargs):
 async def test_stream_chat_endpoint(client):
     # httpx AsyncClient collects the full streaming body before returning,
     # so the patch must be active during both request and body consumption.
-    with patch("ollama_proxy.proxy._stream_from_ollama", new=_mock_stream):
+    with patch("prompt_interceptor.proxy._stream_from_ollama", new=_mock_stream):
         async with client.stream(
             "POST",
             "/api/chat/stream",
@@ -138,7 +138,7 @@ async def test_stream_chat_endpoint(client):
 
 
 async def test_stream_generate_endpoint(client):
-    with patch("ollama_proxy.proxy._stream_from_ollama", new=_mock_stream):
+    with patch("prompt_interceptor.proxy._stream_from_ollama", new=_mock_stream):
         async with client.stream(
             "POST",
             "/api/generate/stream",
@@ -155,7 +155,7 @@ async def test_stream_generate_endpoint(client):
 async def test_timing_header_added(client):
     response_bytes = b'{"done":true}'
     with patch(
-        "ollama_proxy.proxy._fetch_from_ollama",
+        "prompt_interceptor.proxy._fetch_from_ollama",
         new=AsyncMock(return_value=(200, {"content-type": "application/json"}, response_bytes)),
     ):
         resp = await client.post(

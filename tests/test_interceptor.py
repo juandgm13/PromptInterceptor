@@ -3,7 +3,7 @@
 import asyncio
 import pytest
 
-from ollama_proxy.interceptor import Interceptor, InterceptedRequest
+from prompt_interceptor.interceptor import Interceptor, InterceptedRequest
 
 
 # ---------------------------------------------------------------------------

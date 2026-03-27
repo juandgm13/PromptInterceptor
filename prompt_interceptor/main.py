@@ -1,5 +1,5 @@
 """
-PyProxy - Ollama Traffic Interceptor & Model Switcher
+PromptInterceptor - Ollama Traffic Interceptor for AI Clients
 
 Main entry point for the proxy application.
 """
@@ -94,7 +94,7 @@ def create_app() -> FastAPI:
     return app
 
 
-# Module-level app so uvicorn can reference "ollama_proxy.main:app"
+# Module-level app so uvicorn can reference "prompt_interceptor.main:app"
 app = create_app()
 
 
@@ -105,7 +105,7 @@ def main() -> None:
     if config.dashboard_enabled:
         def _run_dashboard():
             uvicorn.run(
-                "ollama_proxy.dashboard:app",
+                "prompt_interceptor.dashboard:app",
                 host="0.0.0.0",
                 port=config.dashboard_port,
                 log_level="warning",
@@ -114,7 +114,7 @@ def main() -> None:
         threading.Thread(target=_run_dashboard, daemon=True).start()
 
     uvicorn.run(
-        "ollama_proxy.main:app",
+        "prompt_interceptor.main:app",
         host=config.proxy_host,
         port=config.proxy_port,
         reload=config.debug,

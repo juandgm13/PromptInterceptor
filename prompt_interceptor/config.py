@@ -12,8 +12,8 @@ class Config(BaseModel):
     """Configuration model for the proxy."""
 
     # Project metadata
-    project_name: str = "PyProxy"
-    project_description: str = "Ollama Traffic Interceptor & Model Switcher"
+    project_name: str = "PromptInterceptor"
+    project_description: str = "PromptInterceptor - Ollama Traffic Interceptor for AI Clients"
     project_version: str = "0.1.0"
     debug: bool = False
 

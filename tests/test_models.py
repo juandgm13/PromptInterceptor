@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from ollama_proxy.models.request_model import (
+from prompt_interceptor.models.request_model import (
     Message,
     ChatRequest,
     GenerateRequest,

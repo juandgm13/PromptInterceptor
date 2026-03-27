@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from ollama_proxy.config import Config
-from ollama_proxy.health import (
+from prompt_interceptor.config import Config
+from prompt_interceptor.health import (
     check_proxy_health,
     check_target_health,
     check_dashboard_health,
@@ -18,7 +18,7 @@ from ollama_proxy.health import (
 @pytest.fixture(autouse=True)
 def patch_get_config(tmp_path, monkeypatch):
     cfg = Config(log_dir=str(tmp_path / "logs"), mode="passthrough")
-    import ollama_proxy.health as health_mod
+    import prompt_interceptor.health as health_mod
     monkeypatch.setattr(health_mod, "get_config", lambda: cfg)
     return cfg
 
@@ -72,7 +72,7 @@ def _make_mock_client(status=200, json_data=None, raise_exc=None):
 
 async def test_check_target_health_success():
     mock_client = _make_mock_client(200, {"models": [{"name": "llama3"}]})
-    with patch("ollama_proxy.health.httpx.AsyncClient", return_value=mock_client):
+    with patch("prompt_interceptor.health.httpx.AsyncClient", return_value=mock_client):
         resp = await check_target_health()
     assert resp.status_code == 200
     data = json.loads(resp.body)
@@ -82,7 +82,7 @@ async def test_check_target_health_success():
 
 async def test_check_target_health_non_200():
     mock_client = _make_mock_client(503)
-    with patch("ollama_proxy.health.httpx.AsyncClient", return_value=mock_client):
+    with patch("prompt_interceptor.health.httpx.AsyncClient", return_value=mock_client):
         resp = await check_target_health()
     assert resp.status_code == 503
     data = json.loads(resp.body)
@@ -91,7 +91,7 @@ async def test_check_target_health_non_200():
 
 async def test_check_target_health_timeout():
     mock_client = _make_mock_client(raise_exc=httpx.TimeoutException("t"))
-    with patch("ollama_proxy.health.httpx.AsyncClient", return_value=mock_client):
+    with patch("prompt_interceptor.health.httpx.AsyncClient", return_value=mock_client):
         resp = await check_target_health()
     assert resp.status_code == 504
     assert json.loads(resp.body)["target"] == "timeout"
@@ -99,7 +99,7 @@ async def test_check_target_health_timeout():
 
 async def test_check_target_health_connect_error():
     mock_client = _make_mock_client(raise_exc=httpx.ConnectError("refused"))
-    with patch("ollama_proxy.health.httpx.AsyncClient", return_value=mock_client):
+    with patch("prompt_interceptor.health.httpx.AsyncClient", return_value=mock_client):
         resp = await check_target_health()
     assert resp.status_code == 503
     assert "unhealthy" in json.loads(resp.body)["target"]
@@ -111,7 +111,7 @@ async def test_check_target_health_connect_error():
 
 async def test_get_status_structure():
     mock_client = _make_mock_client(200, {"models": []})
-    with patch("ollama_proxy.health.httpx.AsyncClient", return_value=mock_client):
+    with patch("prompt_interceptor.health.httpx.AsyncClient", return_value=mock_client):
         resp = await get_status()
     assert resp.status_code == 200
     data = json.loads(resp.body)
@@ -126,7 +126,7 @@ async def test_get_status_structure():
 
 async def test_get_status_includes_rule_count():
     mock_client = _make_mock_client(200, {"models": []})
-    with patch("ollama_proxy.health.httpx.AsyncClient", return_value=mock_client):
+    with patch("prompt_interceptor.health.httpx.AsyncClient", return_value=mock_client):
         resp = await get_status()
     data = json.loads(resp.body)
     assert isinstance(data["rules"]["count"], int)

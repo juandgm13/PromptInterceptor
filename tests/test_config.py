@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ollama_proxy.config import (
+from prompt_interceptor.config import (
     Config,
     load_config,
     save_config,
@@ -86,7 +86,7 @@ def test_load_config_with_rules(tmp_path):
 
 def test_save_config_round_trip():
     """save_config writes valid JSON; restore config.json afterwards."""
-    import ollama_proxy.config as cfg_mod
+    import prompt_interceptor.config as cfg_mod
     config_path = Path(cfg_mod.__file__).parent / "config.json"
     original = config_path.read_text()
     try:
@@ -112,7 +112,7 @@ def test_get_config_returns_config():
 # ---------------------------------------------------------------------------
 
 def test_get_global_config_caches(monkeypatch):
-    import ollama_proxy.config as cfg_mod
+    import prompt_interceptor.config as cfg_mod
     monkeypatch.setattr(cfg_mod, "_config", None)
     first = get_global_config()
     second = get_global_config()
@@ -120,7 +120,7 @@ def test_get_global_config_caches(monkeypatch):
 
 
 def test_reload_config_clears_cache(monkeypatch):
-    import ollama_proxy.config as cfg_mod
+    import prompt_interceptor.config as cfg_mod
     monkeypatch.setattr(cfg_mod, "_config", None)
     first = get_global_config()
     reload_config()

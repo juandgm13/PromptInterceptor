@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import ollama_proxy.cli as cli_mod
-from ollama_proxy.cli import (
+import prompt_interceptor.cli as cli_mod
+from prompt_interceptor.cli import (
     _load_config,
     _save_config,
     cmd_logs,
@@ -81,28 +81,28 @@ def test_show_help_prints(capsys):
 # ---------------------------------------------------------------------------
 
 def test_cmd_start_calls_uvicorn(config_file):
-    with patch("ollama_proxy.cli.subprocess.run") as mock_run:
+    with patch("prompt_interceptor.cli.subprocess.run") as mock_run:
         cmd_start([])
     mock_run.assert_called_once()
     args = mock_run.call_args[0][0]
     assert "uvicorn" in args
-    assert "ollama_proxy.main:app" in args
+    assert "prompt_interceptor.main:app" in args
 
 
 def test_cmd_start_uses_provided_port(config_file):
-    with patch("ollama_proxy.cli.subprocess.run") as mock_run:
+    with patch("prompt_interceptor.cli.subprocess.run") as mock_run:
         cmd_start(["7777"])
     args = mock_run.call_args[0][0]
     assert "7777" in args
 
 
 def test_cmd_start_keyboard_interrupt(config_file):
-    with patch("ollama_proxy.cli.subprocess.run", side_effect=KeyboardInterrupt):
+    with patch("prompt_interceptor.cli.subprocess.run", side_effect=KeyboardInterrupt):
         cmd_start([])  # Should not raise
 
 
 def test_cmd_start_uvicorn_not_found(config_file):
-    with patch("ollama_proxy.cli.subprocess.run", side_effect=FileNotFoundError):
+    with patch("prompt_interceptor.cli.subprocess.run", side_effect=FileNotFoundError):
         cmd_start([])  # Should not raise
 
 
@@ -195,55 +195,55 @@ def test_cmd_status_no_config(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_main_no_args_shows_help():
-    with patch("ollama_proxy.cli.sys.argv", ["proxy"]):
-        with patch("ollama_proxy.cli.show_help") as mock_help:
+    with patch("prompt_interceptor.cli.sys.argv", ["proxy"]):
+        with patch("prompt_interceptor.cli.show_help") as mock_help:
             main()
     mock_help.assert_called_once()
 
 
 def test_main_help_flag():
-    with patch("ollama_proxy.cli.sys.argv", ["proxy", "--help"]):
-        with patch("ollama_proxy.cli.show_help") as mock_help:
+    with patch("prompt_interceptor.cli.sys.argv", ["proxy", "--help"]):
+        with patch("prompt_interceptor.cli.show_help") as mock_help:
             main()
     mock_help.assert_called_once()
 
 
 def test_main_start_command(config_file):
-    with patch("ollama_proxy.cli.sys.argv", ["proxy", "start"]):
-        with patch("ollama_proxy.cli.subprocess.run"):
+    with patch("prompt_interceptor.cli.sys.argv", ["proxy", "start"]):
+        with patch("prompt_interceptor.cli.subprocess.run"):
             main()
 
 
 def test_main_stop_command():
-    with patch("ollama_proxy.cli.sys.argv", ["proxy", "stop"]):
+    with patch("prompt_interceptor.cli.sys.argv", ["proxy", "stop"]):
         main()  # Should not raise
 
 
 def test_main_mode_command(config_file):
-    with patch("ollama_proxy.cli.sys.argv", ["proxy", "mode", "intercept"]):
+    with patch("prompt_interceptor.cli.sys.argv", ["proxy", "mode", "intercept"]):
         main()
     data = json.loads(config_file.read_text())
     assert data["mode"] == "intercept"
 
 
 def test_main_reload_rules_command():
-    with patch("ollama_proxy.cli.sys.argv", ["proxy", "reload-rules"]):
+    with patch("prompt_interceptor.cli.sys.argv", ["proxy", "reload-rules"]):
         main()  # Should not raise
 
 
 def test_main_logs_command(tmp_path):
-    with patch("ollama_proxy.cli.sys.argv", ["proxy", "logs"]):
+    with patch("prompt_interceptor.cli.sys.argv", ["proxy", "logs"]):
         with patch.object(Path, "exists", return_value=False):
             main()
 
 
 def test_main_status_command(config_file):
-    with patch("ollama_proxy.cli.sys.argv", ["proxy", "status"]):
+    with patch("prompt_interceptor.cli.sys.argv", ["proxy", "status"]):
         main()  # Should not raise
 
 
 def test_main_unknown_command():
-    with patch("ollama_proxy.cli.sys.argv", ["proxy", "explode"]):
-        with patch("ollama_proxy.cli.show_help") as mock_help:
+    with patch("prompt_interceptor.cli.sys.argv", ["proxy", "explode"]):
+        with patch("prompt_interceptor.cli.show_help") as mock_help:
             main()
     mock_help.assert_called_once()
