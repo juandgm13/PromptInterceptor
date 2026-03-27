@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import os
+import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -368,3 +370,69 @@ def test_get_app():
     from prompt_interceptor.dashboard import get_app
     from fastapi import FastAPI
     assert isinstance(get_app(), FastAPI)
+
+
+# ---------------------------------------------------------------------------
+# GET /favicon.ico — icon file exists  (lines 416-418)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+async def plain_client():
+    """Dashboard client without Ollama mock (for favicon/static tests)."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        yield c
+
+
+async def test_favicon_returns_file_when_exists(plain_client):
+    """When the icon file exists, /favicon.ico returns 200."""
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        tmp.write(b'\x89PNG\r\n\x1a\n')
+        tmp_path = tmp.name
+
+    try:
+        import prompt_interceptor.dashboard as dash_mod
+        with patch.object(dash_mod.os.path, "exists", return_value=True), \
+             patch("prompt_interceptor.dashboard._ICON_PATH", tmp_path):
+            resp = await plain_client.get("/favicon.ico")
+        assert resp.status_code == 200
+    finally:
+        os.unlink(tmp_path)
+
+
+async def test_favicon_returns_404_when_missing(plain_client):
+    """When the icon file is absent, /favicon.ico returns 404."""
+    import prompt_interceptor.dashboard as dash_mod
+    with patch.object(dash_mod.os.path, "exists", return_value=False):
+        resp = await plain_client.get("/favicon.ico")
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET / — static/index.html fallback  (lines 426-427)
+# ---------------------------------------------------------------------------
+
+async def test_root_serves_static_index_when_present(plain_client):
+    """When static/index.html exists, it is served instead of inline HTML."""
+    custom_html = "<html><body>Custom Dashboard</body></html>"
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as tmp:
+        tmp.write(custom_html)
+        tmp_path = tmp.name
+
+    try:
+        import prompt_interceptor.dashboard as dash_mod
+        original_exists = os.path.exists
+
+        def _fake_exists(path):
+            if "static" in str(path) and "index.html" in str(path):
+                return True
+            return original_exists(path)
+
+        with patch.object(dash_mod.os.path, "exists", side_effect=_fake_exists), \
+             patch("builtins.open", return_value=open(tmp_path)):
+            resp = await plain_client.get("/")
+
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+    finally:
+        os.unlink(tmp_path)

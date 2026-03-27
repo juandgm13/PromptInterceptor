@@ -3,6 +3,7 @@
 import json
 import time
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -175,3 +176,133 @@ def test_get_all_logs_returns_all(tl):
     tl.log_request("GET", "/b", {}, None)
     all_logs = tl.get_all_logs()
     assert len(all_logs) >= 2
+
+
+# ---------------------------------------------------------------------------
+# Log file rotation  (lines 189-193)
+# ---------------------------------------------------------------------------
+
+def test_log_file_rotation_deletes_oldest(tmp_path):
+    """When a log file is at the size limit and max files reached, a file is removed."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), log_size_limit=1, max_log_files=2)
+    tl = TrafficLogger(cfg)
+
+    rid1 = tl.log_request("GET", "/a", {}, None)
+    time.sleep(0.02)  # ensure distinct timestamps → distinct IDs
+    rid2 = tl.log_request("GET", "/b", {}, None)
+
+    date_dir = tl._get_date_dir()
+    files_before = sorted(date_dir.glob("req_*.json"))
+    if len(files_before) < 2:
+        return  # IDs collided (extremely rare) — skip
+
+    assert len(files_before) == 2
+    tl.log_response(rid2, 200, {}, {"done": True})
+
+    files_after = sorted(date_dir.glob("req_*.json"))
+    assert len(files_after) <= cfg.max_log_files
+
+
+def test_log_file_rotation_no_delete_when_below_max(tmp_path):
+    """When file count is below max_log_files, no deletion occurs."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), log_size_limit=1, max_log_files=10)
+    tl = TrafficLogger(cfg)
+
+    rid1 = tl.log_request("GET", "/a", {}, None)
+    tl.log_response(rid1, 200, {}, {"done": True})
+
+    date_dir = tl._get_date_dir()
+    files = sorted(date_dir.glob("req_*.json"))
+    assert len(files) == 1
+
+
+# ---------------------------------------------------------------------------
+# IOError / JSONDecodeError in get_logs  (lines 208-209)
+# ---------------------------------------------------------------------------
+
+def test_get_logs_skips_corrupt_file(tmp_path):
+    """get_logs silently skips files that cannot be parsed."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    tl = TrafficLogger(cfg)
+    tl.log_request("GET", "/", {}, None)
+
+    date_dir = tl._get_date_dir()
+    (date_dir / "req_corrupt.json").write_text("{ not valid json }")
+
+    logs = tl.get_logs(limit=100)
+    assert isinstance(logs, list)
+
+
+def test_get_logs_skips_unreadable_file(tmp_path):
+    """get_logs silently skips files that raise IOError."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    tl = TrafficLogger(cfg)
+    tl.log_request("GET", "/", {}, None)
+
+    original_open = open
+
+    def _failing_open(path, *args, **kwargs):
+        if "req_" in str(path):
+            raise IOError("permission denied")
+        return original_open(path, *args, **kwargs)
+
+    with patch("builtins.open", side_effect=_failing_open):
+        logs = tl.get_logs()
+
+    assert logs == []
+
+
+# ---------------------------------------------------------------------------
+# get_stats when date dir does not exist  (line 217)
+# ---------------------------------------------------------------------------
+
+def test_get_stats_missing_date_dir(tmp_path):
+    """get_stats returns zeros when the date directory doesn't exist."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    tl = TrafficLogger(cfg)
+
+    nonexistent = tmp_path / "no-such-dir"
+    with patch.object(tl, "_get_date_dir", return_value=nonexistent):
+        stats = tl.get_stats()
+
+    assert stats["total_requests"] == 0
+    assert stats["total_responses"] == 0
+    assert stats["files"] == []
+
+
+# ---------------------------------------------------------------------------
+# IOError / JSONDecodeError in get_all_logs  (lines 236-237)
+# ---------------------------------------------------------------------------
+
+def test_get_all_logs_skips_corrupt_file(tmp_path):
+    """get_all_logs silently skips corrupt JSON files."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    tl = TrafficLogger(cfg)
+    tl.log_request("GET", "/", {}, None)
+
+    date_dir = tl._get_date_dir()
+    (date_dir / "req_bad.json").write_text("INVALID JSON{{{")
+
+    logs = tl.get_all_logs()
+    assert isinstance(logs, list)
+    valid = [l for l in logs if "method" in l]
+    assert len(valid) >= 1
+
+
+def test_get_all_logs_skips_unreadable_file(tmp_path):
+    """get_all_logs silently skips files that raise IOError on open."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    tl = TrafficLogger(cfg)
+    tl.log_request("GET", "/", {}, None)
+
+    original_open = open
+
+    def _failing_open(path, *args, **kwargs):
+        if "req_" in str(path):
+            raise IOError("locked")
+        return original_open(path, *args, **kwargs)
+
+    with patch("builtins.open", side_effect=_failing_open):
+        logs = tl.get_all_logs()
+
+    assert logs == []

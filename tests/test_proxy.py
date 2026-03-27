@@ -361,3 +361,392 @@ async def test_handle_chat_rule_switches_model(tmp_path, monkeypatch):
         await handle_chat_request(req, engine, logger)
 
     assert captured["body"]["model"] == "deepseek-coder"
+
+
+# ---------------------------------------------------------------------------
+# _fetch_from_ollama direct tests  (lines 47-57)
+# ---------------------------------------------------------------------------
+
+async def test_fetch_from_ollama_success():
+    """Exercise the real body of _fetch_from_ollama with a mocked httpx client."""
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.headers = {"content-type": "application/json"}
+    mock_response.aread = AsyncMock(return_value=b'{"done": true}')
+
+    class _FakeClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def request(self, *args, **kwargs):
+            return mock_response
+
+    from prompt_interceptor.proxy import _fetch_from_ollama
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=_FakeClient()):
+        status, headers, body = await _fetch_from_ollama(
+            "http://localhost:11434", "POST", "/api/chat",
+            {"content-type": "application/json"}, b'{}', 5,
+        )
+
+    assert status == 200
+    assert body == b'{"done": true}'
+    assert "content-type" in headers
+
+
+async def test_fetch_from_ollama_non_200():
+    mock_response = MagicMock()
+    mock_response.status_code = 503
+    mock_response.headers = {}
+    mock_response.aread = AsyncMock(return_value=b'Service Unavailable')
+
+    class _FakeClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def request(self, *args, **kwargs):
+            return mock_response
+
+    from prompt_interceptor.proxy import _fetch_from_ollama
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=_FakeClient()):
+        status, _, body = await _fetch_from_ollama(
+            "http://localhost:11434", "GET", "/health", {}, None, 5,
+        )
+
+    assert status == 503
+    assert b"Unavailable" in body
+
+
+# ---------------------------------------------------------------------------
+# _stream_from_ollama direct tests  (lines 77-89)
+# ---------------------------------------------------------------------------
+
+async def test_stream_from_ollama_yields_non_empty_chunks():
+    """Exercise the real body of _stream_from_ollama with mocked httpx."""
+    chunks_sent = [b'{"model":"llama3"}\n', b'', b'{"done":true}\n']
+
+    async def _fake_aiter_bytes():
+        for c in chunks_sent:
+            yield c
+
+    class _FakeStreamCtx:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        def aiter_bytes(self):
+            return _fake_aiter_bytes()
+
+    class _FakeClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        def stream(self, *args, **kwargs):
+            return _FakeStreamCtx()
+
+    from prompt_interceptor.proxy import _stream_from_ollama
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=_FakeClient()):
+        result = [c async for c in _stream_from_ollama(
+            "http://localhost:11434", "POST", "/api/chat", {}, b'{}', 5,
+        )]
+
+    assert b'' not in result
+    assert b'{"model":"llama3"}\n' in result
+    assert b'{"done":true}\n' in result
+
+
+# ---------------------------------------------------------------------------
+# handle_chat_request — HTTPStatusError  (line 167)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def passthrough_setup(tmp_path, monkeypatch):
+    cfg = Config(log_dir=str(tmp_path / "logs"), mode="passthrough", timeout=5)
+    import prompt_interceptor.rules_engine as re_mod, prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+    return cfg, engine, logger
+
+
+@pytest.fixture
+def intercept_generate_setup(tmp_path, monkeypatch):
+    cfg = Config(
+        log_dir=str(tmp_path / "logs"),
+        mode="intercept",
+        timeout=5,
+        rules=[{
+            "match": {"path": "/api/generate", "jsonpath": "$.model", "value": ["llama3"]},
+            "replace": {"jsonpath": "$.model", "value": "deepseek"},
+        }],
+    )
+    import prompt_interceptor.rules_engine as re_mod, prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+    return cfg, engine, logger
+
+
+@pytest.fixture
+def intercept_chat_setup(tmp_path, monkeypatch):
+    cfg = Config(
+        log_dir=str(tmp_path / "logs"),
+        mode="intercept",
+        timeout=5,
+        rules=[{
+            "match": {"path": "/api/chat", "jsonpath": "$.model", "value": ["llama3"]},
+            "replace": {"jsonpath": "$.model", "value": "deepseek"},
+        }],
+    )
+    import prompt_interceptor.rules_engine as re_mod, prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+    return cfg, engine, logger
+
+
+async def test_handle_chat_http_status_error(passthrough_setup, monkeypatch):
+    cfg, engine, logger = passthrough_setup
+    mock_resp = MagicMock()
+    mock_resp.status_code = 422
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(side_effect=httpx.HTTPStatusError(
+            "unprocessable", request=MagicMock(), response=mock_resp
+        )),
+    ):
+        resp = await handle_chat_request(make_req({"model": "llama3"}), engine, logger)
+
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# handle_generate_request — modified body (line 185)
+# ---------------------------------------------------------------------------
+
+async def test_handle_generate_modified_body(intercept_generate_setup, monkeypatch):
+    """Rule modifies body → body_json is replaced before forwarding."""
+    cfg, engine, logger = intercept_generate_setup
+    captured = {}
+
+    async def _fake_fetch(target, method, path, headers, body, timeout):
+        captured["body"] = json.loads(body)
+        return 200, {"content-type": "application/json"}, b'{"done":true}'
+
+    monkeypatch.setattr(
+        "prompt_interceptor.proxy.interceptor.intercept",
+        AsyncMock(return_value=("forward", {"model": "deepseek", "prompt": "hi"})),
+    )
+    with patch("prompt_interceptor.proxy._fetch_from_ollama", new=_fake_fetch):
+        req = make_req({"model": "llama3", "prompt": "hi"}, path="/api/generate")
+        resp = await handle_generate_request(req, engine, logger)
+
+    assert resp.status_code == 200
+    assert captured["body"]["model"] == "deepseek"
+
+
+# ---------------------------------------------------------------------------
+# handle_generate_request — non-JSON response (lines 204-205)
+# ---------------------------------------------------------------------------
+
+async def test_handle_generate_non_json_response(passthrough_setup):
+    cfg, engine, logger = passthrough_setup
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(return_value=(200, {"content-type": "text/plain"}, b"plain text")),
+    ):
+        req = make_req({"model": "llama3", "prompt": "hi"}, path="/api/generate")
+        resp = await handle_generate_request(req, engine, logger)
+
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# handle_generate_request — HTTPStatusError and generic Exception
+# ---------------------------------------------------------------------------
+
+async def test_handle_generate_http_status_error(passthrough_setup):
+    cfg, engine, logger = passthrough_setup
+    mock_resp = MagicMock()
+    mock_resp.status_code = 500
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(side_effect=httpx.HTTPStatusError(
+            "server error", request=MagicMock(), response=mock_resp
+        )),
+    ):
+        req = make_req({"model": "llama3", "prompt": "hi"}, path="/api/generate")
+        resp = await handle_generate_request(req, engine, logger)
+
+    assert resp.status_code == 500
+
+
+async def test_handle_generate_generic_error(passthrough_setup):
+    cfg, engine, logger = passthrough_setup
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(side_effect=RuntimeError("unexpected")),
+    ):
+        req = make_req({"model": "llama3", "prompt": "hi"}, path="/api/generate")
+        resp = await handle_generate_request(req, engine, logger)
+
+    assert resp.status_code == 500
+
+
+# ---------------------------------------------------------------------------
+# handle_stream_chat — modified body and exception paths
+# ---------------------------------------------------------------------------
+
+async def test_handle_stream_chat_modified_body(intercept_chat_setup, monkeypatch):
+    """When rule modifies body, body_json is updated before streaming."""
+    cfg, engine, logger = intercept_chat_setup
+
+    async def _mock_stream(*args, **kwargs):
+        yield b'{"done":true}\n'
+
+    monkeypatch.setattr(
+        "prompt_interceptor.proxy.interceptor.intercept",
+        AsyncMock(return_value=("forward", {"model": "deepseek", "messages": []})),
+    )
+    with patch("prompt_interceptor.proxy._stream_from_ollama", new=_mock_stream):
+        req = make_req({"model": "llama3", "messages": []})
+        resp = await handle_stream_chat(req, engine, logger)
+        body = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert b"done" in body
+
+
+async def test_handle_stream_chat_timeout_error(passthrough_setup):
+    cfg, engine, logger = passthrough_setup
+
+    async def _raise_timeout(*args, **kwargs):
+        raise httpx.TimeoutException("timeout")
+        yield b''
+
+    with patch("prompt_interceptor.proxy._stream_from_ollama", new=_raise_timeout):
+        req = make_req({"model": "llama3", "messages": []})
+        resp = await handle_stream_chat(req, engine, logger)
+        body = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert "timeout" in json.loads(body)["error"].lower()
+
+
+async def test_handle_stream_chat_connect_error(passthrough_setup):
+    cfg, engine, logger = passthrough_setup
+
+    async def _raise_connect(*args, **kwargs):
+        raise httpx.ConnectError("connection refused")
+        yield b''
+
+    with patch("prompt_interceptor.proxy._stream_from_ollama", new=_raise_connect):
+        req = make_req({"model": "llama3", "messages": []})
+        resp = await handle_stream_chat(req, engine, logger)
+        body = b"".join([chunk async for chunk in resp.body_iterator])
+
+    data = json.loads(body)
+    assert "connect" in data["error"].lower() or "ollama" in data["error"].lower()
+
+
+async def test_handle_stream_chat_generic_error(passthrough_setup):
+    cfg, engine, logger = passthrough_setup
+
+    async def _raise_generic(*args, **kwargs):
+        raise RuntimeError("boom")
+        yield b''
+
+    with patch("prompt_interceptor.proxy._stream_from_ollama", new=_raise_generic):
+        req = make_req({"model": "llama3", "messages": []})
+        resp = await handle_stream_chat(req, engine, logger)
+        body = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert "boom" in json.loads(body)["error"]
+
+
+# ---------------------------------------------------------------------------
+# handle_stream_generate — modified body and exception paths
+# ---------------------------------------------------------------------------
+
+async def test_handle_stream_generate_modified_body(tmp_path, monkeypatch):
+    """Rule modifies body in stream_generate path."""
+    cfg = Config(
+        log_dir=str(tmp_path / "logs"),
+        mode="intercept",
+        timeout=5,
+        rules=[{
+            "match": {"path": "/api/generate", "jsonpath": "$.model", "value": ["llama3"]},
+            "replace": {"jsonpath": "$.model", "value": "deepseek"},
+        }],
+    )
+    import prompt_interceptor.rules_engine as re_mod, prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+
+    async def _mock_stream(*args, **kwargs):
+        yield b'{"done":true}\n'
+
+    monkeypatch.setattr(
+        "prompt_interceptor.proxy.interceptor.intercept",
+        AsyncMock(return_value=("forward", {"model": "deepseek", "prompt": "hi"})),
+    )
+    with patch("prompt_interceptor.proxy._stream_from_ollama", new=_mock_stream):
+        req = make_req({"model": "llama3", "prompt": "hi"}, path="/api/generate")
+        resp = await handle_stream_generate(req, engine, logger)
+        body = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert b"done" in body
+
+
+async def test_handle_stream_generate_timeout_error(passthrough_setup):
+    cfg, engine, logger = passthrough_setup
+
+    async def _raise_timeout(*args, **kwargs):
+        raise httpx.TimeoutException("timeout")
+        yield b''
+
+    with patch("prompt_interceptor.proxy._stream_from_ollama", new=_raise_timeout):
+        req = make_req({"model": "llama3", "prompt": "hi"}, path="/api/generate")
+        resp = await handle_stream_generate(req, engine, logger)
+        body = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert "timeout" in json.loads(body)["error"].lower()
+
+
+async def test_handle_stream_generate_connect_error(passthrough_setup):
+    cfg, engine, logger = passthrough_setup
+
+    async def _raise_connect(*args, **kwargs):
+        raise httpx.ConnectError("refused")
+        yield b''
+
+    with patch("prompt_interceptor.proxy._stream_from_ollama", new=_raise_connect):
+        req = make_req({"model": "llama3", "prompt": "hi"}, path="/api/generate")
+        resp = await handle_stream_generate(req, engine, logger)
+        body = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert "error" in json.loads(body)
+
+
+async def test_handle_stream_generate_generic_error(passthrough_setup):
+    cfg, engine, logger = passthrough_setup
+
+    async def _raise_generic(*args, **kwargs):
+        raise ValueError("bad value")
+        yield b''
+
+    with patch("prompt_interceptor.proxy._stream_from_ollama", new=_raise_generic):
+        req = make_req({"model": "llama3", "prompt": "hi"}, path="/api/generate")
+        resp = await handle_stream_generate(req, engine, logger)
+        body = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert "bad value" in json.loads(body)["error"]
