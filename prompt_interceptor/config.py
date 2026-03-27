@@ -31,6 +31,9 @@ class Config(BaseModel):
     # Timeout in seconds
     timeout: int = 120
 
+    # Timeout for health checks (shorter than proxy timeout)
+    health_timeout: float = 5.0
+
     # Logging configuration
     log_dir: str = "logs"
     log_size_limit: int = 1024 * 1024  # 1MB per file
@@ -53,6 +56,9 @@ class Config(BaseModel):
 
     # Context size for the Ollama server (passed as OLLAMA_NUM_CTX env var on start)
     context_size: int = 4096
+
+    # Default model selected in the launcher
+    default_model: str = ""
 
 
 def load_config(path: Optional[Path] = None) -> Config:
