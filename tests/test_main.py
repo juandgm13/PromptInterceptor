@@ -1,6 +1,7 @@
 """Tests for main.py app creation and routing."""
 
 import json
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -163,3 +164,95 @@ async def test_timing_header_added(client):
             json={"model": "llama3", "messages": [{"role": "user", "content": "hi"}]},
         )
     assert "x-proxy-time" in resp.headers
+
+
+# ---------------------------------------------------------------------------
+# __main__.py — entry point  (lines 5-13)
+# ---------------------------------------------------------------------------
+
+def test_main_module_calls_launch():
+    with patch("prompt_interceptor.__main__.launch") as mock_launch:
+        from prompt_interceptor.__main__ import main
+        main()
+    mock_launch.assert_called_once()
+
+
+def test_main_module_is_callable():
+    import prompt_interceptor.__main__ as m
+    assert callable(m.main)
+
+
+# ---------------------------------------------------------------------------
+# /api/models — exception path  (lines 75-76)
+# ---------------------------------------------------------------------------
+
+async def test_api_models_exception(client):
+    """/api/models returns {error: ...} when check_target_health raises."""
+    with patch(
+        "prompt_interceptor.main.check_target_health",
+        new=AsyncMock(side_effect=RuntimeError("ollama down")),
+    ):
+        resp = await client.get("/api/models")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "error" in data
+    assert "ollama down" in data["error"]
+
+
+# ---------------------------------------------------------------------------
+# main() function  (lines 103-116)
+# ---------------------------------------------------------------------------
+
+def test_main_with_dashboard_enabled():
+    """main() starts dashboard thread and calls uvicorn.run."""
+    import prompt_interceptor.main as main_mod
+    import uvicorn
+
+    threads_started = []
+
+    class _MockThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+        def start(self):
+            threads_started.append(self._target)
+
+    with patch.object(uvicorn, "run", MagicMock()) as mock_run, \
+         patch.object(main_mod.threading, "Thread", side_effect=_MockThread):
+        from prompt_interceptor.main import main
+        main()
+
+    assert mock_run.called
+    assert len(threads_started) == 1
+
+    # Invoke the dashboard thread target to cover its body (line 107)
+    with patch.object(uvicorn, "run", MagicMock()):
+        threads_started[0]()
+
+
+def test_main_with_dashboard_disabled():
+    """main() skips dashboard thread when dashboard_enabled=False."""
+    import prompt_interceptor.main as main_mod
+    import uvicorn
+
+    cfg = MagicMock()
+    cfg.dashboard_enabled = False
+    cfg.proxy_host = "0.0.0.0"
+    cfg.proxy_port = 8080
+    cfg.debug = False
+
+    threads_started = []
+
+    class _MockThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+        def start(self):
+            threads_started.append(self._target)
+
+    with patch("prompt_interceptor.main.get_config", return_value=cfg), \
+         patch.object(uvicorn, "run", MagicMock()), \
+         patch.object(main_mod.threading, "Thread", side_effect=_MockThread):
+        from prompt_interceptor.main import main
+        main()
+
+    assert threads_started == []

@@ -1,9 +1,10 @@
 """Tests for rules_engine.py."""
 
 import pytest
+from unittest.mock import MagicMock
 from prompt_interceptor.config import Config
 from prompt_interceptor.logger import TrafficLogger
-from prompt_interceptor.rules_engine import Rule, RuleEngine
+from prompt_interceptor.rules_engine import Rule, RuleEngine, _jsonpath_get, _jsonpath_set
 
 
 # ---------------------------------------------------------------------------
@@ -254,3 +255,121 @@ def test_reload_rules(engine, intercept_cfg, monkeypatch):
     monkeypatch.setattr(re_mod, "get_config", lambda: intercept_cfg)
     engine.reload_rules()
     assert len(engine.rules) == 1
+
+
+# ---------------------------------------------------------------------------
+# _jsonpath_get exception path  (lines 38-39)
+# ---------------------------------------------------------------------------
+
+def test_jsonpath_get_invalid_expression_returns_empty():
+    """Malformed JSONPath triggers the except clause → returns []."""
+    result = _jsonpath_get({"model": "x"}, "$$$$invalid")
+    assert result == []
+
+
+def test_jsonpath_get_invalid_via_evaluate_match(engine):
+    """_evaluate_match with invalid jsonpath falls through to False."""
+    rule = Rule(match={"jsonpath": "$$$$invalid"}, replace={})
+    assert engine._evaluate_match(rule, {"model": "llama3"}, "/") is False
+
+
+# ---------------------------------------------------------------------------
+# _jsonpath_set exception path  (lines 50-51)
+# ---------------------------------------------------------------------------
+
+def test_jsonpath_set_invalid_expression_no_crash():
+    """Malformed JSONPath in _jsonpath_set triggers except → data unchanged."""
+    data = {"model": "llama3"}
+    result = _jsonpath_set(data, "$$$$invalid", "new")
+    assert result is data
+    assert data["model"] == "llama3"
+
+
+def test_apply_replacement_invalid_jsonpath_no_crash(engine):
+    """_apply_replacement with bad replace path does not raise."""
+    rule = Rule(match={}, replace={"jsonpath": "$$$$invalid", "value": "x"})
+    data = {"model": "llama3"}
+    engine._apply_replacement(rule, data)
+    assert data["model"] == "llama3"
+
+
+# ---------------------------------------------------------------------------
+# Disabled rule skip in process_request  (line 136)
+# ---------------------------------------------------------------------------
+
+async def test_process_request_disabled_rule_skipped(engine, intercept_cfg, monkeypatch):
+    """A disabled rule is skipped even if the body would match."""
+    import prompt_interceptor.rules_engine as re_mod
+    monkeypatch.setattr(re_mod, "get_config", lambda: intercept_cfg)
+
+    engine.rules[0].enabled = False
+    body = {"model": "llama3", "messages": []}
+    modified, result, rid = await engine.process_request("POST", "/api/chat", {}, body)
+    assert modified is False
+    assert result is body
+
+
+async def test_process_request_mix_disabled_enabled(intercept_cfg, monkeypatch):
+    """First rule disabled, second enabled — only second applies."""
+    import prompt_interceptor.rules_engine as re_mod
+    monkeypatch.setattr(re_mod, "get_config", lambda: intercept_cfg)
+    logger = TrafficLogger(intercept_cfg)
+    eng = RuleEngine(logger)
+
+    eng.add_rule({
+        "match": {"path": "/api/chat", "jsonpath": "$.model", "value": ["llama3"]},
+        "replace": {"jsonpath": "$.model", "value": "qwen"},
+    })
+    eng.rules[0].enabled = False
+
+    body = {"model": "llama3", "messages": []}
+    modified, result, rid = await eng.process_request("POST", "/api/chat", {}, body)
+    assert modified is True
+    assert result["model"] == "qwen"
+
+
+# ---------------------------------------------------------------------------
+# Exception in rule application in process_request  (lines 154-155)
+# ---------------------------------------------------------------------------
+
+async def test_process_request_rule_exception_logged(engine, intercept_cfg, monkeypatch):
+    """When _apply_replacement raises, the exception is logged and processing continues."""
+    import prompt_interceptor.rules_engine as re_mod
+    monkeypatch.setattr(re_mod, "get_config", lambda: intercept_cfg)
+
+    monkeypatch.setattr(engine, "_apply_replacement", MagicMock(side_effect=RuntimeError("boom")))
+
+    body = {"model": "llama3", "messages": []}
+    modified, result, rid = await engine.process_request("POST", "/api/chat", {}, body)
+    assert isinstance(rid, str)
+
+
+# ---------------------------------------------------------------------------
+# Disabled rule skip in process_response  (line 185)
+# ---------------------------------------------------------------------------
+
+async def test_process_response_disabled_rule_skipped(engine, intercept_cfg, monkeypatch):
+    """A disabled rule is skipped in process_response."""
+    import prompt_interceptor.rules_engine as re_mod
+    monkeypatch.setattr(re_mod, "get_config", lambda: intercept_cfg)
+
+    engine.rules[0].enabled = False
+    body = {"model": "llama3"}
+    modified, result = await engine.process_response("rid", "/api/chat", {}, body)
+    assert modified is False
+
+
+# ---------------------------------------------------------------------------
+# Exception in rule application in process_response  (lines 203-204)
+# ---------------------------------------------------------------------------
+
+async def test_process_response_rule_exception_logged(engine, intercept_cfg, monkeypatch):
+    """When _apply_replacement raises in process_response, it logs and continues."""
+    import prompt_interceptor.rules_engine as re_mod
+    monkeypatch.setattr(re_mod, "get_config", lambda: intercept_cfg)
+
+    monkeypatch.setattr(engine, "_apply_replacement", MagicMock(side_effect=RuntimeError("crash")))
+
+    body = {"model": "llama3"}
+    modified, result = await engine.process_response("rid", "/api/chat", {}, body)
+    assert isinstance(modified, bool)

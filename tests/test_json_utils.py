@@ -175,3 +175,35 @@ def test_merge_dicts_does_not_mutate_base():
     base = {"a": 1}
     merge_dicts(base, {"b": 2})
     assert "b" not in base
+
+
+# ---------------------------------------------------------------------------
+# truncate_payload — circular reference triggers except  (lines 50-51)
+# ---------------------------------------------------------------------------
+
+def test_truncate_payload_circular_reference_returns_data():
+    """A circular reference causes json.dumps to raise ValueError.
+    The except clause returns the original data unchanged."""
+    data = {}
+    data["self"] = data  # circular reference
+    result = truncate_payload(data, max_bytes=100)
+    assert result is data
+
+
+# ---------------------------------------------------------------------------
+# jsonpath_set — invalid JSONPath triggers except  (lines 100-101)
+# ---------------------------------------------------------------------------
+
+def test_jsonpath_set_invalid_path_returns_data_unchanged():
+    """An invalid JSONPath expression raises in parse(), triggering the except."""
+    data = {"model": "llama3"}
+    result = jsonpath_set(data, "$$$$invalid[[[", "new_value")
+    assert result is data
+    assert data["model"] == "llama3"
+
+
+def test_jsonpath_set_exception_does_not_mutate():
+    """Even when exception fires, dict state is preserved."""
+    data = {"a": 1, "b": 2}
+    jsonpath_set(data, "$$$$", 99)
+    assert data == {"a": 1, "b": 2}
