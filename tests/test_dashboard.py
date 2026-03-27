@@ -43,7 +43,7 @@ async def test_root_returns_html(client):
     resp = await client.get("/")
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
-    assert "PyProxy" in resp.text
+    assert "PromptInterceptor" in resp.text
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +285,79 @@ async def test_intercept_edit_found(client):
         assert body == {"model": "new"}
     finally:
         dash_mod.interceptor = original
+
+
+# ---------------------------------------------------------------------------
+# /api/mode  (new endpoint)
+# ---------------------------------------------------------------------------
+
+async def test_set_mode_passthrough(client):
+    resp = await client.post("/api/mode", json={"mode": "passthrough"})
+    assert resp.status_code == 200
+    assert resp.json()["mode"] == "passthrough"
+
+
+async def test_set_mode_intercept(client):
+    resp = await client.post("/api/mode", json={"mode": "intercept"})
+    assert resp.status_code == 200
+    assert resp.json()["mode"] == "intercept"
+    # Reset back to passthrough
+    await client.post("/api/mode", json={"mode": "passthrough"})
+
+
+async def test_set_mode_invalid(client):
+    resp = await client.post("/api/mode", json={"mode": "invalid"})
+    assert resp.status_code == 400
+    assert "error" in resp.json()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/rules  (new endpoint)
+# ---------------------------------------------------------------------------
+
+async def test_add_rule_valid(client):
+    rule = {
+        "match": {"path": "/api/chat", "jsonpath": "$.model"},
+        "replace": {"jsonpath": "$.model", "value": "test-model"},
+    }
+    resp = await client.post("/api/rules", json=rule)
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "created"
+
+
+async def test_add_rule_invalid(client):
+    resp = await client.post("/api/rules", json={"bad": "data"})
+    assert resp.status_code == 400
+    assert "error" in resp.json()
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/rules/{index}  (new endpoint)
+# ---------------------------------------------------------------------------
+
+async def test_delete_rule_not_found(client):
+    resp = await client.delete("/api/rules/9999")
+    assert resp.status_code == 404
+    assert resp.json()["status"] == "not_found"
+
+
+async def test_delete_rule_valid(client):
+    # First add a rule, then delete it
+    rule = {
+        "match": {"path": "/api/generate", "jsonpath": "$.model"},
+        "replace": {"jsonpath": "$.model", "value": "to-delete"},
+    }
+    add_resp = await client.post("/api/rules", json=rule)
+    assert add_resp.status_code == 201
+
+    # Get current rule count to find the new index
+    list_resp = await client.get("/api/rules")
+    rules = list_resp.json()["rules"]
+    last_index = len(rules) - 1
+
+    del_resp = await client.delete(f"/api/rules/{last_index}")
+    assert del_resp.status_code == 200
+    assert del_resp.json()["status"] == "deleted"
 
 
 # ---------------------------------------------------------------------------
