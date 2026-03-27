@@ -1,5 +1,5 @@
 """
-Rule engine for PyProxy.
+Rule engine for PromptInterceptor.
 
 Handles rule-based request/response modifications using JSONPath expressions.
 """
@@ -240,3 +240,10 @@ class RuleEngine:
             return True
         except (KeyError, TypeError):
             return False
+
+    def delete_rule(self, index: int) -> bool:
+        """Delete a rule by index."""
+        if 0 <= index < len(self.rules):
+            self.rules.pop(index)
+            return True
+        return False
