@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "PyProxy"
+name = "PromptInterceptor"
 version = "0.1.0"
-description = "PyProxy - Ollama Traffic Interceptor & Model Switcher"
+description = "PromptInterceptor - Ollama Traffic Interceptor for AI Clients"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
@@ -31,7 +31,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["ollama_proxy*"]
+include = ["prompt_interceptor*"]
 
 [tool.mypy]
 python_version = "3.9"

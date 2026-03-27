@@ -1,9 +1,9 @@
 """Tests for rules_engine.py."""
 
 import pytest
-from ollama_proxy.config import Config
-from ollama_proxy.logger import TrafficLogger
-from ollama_proxy.rules_engine import Rule, RuleEngine
+from prompt_interceptor.config import Config
+from prompt_interceptor.logger import TrafficLogger
+from prompt_interceptor.rules_engine import Rule, RuleEngine
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +35,7 @@ def passthrough_cfg(tmp_path):
 
 @pytest.fixture
 def engine(intercept_cfg, monkeypatch):
-    import ollama_proxy.rules_engine as re_mod
+    import prompt_interceptor.rules_engine as re_mod
     monkeypatch.setattr(re_mod, "get_config", lambda: intercept_cfg)
     logger = TrafficLogger(intercept_cfg)
     return RuleEngine(logger)
@@ -43,7 +43,7 @@ def engine(intercept_cfg, monkeypatch):
 
 @pytest.fixture
 def passthrough_engine(passthrough_cfg, monkeypatch):
-    import ollama_proxy.rules_engine as re_mod
+    import prompt_interceptor.rules_engine as re_mod
     monkeypatch.setattr(re_mod, "get_config", lambda: passthrough_cfg)
     logger = TrafficLogger(passthrough_cfg)
     return RuleEngine(logger)
@@ -149,7 +149,7 @@ def test_apply_replacement_missing_jsonpath_no_crash(engine):
 # ---------------------------------------------------------------------------
 
 async def test_process_request_passthrough_returns_original(passthrough_engine, monkeypatch):
-    import ollama_proxy.rules_engine as re_mod
+    import prompt_interceptor.rules_engine as re_mod
     monkeypatch.setattr(re_mod, "get_config", lambda: passthrough_engine.logger.config)
     body = {"model": "llama3"}
     modified, result, rid = await passthrough_engine.process_request("POST", "/api/chat", {}, body)
@@ -159,7 +159,7 @@ async def test_process_request_passthrough_returns_original(passthrough_engine, 
 
 
 async def test_process_request_intercept_rule_matches(engine, intercept_cfg, monkeypatch):
-    import ollama_proxy.rules_engine as re_mod
+    import prompt_interceptor.rules_engine as re_mod
     monkeypatch.setattr(re_mod, "get_config", lambda: intercept_cfg)
     body = {"model": "llama3", "messages": []}
     modified, result, rid = await engine.process_request("POST", "/api/chat", {}, body)
@@ -168,7 +168,7 @@ async def test_process_request_intercept_rule_matches(engine, intercept_cfg, mon
 
 
 async def test_process_request_no_rule_match(engine, intercept_cfg, monkeypatch):
-    import ollama_proxy.rules_engine as re_mod
+    import prompt_interceptor.rules_engine as re_mod
     monkeypatch.setattr(re_mod, "get_config", lambda: intercept_cfg)
     body = {"model": "gemma", "messages": []}
     modified, result, rid = await engine.process_request("POST", "/api/chat", {}, body)
@@ -177,7 +177,7 @@ async def test_process_request_no_rule_match(engine, intercept_cfg, monkeypatch)
 
 
 async def test_process_request_none_body(engine, intercept_cfg, monkeypatch):
-    import ollama_proxy.rules_engine as re_mod
+    import prompt_interceptor.rules_engine as re_mod
     monkeypatch.setattr(re_mod, "get_config", lambda: intercept_cfg)
     modified, result, rid = await engine.process_request("POST", "/api/chat", {}, None)
     assert isinstance(rid, str)
@@ -188,7 +188,7 @@ async def test_process_request_none_body(engine, intercept_cfg, monkeypatch):
 # ---------------------------------------------------------------------------
 
 async def test_process_response_passthrough(passthrough_engine, monkeypatch):
-    import ollama_proxy.rules_engine as re_mod
+    import prompt_interceptor.rules_engine as re_mod
     monkeypatch.setattr(re_mod, "get_config", lambda: passthrough_engine.logger.config)
     body = {"model": "llama3"}
     modified, result = await passthrough_engine.process_response("rid", "/", {}, body)
@@ -197,7 +197,7 @@ async def test_process_response_passthrough(passthrough_engine, monkeypatch):
 
 
 async def test_process_response_intercept(engine, intercept_cfg, monkeypatch):
-    import ollama_proxy.rules_engine as re_mod
+    import prompt_interceptor.rules_engine as re_mod
     monkeypatch.setattr(re_mod, "get_config", lambda: intercept_cfg)
     # Rules apply to the path /api/chat with model=llama3
     body = {"model": "llama3"}
@@ -250,7 +250,7 @@ def test_get_rules_returns_list(engine):
 
 
 def test_reload_rules(engine, intercept_cfg, monkeypatch):
-    import ollama_proxy.rules_engine as re_mod
+    import prompt_interceptor.rules_engine as re_mod
     monkeypatch.setattr(re_mod, "get_config", lambda: intercept_cfg)
     engine.reload_rules()
     assert len(engine.rules) == 1

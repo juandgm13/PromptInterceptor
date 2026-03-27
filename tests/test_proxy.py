@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from ollama_proxy.config import Config
-from ollama_proxy.logger import TrafficLogger
-from ollama_proxy.proxy import (
+from prompt_interceptor.config import Config
+from prompt_interceptor.logger import TrafficLogger
+from prompt_interceptor.proxy import (
     _forward_headers,
     _HOP_BY_HOP,
     handle_chat_request,
@@ -17,7 +17,7 @@ from ollama_proxy.proxy import (
     handle_stream_chat,
     handle_stream_generate,
 )
-from ollama_proxy.rules_engine import RuleEngine
+from prompt_interceptor.rules_engine import RuleEngine
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +39,7 @@ def cfg(tmp_path):
 
 @pytest.fixture
 def engine_and_logger(cfg, monkeypatch):
-    import ollama_proxy.rules_engine as re_mod
+    import prompt_interceptor.rules_engine as re_mod
     monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
     logger = TrafficLogger(cfg)
     engine = RuleEngine(logger)
@@ -82,12 +82,12 @@ def test_forward_headers_empty():
 
 async def test_handle_chat_success(cfg, engine_and_logger, monkeypatch):
     engine, logger = engine_and_logger
-    import ollama_proxy.proxy as proxy_mod
+    import prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
 
     response_bytes = json.dumps({"model": "llama3", "done": True}).encode()
     with patch(
-        "ollama_proxy.proxy._fetch_from_ollama",
+        "prompt_interceptor.proxy._fetch_from_ollama",
         new=AsyncMock(return_value=(200, {"content-type": "application/json"}, response_bytes)),
     ):
         req = make_req({"model": "llama3", "messages": [{"role": "user", "content": "hi"}]})
@@ -99,11 +99,11 @@ async def test_handle_chat_success(cfg, engine_and_logger, monkeypatch):
 
 async def test_handle_chat_non_json_response(cfg, engine_and_logger, monkeypatch):
     engine, logger = engine_and_logger
-    import ollama_proxy.proxy as proxy_mod
+    import prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
 
     with patch(
-        "ollama_proxy.proxy._fetch_from_ollama",
+        "prompt_interceptor.proxy._fetch_from_ollama",
         new=AsyncMock(return_value=(200, {"content-type": "text/plain"}, b"plain text")),
     ):
         req = make_req({"model": "llama3", "messages": []})
@@ -118,11 +118,11 @@ async def test_handle_chat_non_json_response(cfg, engine_and_logger, monkeypatch
 
 async def test_handle_chat_timeout(cfg, engine_and_logger, monkeypatch):
     engine, logger = engine_and_logger
-    import ollama_proxy.proxy as proxy_mod
+    import prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
 
     with patch(
-        "ollama_proxy.proxy._fetch_from_ollama",
+        "prompt_interceptor.proxy._fetch_from_ollama",
         new=AsyncMock(side_effect=httpx.TimeoutException("timeout")),
     ):
         req = make_req({"model": "llama3", "messages": []})
@@ -134,11 +134,11 @@ async def test_handle_chat_timeout(cfg, engine_and_logger, monkeypatch):
 
 async def test_handle_chat_generic_error(cfg, engine_and_logger, monkeypatch):
     engine, logger = engine_and_logger
-    import ollama_proxy.proxy as proxy_mod
+    import prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
 
     with patch(
-        "ollama_proxy.proxy._fetch_from_ollama",
+        "prompt_interceptor.proxy._fetch_from_ollama",
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         req = make_req({"model": "llama3", "messages": []})
@@ -153,7 +153,7 @@ async def test_handle_chat_generic_error(cfg, engine_and_logger, monkeypatch):
 
 async def test_handle_chat_intercept_forward(tmp_path, monkeypatch):
     cfg = Config(log_dir=str(tmp_path / "logs"), mode="intercept")
-    import ollama_proxy.rules_engine as re_mod, ollama_proxy.proxy as proxy_mod
+    import prompt_interceptor.rules_engine as re_mod, prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
 
@@ -165,10 +165,10 @@ async def test_handle_chat_intercept_forward(tmp_path, monkeypatch):
     async def _fake_intercept(rid, method, path, headers, body):
         return "forward", body
 
-    monkeypatch.setattr("ollama_proxy.proxy.interceptor.intercept", _fake_intercept)
+    monkeypatch.setattr("prompt_interceptor.proxy.interceptor.intercept", _fake_intercept)
 
     with patch(
-        "ollama_proxy.proxy._fetch_from_ollama",
+        "prompt_interceptor.proxy._fetch_from_ollama",
         new=AsyncMock(return_value=(200, {"content-type": "application/json"}, response_bytes)),
     ):
         req = make_req({"model": "llama3", "messages": []})
@@ -179,7 +179,7 @@ async def test_handle_chat_intercept_forward(tmp_path, monkeypatch):
 
 async def test_handle_chat_intercept_drop(tmp_path, monkeypatch):
     cfg = Config(log_dir=str(tmp_path / "logs"), mode="intercept")
-    import ollama_proxy.rules_engine as re_mod, ollama_proxy.proxy as proxy_mod
+    import prompt_interceptor.rules_engine as re_mod, prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
 
@@ -189,7 +189,7 @@ async def test_handle_chat_intercept_drop(tmp_path, monkeypatch):
     async def _fake_intercept(rid, method, path, headers, body):
         return "drop", body
 
-    monkeypatch.setattr("ollama_proxy.proxy.interceptor.intercept", _fake_intercept)
+    monkeypatch.setattr("prompt_interceptor.proxy.interceptor.intercept", _fake_intercept)
 
     req = make_req({"model": "llama3", "messages": []})
     resp = await handle_chat_request(req, engine, logger)
@@ -202,12 +202,12 @@ async def test_handle_chat_intercept_drop(tmp_path, monkeypatch):
 
 async def test_handle_generate_success(cfg, engine_and_logger, monkeypatch):
     engine, logger = engine_and_logger
-    import ollama_proxy.proxy as proxy_mod
+    import prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
 
     response_bytes = json.dumps({"response": "hello", "done": True}).encode()
     with patch(
-        "ollama_proxy.proxy._fetch_from_ollama",
+        "prompt_interceptor.proxy._fetch_from_ollama",
         new=AsyncMock(return_value=(200, {"content-type": "application/json"}, response_bytes)),
     ):
         req = make_req({"model": "llama3", "prompt": "Say hello"}, path="/api/generate")
@@ -218,11 +218,11 @@ async def test_handle_generate_success(cfg, engine_and_logger, monkeypatch):
 
 async def test_handle_generate_timeout(cfg, engine_and_logger, monkeypatch):
     engine, logger = engine_and_logger
-    import ollama_proxy.proxy as proxy_mod
+    import prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
 
     with patch(
-        "ollama_proxy.proxy._fetch_from_ollama",
+        "prompt_interceptor.proxy._fetch_from_ollama",
         new=AsyncMock(side_effect=httpx.TimeoutException("t")),
     ):
         req = make_req({"model": "llama3", "prompt": "hi"}, path="/api/generate")
@@ -233,14 +233,14 @@ async def test_handle_generate_timeout(cfg, engine_and_logger, monkeypatch):
 
 async def test_handle_generate_drop(tmp_path, monkeypatch):
     cfg = Config(log_dir=str(tmp_path / "logs"), mode="intercept")
-    import ollama_proxy.rules_engine as re_mod, ollama_proxy.proxy as proxy_mod
+    import prompt_interceptor.rules_engine as re_mod, prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
     logger = TrafficLogger(cfg)
     engine = RuleEngine(logger)
 
     monkeypatch.setattr(
-        "ollama_proxy.proxy.interceptor.intercept",
+        "prompt_interceptor.proxy.interceptor.intercept",
         AsyncMock(return_value=("drop", None)),
     )
     req = make_req({"model": "llama3", "prompt": "hi"}, path="/api/generate")
@@ -259,11 +259,11 @@ async def _mock_stream(*args, **kwargs):
 
 async def test_handle_stream_chat_yields_chunks(cfg, engine_and_logger, monkeypatch):
     engine, logger = engine_and_logger
-    import ollama_proxy.proxy as proxy_mod
+    import prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
 
     # Consume body INSIDE the patch context: StreamingResponse is lazy
-    with patch("ollama_proxy.proxy._stream_from_ollama", new=_mock_stream):
+    with patch("prompt_interceptor.proxy._stream_from_ollama", new=_mock_stream):
         req = make_req({"model": "llama3", "messages": []})
         resp = await handle_stream_chat(req, engine, logger)
         assert resp.media_type == "application/x-ndjson"
@@ -274,14 +274,14 @@ async def test_handle_stream_chat_yields_chunks(cfg, engine_and_logger, monkeypa
 
 async def test_handle_stream_chat_drop(tmp_path, monkeypatch):
     cfg = Config(log_dir=str(tmp_path / "logs"), mode="intercept")
-    import ollama_proxy.rules_engine as re_mod, ollama_proxy.proxy as proxy_mod
+    import prompt_interceptor.rules_engine as re_mod, prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
     logger = TrafficLogger(cfg)
     engine = RuleEngine(logger)
 
     monkeypatch.setattr(
-        "ollama_proxy.proxy.interceptor.intercept",
+        "prompt_interceptor.proxy.interceptor.intercept",
         AsyncMock(return_value=("drop", None)),
     )
     req = make_req({"model": "llama3", "messages": []})
@@ -295,10 +295,10 @@ async def test_handle_stream_chat_drop(tmp_path, monkeypatch):
 
 async def test_handle_stream_generate_yields_chunks(cfg, engine_and_logger, monkeypatch):
     engine, logger = engine_and_logger
-    import ollama_proxy.proxy as proxy_mod
+    import prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
 
-    with patch("ollama_proxy.proxy._stream_from_ollama", new=_mock_stream):
+    with patch("prompt_interceptor.proxy._stream_from_ollama", new=_mock_stream):
         req = make_req({"model": "llama3", "prompt": "hi"}, path="/api/generate")
         resp = await handle_stream_generate(req, engine, logger)
         assert resp.media_type == "application/x-ndjson"
@@ -309,14 +309,14 @@ async def test_handle_stream_generate_yields_chunks(cfg, engine_and_logger, monk
 
 async def test_handle_stream_generate_drop(tmp_path, monkeypatch):
     cfg = Config(log_dir=str(tmp_path / "logs"), mode="intercept")
-    import ollama_proxy.rules_engine as re_mod, ollama_proxy.proxy as proxy_mod
+    import prompt_interceptor.rules_engine as re_mod, prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
     logger = TrafficLogger(cfg)
     engine = RuleEngine(logger)
 
     monkeypatch.setattr(
-        "ollama_proxy.proxy.interceptor.intercept",
+        "prompt_interceptor.proxy.interceptor.intercept",
         AsyncMock(return_value=("drop", None)),
     )
     req = make_req({"model": "llama3", "prompt": "hi"}, path="/api/generate")
@@ -338,7 +338,7 @@ async def test_handle_chat_rule_switches_model(tmp_path, monkeypatch):
             "replace": {"jsonpath": "$.model", "value": "deepseek-coder"},
         }],
     )
-    import ollama_proxy.rules_engine as re_mod, ollama_proxy.proxy as proxy_mod
+    import prompt_interceptor.rules_engine as re_mod, prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
     logger = TrafficLogger(cfg)
@@ -352,11 +352,11 @@ async def test_handle_chat_rule_switches_model(tmp_path, monkeypatch):
 
     # Auto-forward in intercept mode
     monkeypatch.setattr(
-        "ollama_proxy.proxy.interceptor.intercept",
+        "prompt_interceptor.proxy.interceptor.intercept",
         AsyncMock(return_value=("forward", {"model": "deepseek-coder", "messages": []})),
     )
 
-    with patch("ollama_proxy.proxy._fetch_from_ollama", new=_fake_fetch):
+    with patch("prompt_interceptor.proxy._fetch_from_ollama", new=_fake_fetch):
         req = make_req({"model": "llama3", "messages": []})
         await handle_chat_request(req, engine, logger)
 

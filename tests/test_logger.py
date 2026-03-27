@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from ollama_proxy.config import Config
-from ollama_proxy.logger import TrafficLogger
+from prompt_interceptor.config import Config
+from prompt_interceptor.logger import TrafficLogger
 
 
 @pytest.fixture

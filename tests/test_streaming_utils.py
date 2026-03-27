@@ -1,7 +1,7 @@
 """Tests for utils/streaming_utils.py."""
 
 import pytest
-from ollama_proxy.utils.streaming_utils import (
+from prompt_interceptor.utils.streaming_utils import (
     aiter_lines,
     aiter_ndjson,
     collect_stream,

@@ -1,7 +1,7 @@
 """Tests for utils/json_utils.py."""
 
 import pytest
-from ollama_proxy.utils.json_utils import (
+from prompt_interceptor.utils.json_utils import (
     safe_json_loads,
     safe_json_dumps,
     truncate_payload,

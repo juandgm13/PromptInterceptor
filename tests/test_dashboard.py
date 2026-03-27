@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import AsyncClient, ASGITransport
 
-from ollama_proxy.dashboard import app
-from ollama_proxy.interceptor import interceptor as _module_interceptor
+from prompt_interceptor.dashboard import app
+from prompt_interceptor.interceptor import interceptor as _module_interceptor
 
 
 # ---------------------------------------------------------------------------
@@ -25,7 +25,7 @@ def mock_ollama_unavailable():
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.get = AsyncMock(return_value=mock_resp)
-    with patch("ollama_proxy.health.httpx.AsyncClient", return_value=mock_client):
+    with patch("prompt_interceptor.health.httpx.AsyncClient", return_value=mock_client):
         yield
 
 
@@ -80,7 +80,7 @@ async def test_api_status_structure(client):
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.get = AsyncMock(return_value=mock_resp)
 
-    with patch("ollama_proxy.health.httpx.AsyncClient", return_value=mock_client):
+    with patch("prompt_interceptor.health.httpx.AsyncClient", return_value=mock_client):
         resp = await client.get("/api/status")
 
     assert resp.status_code == 200
@@ -102,7 +102,7 @@ async def test_api_stats(client):
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.get = AsyncMock(return_value=mock_resp)
 
-    with patch("ollama_proxy.health.httpx.AsyncClient", return_value=mock_client):
+    with patch("prompt_interceptor.health.httpx.AsyncClient", return_value=mock_client):
         resp = await client.get("/api/stats")
     assert resp.status_code == 200
 
@@ -210,8 +210,8 @@ async def test_intercept_drop_not_found(client):
 # ---------------------------------------------------------------------------
 
 async def test_intercept_forward_found(client):
-    from ollama_proxy.interceptor import Interceptor, interceptor as _interceptor
-    import ollama_proxy.dashboard as dash_mod
+    from prompt_interceptor.interceptor import Interceptor, interceptor as _interceptor
+    import prompt_interceptor.dashboard as dash_mod
 
     local_interceptor = Interceptor(intercept_timeout=5.0)
     original = dash_mod.interceptor
@@ -236,8 +236,8 @@ async def test_intercept_forward_found(client):
 
 
 async def test_intercept_drop_found(client):
-    from ollama_proxy.interceptor import Interceptor
-    import ollama_proxy.dashboard as dash_mod
+    from prompt_interceptor.interceptor import Interceptor
+    import prompt_interceptor.dashboard as dash_mod
 
     local_interceptor = Interceptor(intercept_timeout=5.0)
     original = dash_mod.interceptor
@@ -260,8 +260,8 @@ async def test_intercept_drop_found(client):
 
 
 async def test_intercept_edit_found(client):
-    from ollama_proxy.interceptor import Interceptor
-    import ollama_proxy.dashboard as dash_mod
+    from prompt_interceptor.interceptor import Interceptor
+    import prompt_interceptor.dashboard as dash_mod
 
     local_interceptor = Interceptor(intercept_timeout=5.0)
     original = dash_mod.interceptor
@@ -292,6 +292,6 @@ async def test_intercept_edit_found(client):
 # ---------------------------------------------------------------------------
 
 def test_get_app():
-    from ollama_proxy.dashboard import get_app
+    from prompt_interceptor.dashboard import get_app
     from fastapi import FastAPI
     assert isinstance(get_app(), FastAPI)
