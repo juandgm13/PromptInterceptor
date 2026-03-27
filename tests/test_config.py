@@ -28,7 +28,7 @@ def test_config_defaults():
     assert c.timeout == 120
     assert c.dashboard_port == 9090
     assert c.debug is False
-    assert c.project_name == "PyProxy"
+    assert c.project_name == "PromptInterceptor"
 
 
 def test_config_custom_values():

@@ -1,8 +1,0 @@
-fastapi
-uvicorn
-httpx
-pydantic
-python-json-logger
-jsonpath-ng
-rich
-typer
