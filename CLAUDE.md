@@ -1,101 +1,142 @@
-# PyProxy - Ollama Traffic Interceptor & Model Switcher
+# PromptInterceptor - Ollama Traffic Interceptor for AI Clients
 
-This is a FastAPI-based proxy that intercepts traffic between AI applications and Ollama, enabling model switching and temperature tuning.
+This is a FastAPI-based proxy that intercepts traffic between AI applications and Ollama, enabling model switching, temperature tuning, and real-time prompt inspection.
 
 ## Architecture
 
 ```
-AI Application
-    ↓ (proxy_port)
-PyProxy [FastAPI]
+AI Client (Claude Code / Open Code)
+    ↓ (proxy_port: 8080)
+PromptInterceptor [FastAPI]
     ↓ (redirects/forwards)
-Ollama (target)
+Ollama (target: 11434)
 ```
 
 ## Core Modules
 
-### `ollama_proxy/main.py`
+### `prompt_interceptor/launcher.py`
+- tkinter desktop launcher
+- Server/client/context-size selection
+- Starts Ollama with OLLAMA_NUM_CTX env var
+- Launches AI client terminal
+- Starts proxy + opens dashboard in browser
+
+### `prompt_interceptor/__main__.py`
+- Entry point for `python -m prompt_interceptor`
+- Calls `launcher.launch()`
+
+### `prompt_interceptor/main.py`
 - Main entry point
 - Creates FastAPI app
 - Registers routes
 - Starts proxy & dashboard servers
 
-### `ollama_proxy/proxy.py`
+### `prompt_interceptor/proxy.py`
 - Core proxy logic
 - Request handling (chat, generate)
 - Streaming support
 - Response handling
 
-### `ollama_proxy/rules_engine.py`
-- Rule management
+### `prompt_interceptor/rules_engine.py`
+- Rule management (add, enable, disable, delete)
 - Request/response transformation
 - Model switching logic
 - Temperature tuning
 
-### `ollama_proxy/config.py`
+### `prompt_interceptor/config.py`
 - Configuration management
 - Loads config.json
 - Provides config getter/setter
+- Fields include: proxy_port, target, mode, context_size, rules, dashboard_*
 
-### `ollama_proxy/health.py`
+### `prompt_interceptor/health.py`
 - Health check endpoints
 - Target health checks
 - Status API
 
-### `ollama_proxy/cors_middleware.py`
+### `prompt_interceptor/cors_middleware.py`
 - CORS configuration
 - Origin/headers/metrics
 
-### `ollama_proxy/dashboard.py`
-- Web dashboard UI
-- Rule management
+### `prompt_interceptor/dashboard.py`
+- Web dashboard UI (port 9090)
+- Modifier management (create/enable/disable/delete)
+- Mode switching (passthrough/intercept)
+- Live prompt viewer
+- Intercept queue (forward/edit/drop)
 - Statistics display
 
-### `ollama_proxy/logger.py`
+### `prompt_interceptor/logger.py`
 - Request/response logging
 - Log file management
 - Statistics collection
 
 ## Key Files
 
-- `ollama_proxy/config.json` - Configuration
-- `ollama_proxy/main.py` - Entry point
-- `ollama_proxy/requirements.txt` - Dependencies
+- `prompt_interceptor/config.json` - Configuration
+- `prompt_interceptor/main.py` - Proxy entry point
+- `prompt_interceptor/launcher.py` - Desktop launcher
+- `prompt_interceptor/requirements.txt` - Dependencies
 - `pyproject.toml` - Project metadata
+- `docs/` - Technical documentation
 
 ## Running
 
 ```bash
-pip install -r ollama_proxy/requirements.txt
-python ollama_proxy/main.py
+pip install -r prompt_interceptor/requirements.txt
+
+# Desktop launcher (recommended)
+python -m prompt_interceptor
+
+# Proxy server only (headless)
+python prompt_interceptor/main.py
 ```
 
 ## Configuration
 
-Edit `ollama_proxy/config.json`:
-- `proxy_port`: Port for proxy server
-- `target`: Ollama target URL
-- `rules`: List of matching/replacement rules
-- `dashboard_enabled`: Enable dashboard
-- `dashboard_port`: Dashboard port
+Edit `prompt_interceptor/config.json`:
+- `proxy_port`: Port for proxy server (default: 8080)
+- `target`: Ollama target URL (default: http://localhost:11434)
+- `mode`: `"passthrough"` or `"intercept"`
+- `context_size`: Context window for Ollama server (passed as OLLAMA_NUM_CTX)
+- `rules`: List of matching/replacement modifiers
+- `dashboard_enabled`: Enable web dashboard
+- `dashboard_port`: Dashboard port (default: 9090)
 
 ## API Endpoints
 
+### Proxy (port 8080)
 - `/api/chat` - Chat completion
 - `/api/generate` - Text generation
 - `/api/chat/stream` - Stream chat
 - `/api/generate/stream` - Stream generate
 - `/health` - Health check
 - `/status` - Get status
-- `/dashboard` - Web dashboard
+- `/dashboard` - Redirect to dashboard
 
-## Rules Example
+### Dashboard (port 9090)
+- `/` - Web UI
+- `/api/mode` - Change proxy mode (POST)
+- `/api/rules` - List/create modifiers
+- `/api/rules/{index}` - Delete modifier (DELETE)
+- `/api/enable-rule/{index}` - Enable modifier
+- `/api/disable-rule/{index}` - Disable modifier
+- `/api/logs` - Recent traffic logs
+- `/api/intercept/pending` - Pending intercepts
+- `/api/intercept/{id}/forward|edit|drop` - Resolve intercept
+
+## Modifier Example
 
 ```json
-[
-  {
-    "match": {"value": "mistral"},
-    "replace": {"jsonpath": "$.model", "value": "mistral"}
-  }
-]
+{
+  "match": {"path": "/api/chat", "jsonpath": "$.model", "value": ["llama3"]},
+  "replace": {"jsonpath": "$.model", "value": "deepseek-coder"}
+}
 ```
+
+## Documentation
+
+- `docs/architecture.md` - System architecture and request flow
+- `docs/api.md` - Full API reference with examples
+- `docs/configuration.md` - All configuration fields
+- `docs/rules.md` - Modifier/rule creation guide
