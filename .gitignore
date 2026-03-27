@@ -215,3 +215,5 @@ logs/
 # Claude Code
 .claude/
 
+htmlcov/
+.coverage
