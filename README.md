@@ -6,7 +6,7 @@
 <title>PromptInterceptor</title>
 <style>
   body {
-    background: #0a0a0a;
+    background: #010417;
     color: #e0e0e0;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     margin: 0;
