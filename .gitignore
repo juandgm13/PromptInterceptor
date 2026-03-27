@@ -206,8 +206,10 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Local Ollama setup (not part of project)
+# Local helper files (not part of project)
 claude-ollama.bat
+PlanInstructions.txt
+activar_venv.bat
 
 # Logs
 logs/
