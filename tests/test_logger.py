@@ -173,6 +173,7 @@ def test_get_all_logs_empty(tl):
 
 def test_get_all_logs_returns_all(tl):
     tl.log_request("GET", "/a", {}, None)
+    time.sleep(0.02)  # ensure distinct timestamps → distinct request IDs
     tl.log_request("GET", "/b", {}, None)
     all_logs = tl.get_all_logs()
     assert len(all_logs) >= 2
