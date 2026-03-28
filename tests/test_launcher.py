@@ -265,10 +265,240 @@ def test_on_start_no_client_selected(tmp_path, monkeypatch):
         win.ctx_var = ctx_var
         win.client_var = client_var
         win._clients = []
+        client_path_var = MagicMock()
+        client_path_var.get.return_value = ""  # no path → no client terminal
+        win.client_path_var = client_path_var
+        model_var = MagicMock()
+        model_var.get.return_value = ""
+        win.model_var = model_var
         win._on_start()
 
     # Only Ollama terminal opened (no client terminal)
     assert len(popen_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# _fetch_ollama_models
+# ---------------------------------------------------------------------------
+
+def test_fetch_ollama_models_success(monkeypatch):
+    import io
+    import json as _json
+    payload = _json.dumps({"models": [{"name": "llama3"}, {"name": "mistral"}]}).encode()
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = payload
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    monkeypatch.setattr("prompt_interceptor.launcher.urllib.request.urlopen", lambda url, timeout: mock_resp)
+    from prompt_interceptor.launcher import _fetch_ollama_models
+    assert _fetch_ollama_models("http://localhost:11434") == ["llama3", "mistral"]
+
+
+def test_fetch_ollama_models_error(monkeypatch):
+    import urllib.error as _uerr
+    monkeypatch.setattr(
+        "prompt_interceptor.launcher.urllib.request.urlopen",
+        lambda url, timeout: (_ for _ in ()).throw(_uerr.URLError("refused"))
+    )
+    from prompt_interceptor.launcher import _fetch_ollama_models
+    assert _fetch_ollama_models("http://localhost:11434") == []
+
+
+# ---------------------------------------------------------------------------
+# LauncherWindow — client path helpers
+# ---------------------------------------------------------------------------
+
+def _make_headless_win(cfg, clients=None, models=None):
+    """Create a LauncherWindow with fully mocked UI for unit-testing methods."""
+    if clients is None:
+        clients = [("Claude Code", "claude")]
+    if models is None:
+        models = []
+    mock_root = _make_mock_root()
+    with patch("prompt_interceptor.launcher.ttk"), \
+         patch("prompt_interceptor.launcher.tk") as mock_tk, \
+         patch("prompt_interceptor.launcher.get_config", return_value=cfg), \
+         patch("prompt_interceptor.launcher._detect_clients", return_value=clients), \
+         patch("prompt_interceptor.launcher._fetch_ollama_models", return_value=models):
+        mock_tk.StringVar.return_value = MagicMock()
+        from prompt_interceptor.launcher import LauncherWindow
+        win = LauncherWindow(mock_root)
+    return win, mock_root
+
+
+def test_on_client_change_updates_path(tmp_path, monkeypatch):
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    monkeypatch.setattr("shutil.which", lambda cmd: f"/usr/bin/{cmd}")
+    win, _ = _make_headless_win(cfg, clients=[("Claude Code", "claude"), ("Open Code", "opencode")])
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Open Code"
+    win._clients = [("Claude Code", "claude"), ("Open Code", "opencode")]
+    win.client_path_var = MagicMock()
+    win._on_client_change()
+    win.client_path_var.set.assert_called_once()
+
+
+def test_on_browse_client_sets_path(tmp_path):
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, _ = _make_headless_win(cfg)
+    win.client_path_var = MagicMock()
+    with patch("prompt_interceptor.launcher.filedialog.askopenfilename", return_value="/custom/claude.exe"):
+        win._on_browse_client()
+    win.client_path_var.set.assert_called_once_with("/custom/claude.exe")
+
+
+def test_on_browse_client_no_selection(tmp_path):
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, _ = _make_headless_win(cfg)
+    win.client_path_var = MagicMock()
+    with patch("prompt_interceptor.launcher.filedialog.askopenfilename", return_value=""):
+        win._on_browse_client()
+    win.client_path_var.set.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# LauncherWindow — model helpers
+# ---------------------------------------------------------------------------
+
+def test_on_refresh_models_found(tmp_path, monkeypatch):
+    cfg = Config(log_dir=str(tmp_path / "logs"), target="http://localhost:11434")
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    monkeypatch.setattr("prompt_interceptor.launcher._fetch_ollama_models", lambda t: ["llama3", "mistral"])
+    win, _ = _make_headless_win(cfg)
+    win.status_var = MagicMock()
+    win._model_cb = MagicMock()
+    win._model_cb.__getitem__ = MagicMock(return_value=[])
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = "llama3"
+    win._pull_btn = MagicMock()
+    win._on_refresh_models()
+    win.status_var.set.assert_called()
+    assert "Found" in win.status_var.set.call_args_list[-2][0][0] or \
+           any("Found" in str(c) for c in win.status_var.set.call_args_list)
+
+
+def test_on_refresh_models_unreachable(tmp_path, monkeypatch):
+    cfg = Config(log_dir=str(tmp_path / "logs"), target="http://localhost:11434")
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    monkeypatch.setattr("prompt_interceptor.launcher._fetch_ollama_models", lambda t: [])
+    win, _ = _make_headless_win(cfg)
+    win.status_var = MagicMock()
+    win._model_cb = MagicMock()
+    win._model_cb.__getitem__ = MagicMock(return_value=[])
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = ""
+    win._pull_btn = MagicMock()
+    win._on_refresh_models()
+    calls = [str(c) for c in win.status_var.set.call_args_list]
+    assert any("not reachable" in c for c in calls)
+
+
+def test_check_pull_needed_shows_button(tmp_path):
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, _ = _make_headless_win(cfg)
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = "newmodel:latest"
+    win._model_cb = MagicMock()
+    win._model_cb.__getitem__ = MagicMock(return_value=["llama3"])
+    win._pull_btn = MagicMock()
+    win._check_pull_needed()
+    win._pull_btn.pack.assert_called_once_with(side="left")
+
+
+def test_check_pull_needed_hides_button(tmp_path):
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, _ = _make_headless_win(cfg)
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = "llama3"
+    win._model_cb = MagicMock()
+    win._model_cb.__getitem__ = MagicMock(return_value=["llama3"])
+    win._pull_btn = MagicMock()
+    win._check_pull_needed()
+    win._pull_btn.pack_forget.assert_called_once()
+
+
+def test_on_pull_model_empty_model(tmp_path):
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, _ = _make_headless_win(cfg)
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = "  "
+    win._pull_btn = MagicMock()
+    win.status_var = MagicMock()
+    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+        win._on_pull_model()
+    mock_thread.assert_not_called()
+
+
+def test_on_pull_model_starts_thread(tmp_path):
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, _ = _make_headless_win(cfg)
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = "tinyllama"
+    win._pull_btn = MagicMock()
+    win.status_var = MagicMock()
+    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+        mock_thread.return_value = MagicMock()
+        win._on_pull_model()
+    mock_thread.assert_called_once()
+    win._pull_btn.config.assert_called_once_with(state="disabled")
+
+
+def test_pull_model_thread_success(tmp_path):
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, mock_root = _make_headless_win(cfg)
+    win.status_var = MagicMock()
+    win._pull_btn = MagicMock()
+    win.root = mock_root
+    mock_proc = MagicMock()
+    mock_proc.stdout = iter(["pulling manifest\n", "done\n"])
+    mock_proc.wait.return_value = None
+    mock_proc.returncode = 0
+    with patch("prompt_interceptor.launcher.subprocess.Popen", return_value=mock_proc), \
+         patch.object(win, "_on_pull_complete") as mock_complete:
+        win._pull_model_thread("tinyllama")
+    mock_root.after.assert_called()
+
+
+def test_pull_model_thread_failure(tmp_path):
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, mock_root = _make_headless_win(cfg)
+    win.status_var = MagicMock()
+    win._pull_btn = MagicMock()
+    win.root = mock_root
+    mock_proc = MagicMock()
+    mock_proc.stdout = iter([])
+    mock_proc.wait.return_value = None
+    mock_proc.returncode = 1
+    with patch("prompt_interceptor.launcher.subprocess.Popen", return_value=mock_proc):
+        win._pull_model_thread("badmodel")
+    mock_root.after.assert_called()
+
+
+def test_pull_model_thread_not_found(tmp_path):
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, mock_root = _make_headless_win(cfg)
+    win.status_var = MagicMock()
+    win._pull_btn = MagicMock()
+    win.root = mock_root
+    with patch("prompt_interceptor.launcher.subprocess.Popen", side_effect=FileNotFoundError):
+        win._pull_model_thread("tinyllama")
+    mock_root.after.assert_called()
+
+
+def test_on_pull_complete(tmp_path, monkeypatch):
+    cfg = Config(log_dir=str(tmp_path / "logs"), target="http://localhost:11434")
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    monkeypatch.setattr("prompt_interceptor.launcher._fetch_ollama_models", lambda t: ["tinyllama"])
+    win, _ = _make_headless_win(cfg)
+    win.status_var = MagicMock()
+    win._pull_btn = MagicMock()
+    win._model_cb = MagicMock()
+    win._model_cb.__getitem__ = MagicMock(return_value=["tinyllama"])
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = "tinyllama"
+    win._on_pull_complete("tinyllama")
+    win.status_var.set.assert_called()
+    win._pull_btn.pack_forget.assert_called()
 
 
 # ---------------------------------------------------------------------------
