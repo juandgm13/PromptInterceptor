@@ -41,7 +41,7 @@ flowchart TD
 | `rules_engine.py` | JSONPath-based rule matching and value replacement |
 | `config.py` | Pydantic config model, load/save config.json |
 | `dashboard.py` | Web UI FastAPI app (port 9090), management API |
-| `launcher.py` | tkinter desktop launcher, startup configuration |
+| `launcher.py` | tkinter desktop launcher: client path picker, model selector with Ollama pull, startup configuration |
 | `interceptor.py` | Async pause/resume of in-flight requests |
 | `logger.py` | Traffic logging to JSON files, rotation, stats |
 | `health.py` | Health check and status endpoints |
@@ -64,6 +64,26 @@ request and allows the user to:
 - **Drop** — reject the request (returns 204 to the client)
 
 Timeout: 30 seconds (auto-forward if no action taken).
+
+## Launcher
+
+The desktop launcher (`python -m prompt_interceptor`) opens a tkinter window with the following fields:
+
+| Field | Behaviour |
+|-------|-----------|
+| **Server** | Fixed to *Ollama* |
+| **Context Size** | Sets `OLLAMA_NUM_CTX` env var when launching `ollama serve` |
+| **AI Client** | Detected via `shutil.which` (claude, opencode). Selecting a different client updates the path field below. |
+| **Client path** | Editable path to the client executable; auto-filled from PATH. Use **Browse…** to pick a custom binary. |
+| **Model** | Combobox queried live from `GET /api/tags` on Ollama. **↻** refreshes the list. |
+| **Pull model** | Shown when the typed model is not in the downloaded list. Runs `ollama pull <model>` in a background thread and streams progress to the status bar. |
+
+On **Start**, the launcher:
+1. Saves `context_size` and `default_model` to `config.json`
+2. Opens a CMD terminal running `ollama serve` with `OLLAMA_NUM_CTX` set
+3. Opens a CMD terminal running the AI client from the path field
+4. Starts the proxy + dashboard servers in background threads
+5. Opens the dashboard in the browser after a 2-second delay
 
 ## Configuration
 

@@ -22,6 +22,7 @@ Configuration is stored in `prompt_interceptor/config.json`. All fields are opti
   "dashboard_port": 9090,
   "model_names": ["llama3", "mistral", "deepseek-coder"],
   "context_size": 4096,
+  "default_model": "qwen3.5",
   "rules": []
 }
 ```
@@ -79,7 +80,8 @@ Available options: `4096`, `8192`, `16384`, `32768`, `65536`, `131072`, `262144`
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `model_names` | list | `["llama3","mistral"]` | Known model names (informational) |
+| `model_names` | list | `["llama3","mistral"]` | Known model names (used as fallback list in the launcher when Ollama is not reachable) |
+| `default_model` | string | `""` | Model pre-selected in the launcher. Saved automatically when you click Start. |
 
 ### Rules
 
