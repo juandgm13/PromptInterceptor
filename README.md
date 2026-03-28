@@ -106,6 +106,8 @@
   <li><strong>Intercept mode</strong> — pause any request, edit the JSON body, then forward or drop it</li>
   <li><strong>Modifier management</strong> — create, enable, disable and delete rules from the dashboard without restarting</li>
   <li><strong>Context size control</strong> — set <code>OLLAMA_NUM_CTX</code> on the Ollama server at launch time (4k&#8211;256k)</li>
+  <li><strong>Model selector</strong> — pick from models already downloaded in Ollama; type a new name and pull it in-window with live progress</li>
+  <li><strong>Custom client path</strong> — auto-detected or manually browsed path for the AI client executable</li>
   <li><strong>Full traffic logging</strong> — all requests and responses saved as JSON files with rotation</li>
   <li><strong>Desktop launcher</strong> — tkinter window that starts Ollama, your AI client, and the proxy in one click</li>
   <li><strong>Streaming support</strong> — transparent proxying of NDJSON streaming responses</li>
@@ -129,15 +131,28 @@ pip install -r prompt_interceptor/requirements.txt</code></pre>
 <pre><code>python -m prompt_interceptor</code></pre>
 
 <p>
-  A configuration window will appear. Select your context size and AI client,
-  then click <strong>Start</strong>. Three things happen automatically:
+  A configuration window will appear. Fill in the fields and click <strong>Start</strong>.
+  Four things happen automatically:
 </p>
 
 <ol>
   <li>A terminal opens running <code>ollama serve</code> with the selected context size</li>
-  <li>A terminal opens running your chosen AI client (Claude Code or Open Code)</li>
-  <li>The proxy starts and the dashboard opens in your browser at <code>http://localhost:9090</code></li>
+  <li>A terminal opens running your chosen AI client at the specified path</li>
+  <li>The proxy starts in the background</li>
+  <li>The dashboard opens in your browser at <code>http://localhost:9090</code></li>
 </ol>
+
+<h3>Launcher fields</h3>
+
+<table>
+  <tr><th>Field</th><th>Description</th></tr>
+  <tr><td><strong>Server</strong></td><td>Always <em>Ollama</em> (fixed)</td></tr>
+  <tr><td><strong>Context Size</strong></td><td>Sets <code>OLLAMA_NUM_CTX</code> for the Ollama server (4k–256k)</td></tr>
+  <tr><td><strong>AI Client</strong></td><td>Auto-detected clients (<code>claude</code>, <code>opencode</code>). Changing the selection updates the path below.</td></tr>
+  <tr><td><strong>Client path</strong></td><td>Editable path to the client executable. Use <strong>Browse…</strong> to pick a custom binary.</td></tr>
+  <tr><td><strong>Model</strong></td><td>Combobox populated from Ollama's downloaded models. Use <strong>↻</strong> to refresh. Type a model name not in the list to show the <strong>Pull model</strong> button.</td></tr>
+  <tr><td><strong>Pull model</strong></td><td>Appears when the typed model is not yet downloaded. Runs <code>ollama pull &lt;model&gt;</code> in the background with live progress in the status bar.</td></tr>
+</table>
 
 <h3>Use case: Ollama + Claude Code</h3>
 
@@ -145,7 +160,7 @@ pip install -r prompt_interceptor/requirements.txt</code></pre>
   <li>Make sure Ollama is installed: <code>ollama --version</code></li>
   <li>Make sure Claude Code is installed: <code>claude --version</code></li>
   <li>Run <code>python -m prompt_interceptor</code></li>
-  <li>In the launcher: select <em>Ollama</em> as server, choose context size, select <em>Claude Code</em> as client</li>
+  <li>In the launcher: choose context size, select <em>Claude Code</em> as client, pick a model (or pull one)</li>
   <li>Click <strong>Start</strong></li>
   <li>In Claude Code, configure the Ollama endpoint to <code>http://localhost:8080</code> instead of <code>http://localhost:11434</code></li>
   <li>All prompts now flow through PromptInterceptor &#8212; open the dashboard to see them</li>
@@ -160,6 +175,7 @@ pip install -r prompt_interceptor/requirements.txt</code></pre>
   "target": "http://localhost:11434",
   "mode": "passthrough",
   "context_size": 4096,
+  "default_model": "qwen3.5",
   "dashboard_enabled": true,
   "dashboard_port": 9090,
   "rules": []
