@@ -202,6 +202,15 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 </div>
 
 <script>
+function esc(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 async function fetchJSON(url, opts) {
   const r = await fetch(url, opts);
   return r.json();
@@ -250,16 +259,17 @@ async function loadLogs() {
         '<span class="badge blue">req</span>';
       return `<tr>
         <td>${ts}</td>
-        <td>${method}</td>
-        <td><code>${path}</code></td>
-        <td><code>${model}</code></td>
-        <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${preview}</td>
+        <td>${esc(method)}</td>
+        <td><code>${esc(path)}</code></td>
+        <td><code>${esc(model)}</code></td>
+        <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(preview)}</td>
         <td>${status}</td>
       </tr>`;
     }).join('');
   } catch(e) {
-    document.getElementById('logs-body').innerHTML =
-      '<tr><td colspan="6">Error: ' + e.message + '</td></tr>';
+    const tb = document.getElementById('logs-body');
+    tb.innerHTML = '<tr><td colspan="6" id="_logs-err"></td></tr>';
+    document.getElementById('_logs-err').textContent = 'Error: ' + e.message;
   }
 }
 
@@ -276,11 +286,11 @@ async function loadRules() {
       const mv = r.match?.value ? [].concat(r.match.value).join(', ') : '-';
       return `<tr>
         <td>${i}</td>
-        <td><code>${r.match?.path || '-'}</code></td>
-        <td><code>${r.match?.jsonpath || '-'}</code></td>
-        <td><code>${mv}</code></td>
-        <td><code>${r.replace?.jsonpath || '-'}</code></td>
-        <td><code>${r.replace?.value ?? '-'}</code></td>
+        <td><code>${esc(r.match?.path || '-')}</code></td>
+        <td><code>${esc(r.match?.jsonpath || '-')}</code></td>
+        <td><code>${esc(mv)}</code></td>
+        <td><code>${esc(r.replace?.jsonpath || '-')}</code></td>
+        <td><code>${esc(r.replace?.value ?? '-')}</code></td>
         <td><span class="badge ${r.enabled ? 'green' : 'red'}">${r.enabled ? 'on' : 'off'}</span></td>
         <td>
           <button class="btn-enable" onclick="toggleRule(${i},true)">Enable</button>
@@ -290,8 +300,9 @@ async function loadRules() {
       </tr>`;
     }).join('');
   } catch(e) {
-    document.getElementById('rules-body').innerHTML =
-      '<tr><td colspan="8">Error: ' + e.message + '</td></tr>';
+    const tb = document.getElementById('rules-body');
+    tb.innerHTML = '<tr><td colspan="8" id="_rules-err"></td></tr>';
+    document.getElementById('_rules-err').textContent = 'Error: ' + e.message;
   }
 }
 
@@ -307,13 +318,13 @@ async function loadPending() {
     section.style.display = '';
     list.innerHTML = (data.pending || []).map(p => `
       <div class="pending-card">
-        <h3>${p.method} ${p.path}</h3>
-        <div class="pending-meta">ID: ${p.request_id}</div>
-        <textarea id="ta-${p.request_id}" rows="6">${JSON.stringify(p.body, null, 2)}</textarea>
+        <h3>${esc(p.method)} ${esc(p.path)}</h3>
+        <div class="pending-meta">ID: ${esc(p.request_id)}</div>
+        <textarea id="ta-${esc(p.request_id)}" rows="6">${esc(JSON.stringify(p.body, null, 2))}</textarea>
         <div class="pending-actions">
-          <button class="btn-forward" onclick="forwardRequest('${p.request_id}')">Forward</button>
-          <button class="btn-forward" onclick="editRequest('${p.request_id}')">Edit &amp; Forward</button>
-          <button class="btn-drop" onclick="dropRequest('${p.request_id}')">Drop</button>
+          <button class="btn-forward" onclick="forwardRequest('${esc(p.request_id)}')">Forward</button>
+          <button class="btn-forward" onclick="editRequest('${esc(p.request_id)}')">Edit &amp; Forward</button>
+          <button class="btn-drop" onclick="dropRequest('${esc(p.request_id)}')">Drop</button>
         </div>
       </div>`).join('');
   } catch(e) { /* silent */ }
