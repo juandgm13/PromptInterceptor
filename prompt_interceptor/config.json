@@ -1,24 +1,41 @@
 {
+  "project_name": "PromptInterceptor",
+  "project_description": "PromptInterceptor - Ollama Traffic Interceptor for AI Clients",
+  "project_version": "0.1.0",
+  "debug": false,
   "proxy_port": 8080,
+  "proxy_host": "0.0.0.0",
   "target": "http://localhost:11434",
+  "target_port": 11434,
   "mode": "passthrough",
   "timeout": 120,
+  "health_timeout": 5.0,
   "log_dir": "logs",
   "log_size_limit": 1048576,
   "max_log_files": 10,
-  "allow_origins": ["*"],
-  "allow_methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  "allow_headers": ["*"],
-  "dashboard_enabled": true,
-  "dashboard_port": 9090,
-  "model_names": ["llama3", "mistral", "deepseek-coder"],
-  "context_size": 4096,
+  "allow_origins": [
+    "*"
+  ],
+  "allow_methods": [
+    "GET",
+    "POST",
+    "PUT",
+    "DELETE",
+    "OPTIONS"
+  ],
+  "allow_headers": [
+    "*"
+  ],
   "rules": [
     {
       "match": {
         "path": "/api/chat",
         "jsonpath": "$.model",
-        "value": ["llama3", "mistral", "qwen2.5"]
+        "value": [
+          "llama3",
+          "mistral",
+          "qwen2.5"
+        ]
       },
       "replace": {
         "jsonpath": "$.model",
@@ -35,5 +52,14 @@
         "value": 0.5
       }
     }
-  ]
+  ],
+  "dashboard_enabled": true,
+  "dashboard_port": 9090,
+  "model_names": [
+    "llama3",
+    "mistral",
+    "deepseek-coder"
+  ],
+  "context_size": 4096,
+  "default_model": ""
 }

@@ -34,7 +34,7 @@ async def check_target_health() -> JSONResponse:
     config = get_config()
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=config.health_timeout) as client:
             response = await client.get(config.target + "/api/tags")
             if response.status_code == 200:
                 return JSONResponse(
