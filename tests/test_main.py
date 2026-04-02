@@ -9,18 +9,6 @@ from fastapi import FastAPI
 from httpx import AsyncClient, ASGITransport
 
 
-def _mock_no_ollama():
-    """Return a context manager patch that makes Ollama return 503."""
-    mock_resp = MagicMock()
-    mock_resp.status_code = 503
-    mock_resp.text = "no ollama"
-    mock_client = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.get = AsyncMock(return_value=mock_resp)
-    return patch("prompt_interceptor.health.httpx.AsyncClient", return_value=mock_client)
-
-
 @pytest.fixture
 async def client(proxy_app):
     async with AsyncClient(
@@ -58,9 +46,8 @@ async def test_health_endpoint(client):
 # /status
 # ---------------------------------------------------------------------------
 
-async def test_status_endpoint(client):
-    with _mock_no_ollama():
-        resp = await client.get("/status")
+async def test_status_endpoint(client, no_ollama):
+    resp = await client.get("/status")
     assert resp.status_code == 200
     assert "proxy" in resp.json()
 
@@ -79,9 +66,8 @@ async def test_dashboard_redirect(client):
 # /api/models
 # ---------------------------------------------------------------------------
 
-async def test_api_models(client):
-    with _mock_no_ollama():
-        resp = await client.get("/api/models")
+async def test_api_models(client, no_ollama):
+    resp = await client.get("/api/models")
     assert resp.status_code == 200
 
 

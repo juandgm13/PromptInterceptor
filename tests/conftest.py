@@ -3,8 +3,9 @@ Shared fixtures for PyProxy tests.
 """
 
 import sys
+from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -25,6 +26,7 @@ def test_config(tmp_path):
         target="http://localhost:11434",
         mode="intercept",
         timeout=30,
+        health_timeout=0.5,
         log_dir=str(tmp_path / "logs"),
         rules=[
             {
@@ -82,6 +84,26 @@ def make_request():
         req.headers = {"content-type": "application/json"}
         return req
     return _factory
+
+
+# ---------------------------------------------------------------------------
+# Ollama mock fixture
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def no_ollama():
+    """Patch httpx.AsyncClient in health.py to simulate Ollama being offline (503)."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 503
+    mock_resp.text = "no ollama"
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get = AsyncMock(return_value=mock_resp)
+
+    with patch("prompt_interceptor.health.httpx.AsyncClient", return_value=mock_client):
+        yield mock_client
 
 
 # ---------------------------------------------------------------------------
