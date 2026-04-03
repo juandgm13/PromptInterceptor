@@ -41,7 +41,7 @@ flowchart TD
 | `rules_engine.py` | JSONPath-based rule matching and value replacement |
 | `config.py` | Pydantic config model, load/save config.json |
 | `dashboard.py` | Web UI FastAPI app (port 9090), management API |
-| `launcher.py` | tkinter desktop launcher: client path picker, model selector with Ollama pull, startup configuration |
+| `launcher.py` | tkinter desktop launcher: 3-step sequential UI (Ollama → Client → Proxy), context size, model list from Ollama `/api/tags`, work-dir or Python app configuration |
 | `interceptor.py` | Async pause/resume of in-flight requests |
 | `logger.py` | Traffic logging to JSON files, rotation, stats |
 | `health.py` | Health check and status endpoints |
@@ -67,23 +67,31 @@ Timeout: 30 seconds (auto-forward if no action taken).
 
 ## Launcher
 
-The desktop launcher (`python -m prompt_interceptor`) opens a tkinter window with the following fields:
+The desktop launcher (`python -m prompt_interceptor`) uses a sequential 3-step workflow — each step unlocks the next.
 
-| Field | Behaviour |
-|-------|-----------|
-| **Server** | Fixed to *Ollama* |
-| **Context Size** | Sets `OLLAMA_NUM_CTX` env var when launching `ollama serve` |
-| **AI Client** | Detected via `shutil.which` (claude, opencode). Selecting a different client updates the path field below. |
-| **Client path** | Editable path to the client executable; auto-filled from PATH. Use **Browse…** to pick a custom binary. |
-| **Model** | Combobox queried live from `GET /api/tags` on Ollama. **↻** refreshes the list. |
-| **Pull model** | Shown when the typed model is not in the downloaded list. Runs `ollama pull <model>` in a background thread and streams progress to the status bar. |
+### Step 1 — Ollama Server
 
-On **Start**, the launcher:
-1. Saves `context_size` and `default_model` to `config.json`
-2. Opens a CMD terminal running `ollama serve` with `OLLAMA_NUM_CTX` set
-3. Opens a CMD terminal running the AI client from the path field
-4. Starts the proxy + dashboard servers in background threads
-5. Opens the dashboard in the browser after a 2-second delay
+| Field / Button | Behaviour |
+|----------------|-----------|
+| **Context Size** | Sets `OLLAMA_NUM_CTX` env var passed to `ollama serve` (4k–256k) |
+| **Model** | Disabled until Ollama is launched. Populated from `GET /api/tags` (downloaded models only). |
+| **Launch Ollama Server** | Opens a CMD terminal running `ollama serve`. Waits ~2s then fetches available models. Unlocks Step 2 on success. |
+
+### Step 2 — AI Client
+
+| Field / Button | Behaviour |
+|----------------|-----------|
+| **AI Client** | Detected via `shutil.which` (`claude`, `opencode`). Always includes *Python App (Ollama)* as a custom option. |
+| **Work Dir** *(Claude Code / Open Code)* | Directory where the client terminal is opened (`cd /d <dir> && <client>`). |
+| **App Path** *(Python App)* | Path to the Python app's entry point (`.py` or executable). |
+| **Ollama Env Var** *(Python App)* | Name of the environment variable the app uses for the Ollama host (e.g. `OLLAMA_HOST`). Set to `http://localhost:<proxy_port>` at launch. |
+| **Launch Client** | Opens a CMD terminal with the correct command. Unlocks Step 3. |
+
+### Step 3 — Proxy
+
+| Button | Behaviour |
+|--------|-----------|
+| **Start** | Saves config, starts the proxy + dashboard servers in background threads, opens the dashboard in the browser. Does **not** relaunch Ollama or the client. |
 
 ## Configuration
 

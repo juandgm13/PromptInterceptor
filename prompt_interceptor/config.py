@@ -60,6 +60,15 @@ class Config(BaseModel):
     # Default model selected in the launcher
     default_model: str = ""
 
+    # Launcher: working directory for Claude Code / Open Code
+    client_work_dir: str = ""
+
+    # Launcher: Python app entry point path
+    python_app_path: str = ""
+
+    # Launcher: environment variable name the Python app uses to configure the Ollama host
+    python_app_env_var: str = "OLLAMA_HOST"
+
 
 def load_config(path: Optional[Path] = None) -> Config:
     """Load configuration from JSON file."""

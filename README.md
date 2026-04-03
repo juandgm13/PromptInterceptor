@@ -106,10 +106,10 @@
   <li><strong>Intercept mode</strong> — pause any request, edit the JSON body, then forward or drop it</li>
   <li><strong>Modifier management</strong> — create, enable, disable and delete rules from the dashboard without restarting</li>
   <li><strong>Context size control</strong> — set <code>OLLAMA_NUM_CTX</code> on the Ollama server at launch time (4k&#8211;256k)</li>
-  <li><strong>Model selector</strong> — pick from models already downloaded in Ollama; type a new name and pull it in-window with live progress</li>
-  <li><strong>Custom client path</strong> — auto-detected or manually browsed path for the AI client executable</li>
+  <li><strong>Model selector</strong> — pick from models already downloaded in Ollama, populated automatically after launch</li>
+  <li><strong>Python app support</strong> — connect any Python app that uses Ollama by specifying its entry point and the Ollama host env var</li>
   <li><strong>Full traffic logging</strong> — all requests and responses saved as JSON files with rotation</li>
-  <li><strong>Desktop launcher</strong> — tkinter window that starts Ollama, your AI client, and the proxy in one click</li>
+  <li><strong>Desktop launcher</strong> — guided 3-step tkinter window (Ollama → Client → Proxy)</li>
   <li><strong>Streaming support</strong> — transparent proxying of NDJSON streaming responses</li>
 </ul>
 
@@ -131,28 +131,35 @@ pip install -r prompt_interceptor/requirements.txt</code></pre>
 <pre><code>python -m prompt_interceptor</code></pre>
 
 <p>
-  A configuration window will appear. Fill in the fields and click <strong>Start</strong>.
-  Four things happen automatically:
+  The launcher uses a three-step sequential flow. Each step unlocks the next.
 </p>
 
-<ol>
-  <li>A terminal opens running <code>ollama serve</code> with the selected context size</li>
-  <li>A terminal opens running your chosen AI client at the specified path</li>
-  <li>The proxy starts in the background</li>
-  <li>The dashboard opens in your browser at <code>http://localhost:9090</code></li>
-</ol>
-
-<h3>Launcher fields</h3>
+<h3>Step 1 — Ollama Server</h3>
 
 <table>
-  <tr><th>Field</th><th>Description</th></tr>
-  <tr><td><strong>Server</strong></td><td>Always <em>Ollama</em> (fixed)</td></tr>
+  <tr><th>Field / Button</th><th>Description</th></tr>
   <tr><td><strong>Context Size</strong></td><td>Sets <code>OLLAMA_NUM_CTX</code> for the Ollama server (4k–256k)</td></tr>
-  <tr><td><strong>AI Client</strong></td><td>Auto-detected clients (<code>claude</code>, <code>opencode</code>). Changing the selection updates the path below.</td></tr>
-  <tr><td><strong>Client path</strong></td><td>Editable path to the client executable. Use <strong>Browse…</strong> to pick a custom binary.</td></tr>
-  <tr><td><strong>Model</strong></td><td>Combobox populated from Ollama's downloaded models. Use <strong>↻</strong> to refresh. Type a model name not in the list to show the <strong>Pull model</strong> button.</td></tr>
-  <tr><td><strong>Pull model</strong></td><td>Appears when the typed model is not yet downloaded. Runs <code>ollama pull &lt;model&gt;</code> in the background with live progress in the status bar.</td></tr>
+  <tr><td><strong>Model</strong></td><td>Populated automatically from Ollama's downloaded models after launch</td></tr>
+  <tr><td><strong>Launch Ollama Server</strong></td><td>Opens a terminal running <code>ollama serve</code>. Fetches available models. Unlocks Step 2.</td></tr>
 </table>
+
+<h3>Step 2 — AI Client</h3>
+
+<table>
+  <tr><th>Field / Button</th><th>Description</th></tr>
+  <tr><td><strong>AI Client</strong></td><td>Auto-detected clients (<code>claude</code>, <code>opencode</code>) plus <em>Python App (Ollama)</em> for any Python app that uses Ollama</td></tr>
+  <tr><td><strong>Work Dir</strong> <em>(Claude Code / Open Code)</em></td><td>Directory where the client terminal opens. Use <strong>Browse…</strong> to pick a folder.</td></tr>
+  <tr><td><strong>App Path</strong> <em>(Python App)</em></td><td>Path to the Python app's entry point (<code>.py</code> or executable). Use <strong>Browse…</strong> to pick a file.</td></tr>
+  <tr><td><strong>Ollama Env Var</strong> <em>(Python App)</em></td><td>Name of the environment variable the app uses to configure the Ollama host (e.g. <code>OLLAMA_HOST</code>). Set to <code>http://localhost:8080</code> so the app goes through the proxy.</td></tr>
+  <tr><td><strong>Launch Client</strong></td><td>Opens a terminal running the selected client with the correct configuration. Unlocks Step 3.</td></tr>
+</table>
+
+<h3>Step 3 — Proxy</h3>
+
+<p>
+  Click <strong>Start</strong> to launch the proxy server and open the dashboard in your browser at
+  <code>http://localhost:9090</code>.
+</p>
 
 <h3>Use case: Ollama + Claude Code</h3>
 
@@ -160,10 +167,20 @@ pip install -r prompt_interceptor/requirements.txt</code></pre>
   <li>Make sure Ollama is installed: <code>ollama --version</code></li>
   <li>Make sure Claude Code is installed: <code>claude --version</code></li>
   <li>Run <code>python -m prompt_interceptor</code></li>
-  <li>In the launcher: choose context size, select <em>Claude Code</em> as client, pick a model (or pull one)</li>
-  <li>Click <strong>Start</strong></li>
-  <li>In Claude Code, configure the Ollama endpoint to <code>http://localhost:8080</code> instead of <code>http://localhost:11434</code></li>
+  <li>Step 1: choose context size → click <strong>Launch Ollama Server</strong></li>
+  <li>Step 2: select <em>Claude Code</em>, choose a work directory → click <strong>Launch Client</strong></li>
+  <li>Step 3: click <strong>Start</strong></li>
   <li>All prompts now flow through PromptInterceptor &#8212; open the dashboard to see them</li>
+</ol>
+
+<h3>Use case: Ollama + custom Python app</h3>
+
+<ol>
+  <li>Run <code>python -m prompt_interceptor</code></li>
+  <li>Step 1: choose context size → click <strong>Launch Ollama Server</strong></li>
+  <li>Step 2: select <em>Python App (Ollama)</em>, fill in <strong>App Path</strong> and <strong>Ollama Env Var</strong> → click <strong>Launch Client</strong></li>
+  <li>Step 3: click <strong>Start</strong></li>
+  <li>The app will use <code>http://localhost:8080</code> as its Ollama host, routing all traffic through the proxy</li>
 </ol>
 
 <h2>Configuration</h2>

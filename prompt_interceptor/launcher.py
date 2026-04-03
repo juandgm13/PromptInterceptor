@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.request
 import webbrowser
@@ -29,12 +30,15 @@ _CTX_DEFAULT = "4k  (4096)"
 
 
 def _detect_clients() -> list:
-    """Detect installed AI clients. Returns list of (display_name, command)."""
+    """Detect installed AI clients. Returns list of (display_name, command).
+    Always includes 'Python App (Ollama)' as a custom option.
+    """
     clients = []
     if shutil.which("claude"):
         clients.append(("Claude Code", "claude"))
     if shutil.which("opencode"):
         clients.append(("Open Code", "opencode"))
+    clients.append(("Python App (Ollama)", "__python_app__"))
     return clients
 
 
@@ -84,10 +88,11 @@ class LauncherWindow:
         self.root.title("PromptInterceptor")
         self.root.resizable(False, False)
         self.root.configure(bg="#1a1a2e")
+        self._step2_enabled = False
 
         self._set_icon()
         self._build_ui()
-        self._center_window(540, 500)
+        self._center_window(540, 460)
 
     def _set_icon(self) -> None:
         icon_path = Path(__file__).parent.parent / "res" / "PromptInterceptor_Icon.png"
@@ -110,231 +115,272 @@ class LauncherWindow:
         style.theme_use("clam")
         style.configure("TLabel", background="#1a1a2e", foreground="#e0e0e0", font=("Segoe UI", 10))
         style.configure("Header.TLabel", background="#1a1a2e", foreground="#4fc3f7", font=("Segoe UI", 14, "bold"))
+        style.configure("Section.TLabel", background="#1a1a2e", foreground="#666688", font=("Segoe UI", 8))
         style.configure("TFrame", background="#1a1a2e")
         style.configure("TCombobox", fieldbackground="#16213e", background="#16213e", foreground="#e0e0e0")
-        style.configure("Start.TButton", background="#4fc3f7", foreground="#000000", font=("Segoe UI", 10, "bold"), padding=8)
-        style.configure("Exit.TButton", background="#333355", foreground="#e0e0e0", font=("Segoe UI", 10), padding=8)
-        style.map("Start.TButton", background=[("active", "#29b6f6")])
+        style.configure("Action.TButton", background="#1e3a1e", foreground="#7ec87e",
+                        font=("Segoe UI", 9, "bold"), padding=6)
+        style.configure("Start.TButton", background="#4fc3f7", foreground="#000000",
+                        font=("Segoe UI", 10, "bold"), padding=8)
+        style.configure("Exit.TButton", background="#333355", foreground="#e0e0e0",
+                        font=("Segoe UI", 10), padding=8)
+        style.map("Action.TButton",
+                  background=[("active", "#2a4a2a"), ("disabled", "#1a1a2e")],
+                  foreground=[("disabled", "#444444")])
+        style.map("Start.TButton",
+                  background=[("active", "#29b6f6"), ("disabled", "#1a2a3a")],
+                  foreground=[("disabled", "#446688")])
         style.map("Exit.TButton", background=[("active", "#444466")])
 
-        pad = {"padx": 20, "pady": 6}
+        config = get_config()
+        pad = {"padx": 20, "pady": 4}
 
-        # Header
-        ttk.Label(self.root, text="PromptInterceptor", style="Header.TLabel").pack(pady=(24, 4))
-        ttk.Label(self.root, text="Ollama Traffic Interceptor for AI Clients", style="TLabel",
-                  font=("Segoe UI", 9)).pack(pady=(0, 16))
+        # ── Header ──
+        ttk.Label(self.root, text="PromptInterceptor", style="Header.TLabel").pack(pady=(20, 2))
+        ttk.Label(self.root, text="Ollama Traffic Interceptor for AI Clients",
+                  font=("Segoe UI", 9)).pack(pady=(0, 10))
 
-        # Server row
+        # ── Step 1: Ollama Server ──
+        ttk.Label(self.root, text="── Step 1: Ollama Server ──", style="Section.TLabel").pack()
+
         row1 = ttk.Frame(self.root)
         row1.pack(fill="x", **pad)
-        ttk.Label(row1, text="Server:", width=14, anchor="w").pack(side="left")
-        self.server_var = tk.StringVar(value="Ollama")
-        server_cb = ttk.Combobox(row1, textvariable=self.server_var, values=["Ollama"],
-                                  state="readonly", width=22)
-        server_cb.pack(side="left")
-
-        # Context size row
-        row2 = ttk.Frame(self.root)
-        row2.pack(fill="x", **pad)
-        ttk.Label(row2, text="Context Size:", width=14, anchor="w").pack(side="left")
-        config = get_config()
+        ttk.Label(row1, text="Context Size:", width=14, anchor="w").pack(side="left")
         default_ctx = next(
             (k for k, v in _CTX_OPTIONS.items() if v == config.context_size),
             _CTX_DEFAULT
         )
         self.ctx_var = tk.StringVar(value=default_ctx)
-        ctx_cb = ttk.Combobox(row2, textvariable=self.ctx_var,
-                               values=list(_CTX_OPTIONS.keys()),
-                               state="readonly", width=22)
-        ctx_cb.pack(side="left")
+        ttk.Combobox(row1, textvariable=self.ctx_var,
+                     values=list(_CTX_OPTIONS.keys()),
+                     state="readonly", width=22).pack(side="left")
 
-        # AI Client row
-        row3 = ttk.Frame(self.root)
-        row3.pack(fill="x", **pad)
-        ttk.Label(row3, text="AI Client:", width=14, anchor="w").pack(side="left")
+        row1b = ttk.Frame(self.root)
+        row1b.pack(fill="x", **pad)
+        ttk.Label(row1b, text="Model:", width=14, anchor="w").pack(side="left")
+        self.model_var = tk.StringVar(value="")
+        self._model_cb = ttk.Combobox(row1b, textvariable=self.model_var,
+                                       values=[], width=22, state="disabled")
+        self._model_cb.pack(side="left")
+
+        row1c = ttk.Frame(self.root)
+        row1c.pack(fill="x", padx=20, pady=(2, 10))
+        ttk.Label(row1c, text="", width=14).pack(side="left")
+        self._launch_ollama_btn = ttk.Button(row1c, text="Launch Ollama Server",
+                                              style="Action.TButton",
+                                              command=self._on_launch_ollama, width=24)
+        self._launch_ollama_btn.pack(side="left")
+
+        # ── Step 2: AI Client ──
+        ttk.Label(self.root, text="── Step 2: AI Client ──", style="Section.TLabel").pack()
+
+        row2 = ttk.Frame(self.root)
+        row2.pack(fill="x", **pad)
+        ttk.Label(row2, text="AI Client:", width=14, anchor="w").pack(side="left")
         self._clients = _detect_clients()
-        if self._clients:
-            self.client_var = tk.StringVar(value=self._clients[0][0])
-            client_cb = ttk.Combobox(row3, textvariable=self.client_var,
-                                      values=[name for name, _ in self._clients],
-                                      state="readonly", width=22)
-            client_cb.pack(side="left")
-            client_cb.bind("<<ComboboxSelected>>", self._on_client_change)
-        else:
-            self.client_var = tk.StringVar(value="")
-            ttk.Label(row3, text="No clients detected (claude, opencode)",
-                      foreground="#888888").pack(side="left")
+        self.client_var = tk.StringVar(value=self._clients[0][0])
+        self._client_cb = ttk.Combobox(row2, textvariable=self.client_var,
+                                        values=[name for name, _ in self._clients],
+                                        state="disabled", width=22)
+        self._client_cb.pack(side="left")
+        self._client_cb.bind("<<ComboboxSelected>>", self._on_client_change)
 
-        # Client path row
-        row3b = ttk.Frame(self.root)
-        row3b.pack(fill="x", padx=20, pady=2)
-        ttk.Label(row3b, text="", width=14).pack(side="left")
-        self.client_path_var = tk.StringVar(value=self._get_default_client_path())
-        ttk.Entry(row3b, textvariable=self.client_path_var, width=26).pack(side="left", padx=(0, 4))
-        ttk.Button(row3b, text="Browse...", command=self._on_browse_client, width=9).pack(side="left")
+        # Container for conditional client rows (work dir OR app path + env var)
+        self._client_details = ttk.Frame(self.root)
+        self._client_details.pack(fill="x")
 
-        # Model row
-        row4 = ttk.Frame(self.root)
-        row4.pack(fill="x", **pad)
-        ttk.Label(row4, text="Model:", width=14, anchor="w").pack(side="left")
-        ollama_models = _fetch_ollama_models(config.target)
-        model_list = ollama_models or config.model_names
-        initial_model = config.default_model or (model_list[0] if model_list else "")
-        self.model_var = tk.StringVar(value=initial_model)
-        self._model_cb = ttk.Combobox(row4, textvariable=self.model_var, values=model_list, width=22)
-        self._model_cb.pack(side="left", padx=(0, 4))
-        ttk.Button(row4, text="↻", command=self._on_refresh_models, width=3).pack(side="left")
-        self._model_cb.bind("<<ComboboxSelected>>", lambda e: self._check_pull_needed())
-        self._model_cb.bind("<FocusOut>", lambda e: self._check_pull_needed())
+        # Work Dir row (Claude Code / Open Code)
+        self._row_workdir = ttk.Frame(self._client_details)
+        ttk.Label(self._row_workdir, text="Work Dir:", width=14, anchor="w").pack(side="left")
+        self.work_dir_var = tk.StringVar(value=config.client_work_dir)
+        self._work_dir_entry = ttk.Entry(self._row_workdir, textvariable=self.work_dir_var,
+                                          width=26, state="disabled")
+        self._work_dir_entry.pack(side="left", padx=(0, 4))
+        self._browse_workdir_btn = ttk.Button(self._row_workdir, text="Browse…",
+                                               command=self._on_browse_workdir,
+                                               width=9, state="disabled")
+        self._browse_workdir_btn.pack(side="left")
 
-        # Pull button row (hidden initially)
-        row4b = ttk.Frame(self.root)
-        row4b.pack(fill="x", padx=20, pady=2)
-        ttk.Label(row4b, text="", width=14).pack(side="left")
-        self._pull_btn = ttk.Button(row4b, text="Pull model", command=self._on_pull_model)
-        # .pack() is called conditionally by _check_pull_needed()
+        # App Path row (Python App)
+        self._row_apppath = ttk.Frame(self._client_details)
+        ttk.Label(self._row_apppath, text="App Path:", width=14, anchor="w").pack(side="left")
+        self.app_path_var = tk.StringVar(value=config.python_app_path)
+        self._app_path_entry = ttk.Entry(self._row_apppath, textvariable=self.app_path_var,
+                                          width=26, state="disabled")
+        self._app_path_entry.pack(side="left", padx=(0, 4))
+        self._browse_app_btn = ttk.Button(self._row_apppath, text="Browse…",
+                                           command=self._on_browse_app,
+                                           width=9, state="disabled")
+        self._browse_app_btn.pack(side="left")
 
-        # Spacer
-        ttk.Frame(self.root).pack(pady=8)
+        # Env Var row (Python App)
+        self._row_envvar = ttk.Frame(self._client_details)
+        ttk.Label(self._row_envvar, text="Ollama Env Var:", width=14, anchor="w").pack(side="left")
+        self.env_var_var = tk.StringVar(value=config.python_app_env_var or "OLLAMA_HOST")
+        self._env_var_entry = ttk.Entry(self._row_envvar, textvariable=self.env_var_var,
+                                         width=26, state="disabled")
+        self._env_var_entry.pack(side="left")
 
-        # Buttons
+        row2c = ttk.Frame(self.root)
+        row2c.pack(fill="x", padx=20, pady=(2, 10))
+        ttk.Label(row2c, text="", width=14).pack(side="left")
+        self._launch_client_btn = ttk.Button(row2c, text="Launch Client",
+                                              style="Action.TButton",
+                                              command=self._on_launch_client,
+                                              width=24, state="disabled")
+        self._launch_client_btn.pack(side="left")
+
+        # ── Step 3: Proxy ──
+        ttk.Label(self.root, text="── Step 3: Proxy ──", style="Section.TLabel").pack()
+
         btn_frame = ttk.Frame(self.root)
-        btn_frame.pack(pady=(4, 20))
-        ttk.Button(btn_frame, text="Start", style="Start.TButton",
-                   command=self._on_start).pack(side="left", padx=8)
+        btn_frame.pack(pady=(8, 16))
+        self._start_btn = ttk.Button(btn_frame, text="Start", style="Start.TButton",
+                                      command=self._on_start, state="disabled")
+        self._start_btn.pack(side="left", padx=8)
         ttk.Button(btn_frame, text="Exit", style="Exit.TButton",
                    command=self.root.destroy).pack(side="left", padx=8)
 
-        # Status label
+        # Status
         self.status_var = tk.StringVar(value="")
-        self._status_label = ttk.Label(self.root, textvariable=self.status_var,
-                                        foreground="#4fc3f7", font=("Segoe UI", 9))
-        self._status_label.pack()
+        ttk.Label(self.root, textvariable=self.status_var,
+                  foreground="#4fc3f7", font=("Segoe UI", 9)).pack()
 
-    # --- Client path helpers ---
+        # Show correct conditional rows for initial client selection
+        self._refresh_client_rows()
 
-    def _get_default_client_path(self) -> str:
-        """Return the resolved path for the currently selected client."""
-        if not self._clients:
-            return ""
-        name = self.client_var.get()
-        cmd = next((c for n, c in self._clients if n == name), "")
-        return shutil.which(cmd) or cmd
+    # ── Step 1: Ollama ──
 
-    def _on_client_change(self, event=None) -> None:
-        """Update the path entry when the client selection changes."""
-        self.client_path_var.set(self._get_default_client_path())
-
-    def _on_browse_client(self) -> None:
-        """Open a file dialog to pick a custom executable path."""
-        path = filedialog.askopenfilename(
-            title="Select AI client executable",
-            filetypes=[("Executables", "*.exe *.cmd *.bat"), ("All files", "*.*")],
-        )
-        if path:
-            self.client_path_var.set(path)
-
-    # --- Model helpers ---
-
-    def _on_refresh_models(self) -> None:
-        """Re-query Ollama /api/tags and repopulate the model combobox."""
-        self.status_var.set("Refreshing model list...")
-        config = get_config()
-        models = _fetch_ollama_models(config.target)
-        if models:
-            self._model_cb["values"] = models
-            self.status_var.set(f"Found {len(models)} model(s).")
-        else:
-            self.status_var.set("Ollama not reachable — model list unchanged.")
-        self._check_pull_needed()
-
-    def _check_pull_needed(self) -> None:
-        """Show or hide the Pull button based on whether the typed model is known."""
-        model = self.model_var.get().strip()
-        known = list(self._model_cb["values"])
-        if model and model not in known:
-            self._pull_btn.pack(side="left")
-        else:
-            self._pull_btn.pack_forget()
-
-    def _on_pull_model(self) -> None:
-        """Start pulling a model in a background thread."""
-        model = self.model_var.get().strip()
-        if not model:
-            return
-        self._pull_btn.config(state="disabled")
-        self.status_var.set(f"Pulling {model}...")
-        threading.Thread(target=self._pull_model_thread, args=(model,), daemon=True).start()
-
-    def _pull_model_thread(self, model: str) -> None:
-        """Background thread: runs `ollama pull <model>` and streams progress to the status label."""
-        try:
-            proc = subprocess.Popen(
-                ["ollama", "pull", model],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            for line in proc.stdout:
-                line = line.strip()
-                if line:
-                    self.root.after(0, lambda l=line: self.status_var.set(l))
-            proc.wait()
-            if proc.returncode == 0:
-                self.root.after(0, self._on_pull_complete, model)
-            else:
-                self.root.after(0, lambda: self.status_var.set(f"Pull failed for {model}."))
-                self.root.after(0, lambda: self._pull_btn.config(state="normal"))
-        except FileNotFoundError:
-            self.root.after(0, lambda: self.status_var.set("ollama not found in PATH."))
-            self.root.after(0, lambda: self._pull_btn.config(state="normal"))
-
-    def _on_pull_complete(self, model: str) -> None:
-        """Called on the main thread after a successful pull."""
-        self.status_var.set(f"Model '{model}' downloaded successfully.")
-        self._pull_btn.pack_forget()
-        self._on_refresh_models()
-
-    # --- Start ---
-
-    def _on_start(self) -> None:
-        # Save context_size and default_model to config
-        config = get_config()
-        config.context_size = _CTX_OPTIONS.get(self.ctx_var.get(), 4096)
-        model = self.model_var.get().strip()
-        if model:
-            config.default_model = model
-            if model not in config.model_names:
-                config.model_names = [model] + config.model_names
-        save_config(config)
-
-        ctx_value = config.context_size
-
-        # Open Ollama terminal with OLLAMA_NUM_CTX env var
+    def _on_launch_ollama(self) -> None:
+        ctx_value = _CTX_OPTIONS.get(self.ctx_var.get(), 4096)
+        self._launch_ollama_btn.config(state="disabled")
+        self.status_var.set("Launching Ollama server...")
         subprocess.Popen(
             ["cmd", "/c", "start", "cmd", "/k",
              f"set OLLAMA_NUM_CTX={ctx_value} && ollama serve"],
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
         )
+        threading.Thread(target=self._fetch_models_after_launch, daemon=True).start()
 
-        # Open AI client terminal using the (possibly custom) path from the entry
-        client_path = self.client_path_var.get().strip()
-        if client_path:
+    def _fetch_models_after_launch(self) -> None:
+        """Wait for Ollama to start, fetch downloaded models, then unlock Step 2."""
+        config = get_config()
+        time.sleep(2)
+        models = _fetch_ollama_models(config.target)
+        if not models:
+            self.root.after(0, lambda: self.status_var.set("Retrying model fetch..."))
+            time.sleep(3)
+            models = _fetch_ollama_models(config.target)
+        self.root.after(0, self._on_models_ready, models)
+
+    def _on_models_ready(self, models: list) -> None:
+        if models:
+            self._model_cb["values"] = models
+            self._model_cb.config(state="readonly")
+            config = get_config()
+            initial = config.default_model if config.default_model in models else models[0]
+            self.model_var.set(initial)
+            self.status_var.set(f"Ollama ready — {len(models)} model(s) available.")
+        else:
+            self._model_cb.config(state="normal")
+            self.status_var.set("Ollama launched (models unavailable — check Ollama manually).")
+        self._set_step2_enabled(True)
+
+    # ── Step 2: Client ──
+
+    def _set_step2_enabled(self, enabled: bool) -> None:
+        self._step2_enabled = enabled
+        self._client_cb.config(state="readonly" if enabled else "disabled")
+        self._launch_client_btn.config(state="normal" if enabled else "disabled")
+        self._refresh_client_rows()
+
+    def _refresh_client_rows(self) -> None:
+        """Show/hide and enable/disable conditional rows based on selected client."""
+        # Always hide all rows first, then show the relevant ones
+        self._row_workdir.pack_forget()
+        self._row_apppath.pack_forget()
+        self._row_envvar.pack_forget()
+
+        name = self.client_var.get()
+        is_python = name == "Python App (Ollama)"
+        field_state = "normal" if self._step2_enabled else "disabled"
+
+        if is_python:
+            self._row_apppath.pack(fill="x", padx=20, pady=2)
+            self._row_envvar.pack(fill="x", padx=20, pady=2)
+            self._app_path_entry.config(state=field_state)
+            self._browse_app_btn.config(state=field_state)
+            self._env_var_entry.config(state=field_state)
+        else:
+            self._row_workdir.pack(fill="x", padx=20, pady=2)
+            self._work_dir_entry.config(state=field_state)
+            self._browse_workdir_btn.config(state=field_state)
+
+    def _on_client_change(self, event=None) -> None:
+        self._refresh_client_rows()
+
+    def _on_browse_workdir(self) -> None:
+        path = filedialog.askdirectory(title="Select working directory for AI client")
+        if path:
+            self.work_dir_var.set(path)
+
+    def _on_browse_app(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select Python app entry point",
+            filetypes=[("Python files", "*.py"), ("Executables", "*.exe *.cmd *.bat"),
+                       ("All files", "*.*")],
+        )
+        if path:
+            self.app_path_var.set(path)
+
+    def _on_launch_client(self) -> None:
+        config = get_config()
+        name = self.client_var.get()
+        cmd_name = next((c for n, c in self._clients if n == name), "")
+
+        if name == "Python App (Ollama)":
+            app_path = self.app_path_var.get().strip()
+            env_var = self.env_var_var.get().strip() or "OLLAMA_HOST"
+            proxy_url = f"http://localhost:{config.proxy_port}"
+            if not app_path:
+                self.status_var.set("App Path is required for Python App.")
+                return
             subprocess.Popen(
-                ["cmd", "/c", "start", "cmd", "/k", client_path],
+                ["cmd", "/c", "start", "cmd", "/k",
+                 f'set {env_var}={proxy_url} && python "{app_path}"'],
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+            )
+        else:
+            work_dir = self.work_dir_var.get().strip() or "."
+            subprocess.Popen(
+                ["cmd", "/c", "start", "cmd", "/k",
+                 f'cd /d "{work_dir}" && {cmd_name}'],
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
             )
 
-        # Start proxy server in background thread
+        self.status_var.set(f"{name} launched.")
+        self._start_btn.config(state="normal")
+
+    # ── Step 3: Proxy ──
+
+    def _on_start(self) -> None:
+        config = get_config()
+        config.context_size = _CTX_OPTIONS.get(self.ctx_var.get(), 4096)
+        model = self.model_var.get().strip()
+        if model:
+            config.default_model = model
+        config.client_work_dir = self.work_dir_var.get().strip()
+        config.python_app_path = self.app_path_var.get().strip()
+        config.python_app_env_var = self.env_var_var.get().strip()
+        save_config(config)
+
         threading.Thread(target=_start_proxy_thread, daemon=True).start()
 
-        # Open dashboard in browser after 2s delay
         self.root.after(2000, lambda: webbrowser.open(
             f"http://localhost:{config.dashboard_port}"
         ))
 
-        self.status_var.set("Starting... Dashboard will open shortly.")
+        self.status_var.set("Proxy starting... Dashboard will open shortly.")
         self.root.after(2500, self.root.iconify)
 
 
