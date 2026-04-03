@@ -61,5 +61,8 @@
     "deepseek-coder"
   ],
   "context_size": 4096,
-  "default_model": ""
+  "default_model": "",
+  "client_work_dir": "",
+  "python_app_path": "",
+  "python_app_env_var": "OLLAMA_HOST"
 }
