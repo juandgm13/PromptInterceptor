@@ -124,7 +124,10 @@ async def handle_chat_request(
 ) -> Response:
     """Handle /api/chat request to Ollama (non-streaming)."""
     config = get_config()
-    body_json = await request.json()
+    try:
+        body_json = await request.json()
+    except Exception:
+        return _error_response(400, "Invalid JSON in request body")
 
     modified, body, request_id = await rule_engine.process_request(
         "POST", request.url.path, dict(request.headers), body_json
@@ -176,7 +179,10 @@ async def handle_generate_request(
 ) -> Response:
     """Handle /api/generate request to Ollama (non-streaming)."""
     config = get_config()
-    body_json = await request.json()
+    try:
+        body_json = await request.json()
+    except Exception:
+        return _error_response(400, "Invalid JSON in request body")
 
     modified, body, request_id = await rule_engine.process_request(
         "POST", request.url.path, dict(request.headers), body_json
@@ -228,7 +234,10 @@ async def handle_stream_chat(
 ) -> Response:
     """Handle /api/chat streaming request."""
     config = get_config()
-    body_json = await request.json()
+    try:
+        body_json = await request.json()
+    except Exception:
+        return _error_response(400, "Invalid JSON in request body")
 
     modified, body, request_id = await rule_engine.process_request(
         "POST", request.url.path, dict(request.headers), body_json
@@ -272,7 +281,10 @@ async def handle_stream_generate(
 ) -> Response:
     """Handle /api/generate streaming request."""
     config = get_config()
-    body_json = await request.json()
+    try:
+        body_json = await request.json()
+    except Exception:
+        return _error_response(400, "Invalid JSON in request body")
 
     modified, body, request_id = await rule_engine.process_request(
         "POST", request.url.path, dict(request.headers), body_json

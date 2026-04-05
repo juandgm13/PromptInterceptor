@@ -49,35 +49,49 @@ def _fetch_ollama_models(target: str) -> list:
         with urllib.request.urlopen(url, timeout=3) as resp:
             data = json.loads(resp.read().decode())
         return [m["name"] for m in data.get("models", [])]
-    except Exception:
+    except urllib.error.URLError as exc:
+        print(f"[PromptInterceptor] Cannot reach Ollama at {url}: {exc}")
+        return []
+    except json.JSONDecodeError as exc:
+        print(f"[PromptInterceptor] Invalid JSON from Ollama /api/tags: {exc}")
+        return []
+    except Exception as exc:
+        print(f"[PromptInterceptor] Unexpected error fetching Ollama models: {exc}")
         return []
 
 
 def _start_proxy_thread():
     """Run the FastAPI proxy and dashboard servers in background threads."""
-    import asyncio
-    import uvicorn
+    try:
+        import asyncio
+        import uvicorn
 
-    asyncio.set_event_loop(asyncio.new_event_loop())
-    config = get_config()
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        config = get_config()
 
-    if config.dashboard_enabled:
-        def _run_dashboard():
-            asyncio.set_event_loop(asyncio.new_event_loop())
-            uvicorn.run(
-                "prompt_interceptor.dashboard:app",
-                host="0.0.0.0",
-                port=config.dashboard_port,
-                log_level="warning",
-            )
-        threading.Thread(target=_run_dashboard, daemon=True).start()
+        if config.dashboard_enabled:
+            def _run_dashboard():
+                asyncio.set_event_loop(asyncio.new_event_loop())
+                uvicorn.run(
+                    "prompt_interceptor.dashboard:app",
+                    host="0.0.0.0",
+                    port=config.dashboard_port,
+                    log_level="warning",
+                )
+            threading.Thread(target=_run_dashboard, daemon=True).start()
 
-    uvicorn.run(
-        "prompt_interceptor.main:app",
-        host=config.proxy_host,
-        port=config.proxy_port,
-        log_level="info",
-    )
+        uvicorn.run(
+            "prompt_interceptor.main:app",
+            host=config.proxy_host,
+            port=config.proxy_port,
+            log_level="info",
+        )
+    except ImportError as exc:
+        print(f"[PromptInterceptor] Missing dependency for proxy server: {exc}")
+    except OSError as exc:
+        print(f"[PromptInterceptor] Failed to start proxy server (port in use?): {exc}")
+    except Exception as exc:
+        print(f"[PromptInterceptor] Proxy thread error: {exc}")
 
 
 class LauncherWindow:
@@ -255,11 +269,20 @@ class LauncherWindow:
         ctx_value = _CTX_OPTIONS.get(self.ctx_var.get(), 4096)
         self._launch_ollama_btn.config(state="disabled")
         self.status_var.set("Launching Ollama server...")
-        subprocess.Popen(
-            ["cmd", "/c", "start", "cmd", "/k",
-             f"set OLLAMA_NUM_CTX={ctx_value} && ollama serve"],
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-        )
+        try:
+            subprocess.Popen(
+                ["cmd", "/c", "start", "cmd", "/k",
+                 f"set OLLAMA_NUM_CTX={ctx_value} && ollama serve"],
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+            )
+        except FileNotFoundError:
+            self._launch_ollama_btn.config(state="normal")
+            self.status_var.set("Error: 'ollama' command not found. Is Ollama installed?")
+            return
+        except OSError as exc:
+            self._launch_ollama_btn.config(state="normal")
+            self.status_var.set(f"Error launching Ollama: {exc}")
+            return
         threading.Thread(target=self._fetch_models_after_launch, daemon=True).start()
 
     def _fetch_models_after_launch(self) -> None:
@@ -338,25 +361,32 @@ class LauncherWindow:
         name = self.client_var.get()
         cmd_name = next((c for n, c in self._clients if n == name), "")
 
-        if name == "Python App (Ollama)":
-            app_path = self.app_path_var.get().strip()
-            env_var = self.env_var_var.get().strip() or "OLLAMA_HOST"
-            proxy_url = f"http://localhost:{config.proxy_port}"
-            if not app_path:
-                self.status_var.set("App Path is required for Python App.")
-                return
-            subprocess.Popen(
-                ["cmd", "/c", "start", "cmd", "/k",
-                 f'set {env_var}={proxy_url} && python "{app_path}"'],
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-            )
-        else:
-            work_dir = self.work_dir_var.get().strip() or "."
-            subprocess.Popen(
-                ["cmd", "/c", "start", "cmd", "/k",
-                 f'cd /d "{work_dir}" && {cmd_name}'],
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-            )
+        try:
+            if name == "Python App (Ollama)":
+                app_path = self.app_path_var.get().strip()
+                env_var = self.env_var_var.get().strip() or "OLLAMA_HOST"
+                proxy_url = f"http://localhost:{config.proxy_port}"
+                if not app_path:
+                    self.status_var.set("App Path is required for Python App.")
+                    return
+                subprocess.Popen(
+                    ["cmd", "/c", "start", "cmd", "/k",
+                     f'set {env_var}={proxy_url} && python "{app_path}"'],
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                )
+            else:
+                work_dir = self.work_dir_var.get().strip() or "."
+                subprocess.Popen(
+                    ["cmd", "/c", "start", "cmd", "/k",
+                     f'cd /d "{work_dir}" && {cmd_name}'],
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                )
+        except FileNotFoundError:
+            self.status_var.set(f"Error: '{cmd_name}' not found. Is the client installed?")
+            return
+        except OSError as exc:
+            self.status_var.set(f"Error launching {name}: {exc}")
+            return
 
         self.status_var.set(f"{name} launched.")
         self._start_btn.config(state="normal")
@@ -372,7 +402,10 @@ class LauncherWindow:
         config.client_work_dir = self.work_dir_var.get().strip()
         config.python_app_path = self.app_path_var.get().strip()
         config.python_app_env_var = self.env_var_var.get().strip()
-        save_config(config)
+        try:
+            save_config(config)
+        except OSError as exc:
+            self.status_var.set(f"Warning: could not save config — {exc}")
 
         threading.Thread(target=_start_proxy_thread, daemon=True).start()
 

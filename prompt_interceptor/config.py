@@ -81,15 +81,22 @@ def load_config(path: Optional[Path] = None) -> Config:
         with open(config_path) as f:
             data = json.load(f)
         return Config(**data)
-    except (json.JSONDecodeError, KeyError):
+    except (json.JSONDecodeError, KeyError, OSError, ValueError):
         return Config()
 
 
 def save_config(config: Config) -> None:
-    """Save configuration to JSON file."""
+    """Save configuration to JSON file.
+
+    Raises:
+        OSError: if the file cannot be written (e.g. permission denied).
+    """
     config_path = Path(__file__).parent / "config.json"
-    with open(config_path, "w") as f:
-        json.dump(config.model_dump(), f, indent=2)
+    try:
+        with open(config_path, "w") as f:
+            json.dump(config.model_dump(), f, indent=2)
+    except OSError as exc:
+        raise OSError(f"Failed to save configuration to {config_path}: {exc}") from exc
 
 
 def get_config() -> Config:
