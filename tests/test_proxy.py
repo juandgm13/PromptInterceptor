@@ -750,3 +750,60 @@ async def test_handle_stream_generate_generic_error(passthrough_setup):
         body = b"".join([chunk async for chunk in resp.body_iterator])
 
     assert "bad value" in json.loads(body)["error"]
+
+
+# ---------------------------------------------------------------------------
+# Invalid JSON body — all handlers must return 400
+# ---------------------------------------------------------------------------
+
+def _make_bad_json_req(path: str = "/api/chat"):
+    """Request whose .json() raises an exception (malformed body)."""
+    req = MagicMock()
+    req.json = AsyncMock(side_effect=Exception("JSON decode error"))
+    req.url.path = path
+    req.headers = {"content-type": "application/json"}
+    return req
+
+
+async def test_handle_chat_request_invalid_json_returns_400(cfg, engine_and_logger, monkeypatch):
+    """handle_chat_request returns 400 when the request body is not valid JSON."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    resp = await handle_chat_request(_make_bad_json_req("/api/chat"), engine, logger)
+    assert resp.status_code == 400
+    assert "invalid json" in json.loads(resp.body)["error"].lower()
+
+
+async def test_handle_generate_request_invalid_json_returns_400(cfg, engine_and_logger, monkeypatch):
+    """handle_generate_request returns 400 when the request body is not valid JSON."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    resp = await handle_generate_request(_make_bad_json_req("/api/generate"), engine, logger)
+    assert resp.status_code == 400
+    assert "invalid json" in json.loads(resp.body)["error"].lower()
+
+
+async def test_handle_stream_chat_invalid_json_returns_400(cfg, engine_and_logger, monkeypatch):
+    """handle_stream_chat returns 400 when the request body is not valid JSON."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    resp = await handle_stream_chat(_make_bad_json_req("/api/chat"), engine, logger)
+    assert resp.status_code == 400
+    assert "invalid json" in json.loads(resp.body)["error"].lower()
+
+
+async def test_handle_stream_generate_invalid_json_returns_400(cfg, engine_and_logger, monkeypatch):
+    """handle_stream_generate returns 400 when the request body is not valid JSON."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    resp = await handle_stream_generate(_make_bad_json_req("/api/generate"), engine, logger)
+    assert resp.status_code == 400
+    assert "invalid json" in json.loads(resp.body)["error"].lower()

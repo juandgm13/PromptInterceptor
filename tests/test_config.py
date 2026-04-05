@@ -145,3 +145,43 @@ def test_config_to_json_serialisable():
     d = config_to_json(Config())
     dumped = json_mod.dumps(d)
     assert "proxy_port" in dumped
+
+
+# ---------------------------------------------------------------------------
+# load_config — OSError / PermissionError handling
+# ---------------------------------------------------------------------------
+
+def test_load_config_permission_error_returns_defaults(tmp_path, monkeypatch):
+    """If the config file exists but cannot be opened (PermissionError), defaults are returned."""
+    p = tmp_path / "config.json"
+    p.write_text('{"proxy_port": 1234}')
+    monkeypatch.setattr("builtins.open", lambda *a, **kw: (_ for _ in ()).throw(PermissionError("denied")))
+    cfg = load_config(path=p)
+    assert cfg.proxy_port == 8080
+
+
+def test_load_config_os_error_returns_defaults(tmp_path, monkeypatch):
+    """If opening the config file raises OSError, defaults are returned."""
+    p = tmp_path / "config.json"
+    p.write_text('{"proxy_port": 5555}')
+    monkeypatch.setattr("builtins.open", lambda *a, **kw: (_ for _ in ()).throw(OSError("disk error")))
+    cfg = load_config(path=p)
+    assert cfg.proxy_port == 8080
+
+
+# ---------------------------------------------------------------------------
+# save_config — OSError / PermissionError handling
+# ---------------------------------------------------------------------------
+
+def test_save_config_permission_error_raises(monkeypatch):
+    """save_config raises OSError with an informative message when write fails."""
+    monkeypatch.setattr("builtins.open", lambda *a, **kw: (_ for _ in ()).throw(PermissionError("read-only")))
+    with pytest.raises(OSError, match="Failed to save configuration"):
+        save_config(Config())
+
+
+def test_save_config_os_error_raises(monkeypatch):
+    """save_config re-raises OSError when the filesystem write fails."""
+    monkeypatch.setattr("builtins.open", lambda *a, **kw: (_ for _ in ()).throw(OSError("no space left")))
+    with pytest.raises(OSError):
+        save_config(Config())

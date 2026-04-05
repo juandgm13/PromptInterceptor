@@ -6,6 +6,7 @@ Handles rule-based request/response modifications using JSONPath expressions.
 
 import copy
 import json
+import warnings
 from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass
 
@@ -35,7 +36,11 @@ def _jsonpath_get(data: Dict[str, Any], jsonpath: str) -> list:
         from jsonpath_ng import parse
         expr = parse(jsonpath)
         return [m.value for m in expr.find(data)]
-    except Exception:
+    except Exception as exc:
+        warnings.warn(
+            f"JSONPath expression failed (get): {jsonpath!r} — {exc}",
+            stacklevel=2,
+        )
         return []
 
 
@@ -47,8 +52,11 @@ def _jsonpath_set(data: Dict[str, Any], jsonpath: str, value: Any) -> Dict[str, 
         from jsonpath_ng import parse
         expr = parse(jsonpath)
         expr.update(data, value)
-    except Exception:
-        pass
+    except Exception as exc:
+        warnings.warn(
+            f"JSONPath expression failed (set): {jsonpath!r} — {exc}",
+            stacklevel=2,
+        )
     return data
 
 

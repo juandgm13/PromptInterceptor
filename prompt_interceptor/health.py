@@ -37,13 +37,17 @@ async def check_target_health() -> JSONResponse:
         async with httpx.AsyncClient(timeout=config.health_timeout) as client:
             response = await client.get(config.target + "/api/tags")
             if response.status_code == 200:
+                try:
+                    models = response.json().get("models", [])
+                except Exception:
+                    models = []
                 return JSONResponse(
                     status_code=200,
                     content={
                         "proxy": "healthy",
                         "target": "healthy",
                         "message": f"Connected to {config.target}",
-                        "models": response.json().get("models", []),
+                        "models": models,
                     },
                 )
             else:
@@ -80,35 +84,41 @@ async def check_dashboard_health() -> JSONResponse:
 
 async def get_status() -> JSONResponse:
     """Get comprehensive status information."""
-    config = get_config()
-    logger = TrafficLogger()
-    rule_engine = RuleEngine(logger)
+    try:
+        config = get_config()
+        logger = TrafficLogger()
+        rule_engine = RuleEngine(logger)
 
-    target_response = await check_target_health()
-    target_data = json.loads(target_response.body)
+        target_response = await check_target_health()
+        target_data = json.loads(target_response.body)
 
-    return JSONResponse(
-        status_code=200,
-        content={
-            "status": "healthy",
-            "proxy": {
-                "port": config.proxy_port,
-                "target": config.target,
-                "mode": config.mode,
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "healthy",
+                "proxy": {
+                    "port": config.proxy_port,
+                    "target": config.target,
+                    "mode": config.mode,
+                },
+                "target": target_data,
+                "dashboard": {
+                    "enabled": config.dashboard_enabled,
+                    "port": config.dashboard_port,
+                },
+                "rules": {
+                    "count": len(rule_engine.rules),
+                    "enabled_count": sum(1 for r in rule_engine.rules if r.enabled),
+                },
+                "logs": {
+                    "dir": config.log_dir,
+                    "max_files": config.max_log_files,
+                },
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             },
-            "target": target_data,
-            "dashboard": {
-                "enabled": config.dashboard_enabled,
-                "port": config.dashboard_port,
-            },
-            "rules": {
-                "count": len(rule_engine.rules),
-                "enabled_count": sum(1 for r in rule_engine.rules if r.enabled),
-            },
-            "logs": {
-                "dir": config.log_dir,
-                "max_files": config.max_log_files,
-            },
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        },
-    )
+        )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unhealthy", "error": str(exc)},
+        )

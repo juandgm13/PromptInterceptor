@@ -1,5 +1,6 @@
 """Tests for rules_engine.py."""
 
+import warnings
 import pytest
 from unittest.mock import MagicMock
 from prompt_interceptor.config import Config
@@ -263,14 +264,19 @@ def test_reload_rules(engine, intercept_cfg, monkeypatch):
 
 def test_jsonpath_get_invalid_expression_returns_empty():
     """Malformed JSONPath triggers the except clause → returns []."""
-    result = _jsonpath_get({"model": "x"}, "$$$$invalid")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        result = _jsonpath_get({"model": "x"}, "$$$$invalid")
     assert result == []
 
 
 def test_jsonpath_get_invalid_via_evaluate_match(engine):
     """_evaluate_match with invalid jsonpath falls through to False."""
     rule = Rule(match={"jsonpath": "$$$$invalid"}, replace={})
-    assert engine._evaluate_match(rule, {"model": "llama3"}, "/") is False
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        result = engine._evaluate_match(rule, {"model": "llama3"}, "/")
+    assert result is False
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +286,9 @@ def test_jsonpath_get_invalid_via_evaluate_match(engine):
 def test_jsonpath_set_invalid_expression_no_crash():
     """Malformed JSONPath in _jsonpath_set triggers except → data unchanged."""
     data = {"model": "llama3"}
-    result = _jsonpath_set(data, "$$$$invalid", "new")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        result = _jsonpath_set(data, "$$$$invalid", "new")
     assert result is data
     assert data["model"] == "llama3"
 
@@ -289,7 +297,9 @@ def test_apply_replacement_invalid_jsonpath_no_crash(engine):
     """_apply_replacement with bad replace path does not raise."""
     rule = Rule(match={}, replace={"jsonpath": "$$$$invalid", "value": "x"})
     data = {"model": "llama3"}
-    engine._apply_replacement(rule, data)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        engine._apply_replacement(rule, data)
     assert data["model"] == "llama3"
 
 
@@ -373,3 +383,35 @@ async def test_process_response_rule_exception_logged(engine, intercept_cfg, mon
     body = {"model": "llama3"}
     modified, result = await engine.process_response("rid", "/api/chat", {}, body)
     assert isinstance(modified, bool)
+
+
+# ---------------------------------------------------------------------------
+# _jsonpath_get and _jsonpath_set emit warnings on exception
+# ---------------------------------------------------------------------------
+
+def test_jsonpath_get_invalid_expression_emits_warning():
+    """_jsonpath_get emits a UserWarning when the expression is invalid."""
+    import warnings as _warnings
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        result = _jsonpath_get({"model": "llama3"}, "$$$$invalid")
+
+    assert result == []
+    assert len(caught) == 1
+    assert issubclass(caught[0].category, UserWarning)
+    assert "$$$$invalid" in str(caught[0].message)
+
+
+def test_jsonpath_set_invalid_expression_emits_warning():
+    """_jsonpath_set emits a UserWarning when the expression is invalid."""
+    import warnings as _warnings
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        data = {"model": "llama3"}
+        result = _jsonpath_set(data, "$$$$invalid", "new_value")
+
+    assert result is data
+    assert data["model"] == "llama3"
+    assert len(caught) == 1
+    assert issubclass(caught[0].category, UserWarning)
+    assert "$$$$invalid" in str(caught[0].message)

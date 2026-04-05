@@ -131,3 +131,43 @@ async def test_get_status_includes_rule_count():
     data = json.loads(resp.body)
     assert isinstance(data["rules"]["count"], int)
     assert isinstance(data["rules"]["enabled_count"], int)
+
+
+# ---------------------------------------------------------------------------
+# check_target_health — response.json() decode failure
+# ---------------------------------------------------------------------------
+
+async def test_check_target_health_json_decode_error_returns_healthy_empty_models():
+    """When response.json() raises (malformed body), models defaults to [] but stays healthy."""
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.side_effect = Exception("invalid JSON")
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("prompt_interceptor.health.httpx.AsyncClient", return_value=mock_client):
+        resp = await check_target_health()
+
+    assert resp.status_code == 200
+    data = json.loads(resp.body)
+    assert data["target"] == "healthy"
+    assert data["models"] == []
+
+
+# ---------------------------------------------------------------------------
+# get_status — unexpected exception returns 503
+# ---------------------------------------------------------------------------
+
+async def test_get_status_exception_returns_503():
+    """When get_status encounters an unexpected error it returns 503 instead of crashing."""
+    with patch("prompt_interceptor.health.check_target_health",
+               new=AsyncMock(side_effect=RuntimeError("internal failure"))):
+        resp = await get_status()
+
+    assert resp.status_code == 503
+    data = json.loads(resp.body)
+    assert data["status"] == "unhealthy"
+    assert "internal failure" in data["error"]
