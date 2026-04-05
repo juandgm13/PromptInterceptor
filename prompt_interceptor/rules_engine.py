@@ -5,13 +5,23 @@ Handles rule-based request/response modifications using JSONPath expressions.
 """
 
 import copy
+import functools
 import json
-import warnings
+import logging
 from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass
 
 from .config import get_config
 from .logger import TrafficLogger
+
+_log = logging.getLogger(__name__)
+
+
+@functools.lru_cache(maxsize=256)
+def _compile_jsonpath(jsonpath: str):
+    """Compile and cache a JSONPath expression to avoid repeated parsing."""
+    from jsonpath_ng import parse
+    return parse(jsonpath)
 
 
 @dataclass
@@ -33,14 +43,10 @@ def _jsonpath_get(data: Dict[str, Any], jsonpath: str) -> list:
     # Strip optional-chaining syntax (not valid JSONPath)
     jsonpath = jsonpath.replace("?.", ".")
     try:
-        from jsonpath_ng import parse
-        expr = parse(jsonpath)
+        expr = _compile_jsonpath(jsonpath)
         return [m.value for m in expr.find(data)]
     except Exception as exc:
-        warnings.warn(
-            f"JSONPath expression failed (get): {jsonpath!r} — {exc}",
-            stacklevel=2,
-        )
+        _log.warning("JSONPath expression failed (get): %r — %s", jsonpath, exc)
         return []
 
 
@@ -49,14 +55,10 @@ def _jsonpath_set(data: Dict[str, Any], jsonpath: str, value: Any) -> Dict[str, 
     # Strip optional-chaining syntax
     jsonpath = jsonpath.replace("?.", ".")
     try:
-        from jsonpath_ng import parse
-        expr = parse(jsonpath)
+        expr = _compile_jsonpath(jsonpath)
         expr.update(data, value)
     except Exception as exc:
-        warnings.warn(
-            f"JSONPath expression failed (set): {jsonpath!r} — {exc}",
-            stacklevel=2,
-        )
+        _log.warning("JSONPath expression failed (set): %r — %s", jsonpath, exc)
     return data
 
 
@@ -246,7 +248,8 @@ class RuleEngine:
             )
             self.rules.append(rule)
             return True
-        except (KeyError, TypeError):
+        except (KeyError, TypeError) as exc:
+            _log.warning("Failed to add rule — missing or invalid keys: %s", exc)
             return False
 
     def delete_rule(self, index: int) -> bool:
