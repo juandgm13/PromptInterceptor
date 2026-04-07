@@ -556,7 +556,7 @@ def test_on_browse_app_no_selection(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_on_launch_client_claude_code(tmp_path, monkeypatch):
-    """Launching Claude Code runs `cd /d <dir> && claude` in a new CMD window."""
+    """Launching Claude Code passes --model, sets ANTHROPIC_BASE_URL, and cwd."""
     cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
 
@@ -567,24 +567,29 @@ def test_on_launch_client_claude_code(tmp_path, monkeypatch):
     win._clients = [("Claude Code", "claude"), ("Python App (Ollama)", "__python_app__")]
     win.work_dir_var = MagicMock()
     win.work_dir_var.get.return_value = "/my/repo"
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = "llama3.2:latest"
     win.status_var = MagicMock()
     win._start_btn = MagicMock()
 
     popen_calls = []
     with patch("prompt_interceptor.launcher.subprocess.Popen",
-               side_effect=lambda *a, **kw: popen_calls.append(a[0])):
+               side_effect=lambda *a, **kw: popen_calls.append((a[0], kw))):
         win._on_launch_client()
 
     assert len(popen_calls) == 1
-    cmd_str = " ".join(popen_calls[0])
+    args, kwargs = popen_calls[0]
+    cmd_str = " ".join(args)
     assert "claude" in cmd_str
-    assert "/my/repo" in cmd_str
-    assert "cd /d" in cmd_str
+    assert "--model" in cmd_str
+    assert "llama3.2:latest" in cmd_str
+    assert kwargs.get("cwd") == "/my/repo"
+    assert kwargs.get("env", {}).get("ANTHROPIC_BASE_URL") == "http://localhost:8080"
     win._start_btn.config.assert_called_with(state="normal")
 
 
 def test_on_launch_client_open_code(tmp_path, monkeypatch):
-    """Launching Open Code runs `cd /d <dir> && opencode` in a new CMD window."""
+    """Launching Open Code passes --model, sets OPENAI_BASE_URL, and cwd."""
     cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
 
@@ -595,17 +600,23 @@ def test_on_launch_client_open_code(tmp_path, monkeypatch):
     win._clients = [("Open Code", "opencode"), ("Python App (Ollama)", "__python_app__")]
     win.work_dir_var = MagicMock()
     win.work_dir_var.get.return_value = "/my/repo"
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = "mistral:latest"
     win.status_var = MagicMock()
     win._start_btn = MagicMock()
 
     popen_calls = []
     with patch("prompt_interceptor.launcher.subprocess.Popen",
-               side_effect=lambda *a, **kw: popen_calls.append(a[0])):
+               side_effect=lambda *a, **kw: popen_calls.append((a[0], kw))):
         win._on_launch_client()
 
     assert len(popen_calls) == 1
-    cmd_str = " ".join(popen_calls[0])
+    args, kwargs = popen_calls[0]
+    cmd_str = " ".join(args)
     assert "opencode" in cmd_str
+    assert "--model" in cmd_str
+    assert "mistral:latest" in cmd_str
+    assert kwargs.get("env", {}).get("OPENAI_BASE_URL") == "http://localhost:8080"
 
 
 def test_on_launch_client_python_app(tmp_path, monkeypatch):
