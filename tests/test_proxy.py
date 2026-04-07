@@ -1005,3 +1005,108 @@ async def test_passthrough_streaming_chunks_yielded(cfg, monkeypatch):
         collected = b"".join([chunk async for chunk in resp.body_iterator])
 
     assert b"hello" in collected
+
+
+async def test_passthrough_streaming_connect_error_yields_error_json(cfg, monkeypatch):
+    """ConnectError inside _stream_gen yields an error JSON chunk."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    fake_stream_resp = MagicMock()
+    fake_stream_resp.__aenter__ = AsyncMock(side_effect=httpx.ConnectError("refused"))
+    fake_stream_resp.__aexit__ = AsyncMock(return_value=False)
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.stream = MagicMock(return_value=fake_stream_resp)
+
+    req = _make_passthrough_req({"model": "llama3", "stream": True}, "/v1/messages")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_passthrough(req)
+        collected = b"".join([chunk async for chunk in resp.body_iterator])
+
+    data = json.loads(collected)
+    assert "error" in data
+
+
+async def test_passthrough_streaming_generic_exception_yields_error_json(cfg, monkeypatch):
+    """Generic exception inside _stream_gen yields an error JSON chunk."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    fake_stream_resp = MagicMock()
+    fake_stream_resp.__aenter__ = AsyncMock(side_effect=RuntimeError("boom"))
+    fake_stream_resp.__aexit__ = AsyncMock(return_value=False)
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.stream = MagicMock(return_value=fake_stream_resp)
+
+    req = _make_passthrough_req({"model": "llama3", "stream": True}, "/v1/messages")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_passthrough(req)
+        collected = b"".join([chunk async for chunk in resp.body_iterator])
+
+    data = json.loads(collected)
+    assert "error" in data
+    assert "boom" in data["error"]
+
+
+async def test_passthrough_streaming_logs_response_with_logger(cfg, monkeypatch, tmp_path):
+    """Streaming passthrough calls logger.log_response after stream completes."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    async def fake_aiter_bytes():
+        yield b'{"done":true}'
+
+    fake_stream_resp = MagicMock()
+    fake_stream_resp.aiter_bytes = fake_aiter_bytes
+    fake_stream_resp.__aenter__ = AsyncMock(return_value=fake_stream_resp)
+    fake_stream_resp.__aexit__ = AsyncMock(return_value=False)
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.stream = MagicMock(return_value=fake_stream_resp)
+
+    logger = TrafficLogger(cfg)
+    logged = []
+    original_log_response = logger.log_response
+    logger.log_response = lambda *a, **kw: logged.append(a) or original_log_response(*a, **kw)
+
+    req = _make_passthrough_req({"model": "llama3", "stream": True}, "/v1/messages")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_passthrough(req, logger=logger)
+        b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert len(logged) == 1
+
+
+async def test_passthrough_non_dict_json_response_handled(cfg, monkeypatch):
+    """Non-dict resp.json() is treated as None when logging."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    fake_resp = MagicMock()
+    fake_resp.content = b'"just a string"'
+    fake_resp.status_code = 200
+    fake_resp.headers = {"content-type": "application/json"}
+    fake_resp.json.return_value = "just a string"  # str, not dict/list
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.request = AsyncMock(return_value=fake_resp)
+
+    logger = TrafficLogger(cfg)
+
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_passthrough(
+            _make_passthrough_req({"model": "llama3"}, "/v1/test"),
+            logger=logger,
+        )
+
+    assert resp.status_code == 200

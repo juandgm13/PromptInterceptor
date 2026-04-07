@@ -117,7 +117,7 @@ class TrafficLogger:
         body: Optional[Dict[str, Any]] = None
     ) -> None:
         """
-        Log a response.
+        Log a response, merging into the existing request log entry if present.
 
         Args:
             request_id: ID from matching request
@@ -125,16 +125,28 @@ class TrafficLogger:
             headers: Response headers
             body: Response body (JSON)
         """
+        date_dir = self._get_date_dir()
+        filepath = date_dir / f"req_{request_id}.json"
+
+        # Start from existing request data so method/path/body are preserved
+        existing: Dict[str, Any] = {}
+        if filepath.exists():
+            try:
+                with open(filepath, encoding="utf-8") as f:
+                    existing = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                existing = {}
+
         log_entry = {
-            "timestamp": datetime.now().isoformat(),
-            "request_id": request_id,
+            **existing,
+            "response_timestamp": datetime.now().isoformat(),
             "type": "response",
             "status_code": status_code,
-            "headers": self._get_headers_for_log(headers),
-            "body": self._truncate_body(body),
-            "proxy_target": self.config.target,
-            "mode": self.config.mode,
+            "response_headers": self._get_headers_for_log(headers),
+            "response_body": self._truncate_body(body),
         }
+        # Ensure request_id is always present
+        log_entry["request_id"] = request_id
 
         self._write_log_file(log_entry)
 

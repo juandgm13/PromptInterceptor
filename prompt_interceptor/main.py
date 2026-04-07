@@ -94,7 +94,7 @@ def create_app() -> FastAPI:
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
     async def passthrough_endpoint(request: Request):
-        return await handle_passthrough(request)
+        return await handle_passthrough(request, logger)
 
     return app
 
