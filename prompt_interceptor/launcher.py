@@ -3,6 +3,7 @@ PromptInterceptor Launcher - Desktop configuration window.
 Uses only tkinter (Python built-in), no extra dependencies.
 """
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -131,7 +132,17 @@ class LauncherWindow:
         style.configure("Header.TLabel", background="#1a1a2e", foreground="#4fc3f7", font=("Segoe UI", 14, "bold"))
         style.configure("Section.TLabel", background="#1a1a2e", foreground="#666688", font=("Segoe UI", 8))
         style.configure("TFrame", background="#1a1a2e")
-        style.configure("TCombobox", fieldbackground="#16213e", background="#16213e", foreground="#e0e0e0")
+        style.configure("TCombobox", fieldbackground="#16213e", background="#16213e", foreground="#e0e0e0",
+                        selectbackground="#16213e", selectforeground="#e0e0e0")
+        style.map("TCombobox",
+                  fieldbackground=[("readonly", "#16213e"), ("disabled", "#0d1117")],
+                  foreground=[("readonly", "#e0e0e0"), ("disabled", "#555555")],
+                  selectbackground=[("readonly", "#16213e")],
+                  selectforeground=[("readonly", "#e0e0e0")])
+        self.root.option_add("*TCombobox*Listbox.background", "#16213e")
+        self.root.option_add("*TCombobox*Listbox.foreground", "#e0e0e0")
+        self.root.option_add("*TCombobox*Listbox.selectBackground", "#4fc3f7")
+        self.root.option_add("*TCombobox*Listbox.selectForeground", "#000000")
         style.configure("Action.TButton", background="#1e3a1e", foreground="#7ec87e",
                         font=("Segoe UI", 9, "bold"), padding=6)
         style.configure("Start.TButton", background="#4fc3f7", foreground="#000000",
@@ -387,10 +398,19 @@ class LauncherWindow:
                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                 )
             else:
-                work_dir = self.work_dir_var.get().strip() or "."
+                work_dir = self.work_dir_var.get().strip() or None
+                model = self.model_var.get().strip()
+                proxy_url = f"http://localhost:{config.proxy_port}"
+                shell_cmd = f"{cmd_name} --model {model}" if model else cmd_name
+                env = os.environ.copy()
+                if cmd_name == "claude":
+                    env["ANTHROPIC_BASE_URL"] = proxy_url
+                elif cmd_name == "opencode":
+                    env["OPENAI_BASE_URL"] = proxy_url
                 subprocess.Popen(
-                    ["cmd", "/c", "start", "cmd", "/k",
-                     f'cd /d "{work_dir}" && {cmd_name}'],
+                    ["cmd", "/c", "start", "cmd", "/k", shell_cmd],
+                    cwd=work_dir,
+                    env=env,
                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                 )
         except FileNotFoundError:

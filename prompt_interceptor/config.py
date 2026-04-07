@@ -55,7 +55,7 @@ class Config(BaseModel):
     model_names: List[str] = Field(default_factory=lambda: ["llama3", "mistral"])
 
     # Context size for the Ollama server (passed as OLLAMA_NUM_CTX env var on start)
-    context_size: int = 4096
+    context_size: int = 32768
 
     # Default model selected in the launcher
     default_model: str = ""
