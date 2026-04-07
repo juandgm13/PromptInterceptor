@@ -21,7 +21,7 @@ Configuration is stored in `prompt_interceptor/config.json`. All fields are opti
   "dashboard_enabled": true,
   "dashboard_port": 9090,
   "model_names": ["llama3", "mistral", "deepseek-coder"],
-  "context_size": 4096,
+  "context_size": 32768,
   "default_model": "qwen3.5",
   "rules": []
 }
@@ -49,7 +49,7 @@ Configuration is stored in `prompt_interceptor/config.json`. All fields are opti
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `context_size` | int | `4096` | Context window size passed as `OLLAMA_NUM_CTX` when launching Ollama from the desktop launcher. Does not affect the proxy itself. |
+| `context_size` | int | `32768` | Context window size passed as `OLLAMA_NUM_CTX` when launching Ollama from the desktop launcher. Does not affect the proxy itself. |
 
 Available options: `4096`, `8192`, `16384`, `32768`, `65536`, `131072`, `262144` (4k–256k).
 

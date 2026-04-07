@@ -73,15 +73,15 @@ The desktop launcher (`python -m prompt_interceptor`) uses a sequential 3-step w
 
 | Field / Button | Behaviour |
 |----------------|-----------|
-| **Context Size** | Sets `OLLAMA_NUM_CTX` env var passed to `ollama serve` (4k–256k) |
-| **Model** | Disabled until Ollama is launched. Populated from `GET /api/tags` (downloaded models only). |
-| **Launch Ollama Server** | Opens a CMD terminal running `ollama serve`. Waits ~2s then fetches available models. Unlocks Step 2 on success. |
+| **Context Size** | Sets `OLLAMA_NUM_CTX` env var passed to `ollama serve` (4k–256k). Default: 32k. |
+| **Launch Ollama Server** | Checks if Ollama is already running. If yes, loads available models without opening a terminal. If no, opens a CMD terminal running `ollama serve`, waits ~2s, then fetches models. Unlocks Step 2 on success. |
 
 ### Step 2 — AI Client
 
 | Field / Button | Behaviour |
 |----------------|-----------|
 | **AI Client** | Detected via `shutil.which` (`claude`, `opencode`). Always includes *Python App (Ollama)* as a custom option. |
+| **Model** | Disabled until Ollama is ready. Populated from `GET /api/tags` (downloaded models only). |
 | **Work Dir** *(Claude Code / Open Code)* | Directory where the client terminal is opened (`cd /d <dir> && <client>`). |
 | **App Path** *(Python App)* | Path to the Python app's entry point (`.py` or executable). |
 | **Ollama Env Var** *(Python App)* | Name of the environment variable the app uses for the Ollama host (e.g. `OLLAMA_HOST`). Set to `http://localhost:<proxy_port>` at launch. |

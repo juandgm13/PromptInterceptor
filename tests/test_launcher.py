@@ -244,48 +244,89 @@ def test_launcher_window_set_icon_missing(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_on_launch_ollama_opens_process_and_thread(tmp_path, monkeypatch):
-    """_on_launch_ollama opens an Ollama CMD process and starts a background thread."""
+    """When Ollama is not running, _check_or_launch_ollama opens a CMD process and starts a background thread."""
     cfg = Config(log_dir=str(tmp_path / "logs"), context_size=8192)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    monkeypatch.setattr("prompt_interceptor.launcher._fetch_ollama_models", lambda t: [])
 
-    win, _ = _make_headless_win(cfg)
+    win, mock_root = _make_headless_win(cfg)
     win.ctx_var = MagicMock()
     win.ctx_var.get.return_value = "8k  (8192)"
     win.status_var = MagicMock()
     win._launch_ollama_btn = MagicMock()
-
-    popen_calls = []
-    with patch("prompt_interceptor.launcher.subprocess.Popen",
-               side_effect=lambda *a, **kw: popen_calls.append(a[0])) as mock_popen, \
-         patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
-        mock_thread.return_value = MagicMock()
-        win._on_launch_ollama()
-
-    assert len(popen_calls) == 1
-    cmd_str = " ".join(popen_calls[0])
-    assert "8192" in cmd_str
-    assert "ollama serve" in cmd_str
-    mock_thread.assert_called_once()
-    win._launch_ollama_btn.config.assert_called_with(state="disabled")
-
-
-def test_on_launch_ollama_uses_selected_ctx(tmp_path, monkeypatch):
-    """Context size from ctx_var is correctly passed to the Ollama command."""
-    cfg = Config(log_dir=str(tmp_path / "logs"))
-    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
-
-    win, _ = _make_headless_win(cfg)
-    win.ctx_var = MagicMock()
-    win.ctx_var.get.return_value = "32k (32768)"
-    win.status_var = MagicMock()
-    win._launch_ollama_btn = MagicMock()
+    mock_root.after.side_effect = lambda delay, fn, *args: fn(*args)
 
     popen_calls = []
     with patch("prompt_interceptor.launcher.subprocess.Popen",
                side_effect=lambda *a, **kw: popen_calls.append(a[0])), \
          patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
         mock_thread.return_value = MagicMock()
+        win._check_or_launch_ollama()
+
+    assert len(popen_calls) == 1
+    cmd_str = " ".join(popen_calls[0])
+    assert "8192" in cmd_str
+    assert "ollama serve" in cmd_str
+    mock_thread.assert_called_once()
+
+
+def test_on_launch_ollama_disables_button_and_starts_thread(tmp_path, monkeypatch):
+    """_on_launch_ollama disables the button and starts the check thread."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _make_headless_win(cfg)
+    win.status_var = MagicMock()
+    win._launch_ollama_btn = MagicMock()
+
+    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+        mock_thread.return_value = MagicMock()
         win._on_launch_ollama()
+
+    win._launch_ollama_btn.config.assert_called_with(state="disabled")
+    win.status_var.set.assert_called_with("Checking Ollama...")
+    mock_thread.assert_called_once()
+
+
+def test_check_or_launch_ollama_already_running(tmp_path, monkeypatch):
+    """When Ollama is already running, no process is launched and models are loaded."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), target="http://localhost:11434")
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    monkeypatch.setattr("prompt_interceptor.launcher._fetch_ollama_models", lambda t: ["llama3"])
+
+    win, mock_root = _make_headless_win(cfg)
+    win.status_var = MagicMock()
+    win._launch_ollama_btn = MagicMock()
+    mock_root.after.side_effect = lambda delay, fn, *args: fn(*args)
+
+    with patch("prompt_interceptor.launcher.subprocess.Popen") as mock_popen, \
+         patch.object(win, "_on_models_ready") as mock_models_ready:
+        win._check_or_launch_ollama()
+
+    mock_popen.assert_not_called()
+    mock_models_ready.assert_called_once_with(["llama3"])
+    win.status_var.set.assert_called_with("Ollama already running.")
+
+
+def test_on_launch_ollama_uses_selected_ctx(tmp_path, monkeypatch):
+    """Context size from ctx_var is correctly passed to the Ollama command."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    monkeypatch.setattr("prompt_interceptor.launcher._fetch_ollama_models", lambda t: [])
+
+    win, mock_root = _make_headless_win(cfg)
+    win.ctx_var = MagicMock()
+    win.ctx_var.get.return_value = "32k (32768)"
+    win.status_var = MagicMock()
+    win._launch_ollama_btn = MagicMock()
+    mock_root.after.side_effect = lambda delay, fn, *args: fn(*args)
+
+    popen_calls = []
+    with patch("prompt_interceptor.launcher.subprocess.Popen",
+               side_effect=lambda *a, **kw: popen_calls.append(a[0])), \
+         patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+        mock_thread.return_value = MagicMock()
+        win._check_or_launch_ollama()
 
     assert "32768" in " ".join(popen_calls[0])
 
@@ -799,20 +840,22 @@ def test_launch_creates_tk_and_runs_mainloop(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_on_launch_ollama_file_not_found_shows_error(tmp_path, monkeypatch):
-    """When 'ollama' is not found, status shows an error message."""
+    """When 'ollama' is not found, status shows an error message and button is re-enabled."""
     cfg = Config(log_dir=str(tmp_path / "logs"))
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    monkeypatch.setattr("prompt_interceptor.launcher._fetch_ollama_models", lambda t: [])
 
-    win, _ = _make_headless_win(cfg)
+    win, mock_root = _make_headless_win(cfg)
     win.ctx_var = MagicMock()
     win.ctx_var.get.return_value = "4k  (4096)"
     win.status_var = MagicMock()
     win._launch_ollama_btn = MagicMock()
+    mock_root.after.side_effect = lambda delay, fn, *args: fn(*args)
 
     with patch("prompt_interceptor.launcher.subprocess.Popen",
                side_effect=FileNotFoundError("not found")), \
          patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
-        win._on_launch_ollama()
+        win._check_or_launch_ollama()
 
     win.status_var.set.assert_called()
     msg = win.status_var.set.call_args[0][0]
@@ -827,17 +870,19 @@ def test_on_launch_ollama_os_error_shows_error(tmp_path, monkeypatch):
     """An OSError from Popen is caught and shown in the status label."""
     cfg = Config(log_dir=str(tmp_path / "logs"))
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    monkeypatch.setattr("prompt_interceptor.launcher._fetch_ollama_models", lambda t: [])
 
-    win, _ = _make_headless_win(cfg)
+    win, mock_root = _make_headless_win(cfg)
     win.ctx_var = MagicMock()
     win.ctx_var.get.return_value = "4k  (4096)"
     win.status_var = MagicMock()
     win._launch_ollama_btn = MagicMock()
+    mock_root.after.side_effect = lambda delay, fn, *args: fn(*args)
 
     with patch("prompt_interceptor.launcher.subprocess.Popen",
                side_effect=OSError("access denied")), \
          patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
-        win._on_launch_ollama()
+        win._check_or_launch_ollama()
 
     win.status_var.set.assert_called()
     assert "access denied" in win.status_var.set.call_args[0][0]
