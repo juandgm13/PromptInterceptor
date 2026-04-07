@@ -26,7 +26,7 @@ _CTX_OPTIONS = {
     "256k (262144)": 262144,
 }
 
-_CTX_DEFAULT = "4k  (4096)"
+_CTX_DEFAULT = "32k (32768)"
 
 
 def _detect_clients() -> list:
@@ -169,14 +169,6 @@ class LauncherWindow:
                      values=list(_CTX_OPTIONS.keys()),
                      state="readonly", width=22).pack(side="left")
 
-        row1b = ttk.Frame(self.root)
-        row1b.pack(fill="x", **pad)
-        ttk.Label(row1b, text="Model:", width=14, anchor="w").pack(side="left")
-        self.model_var = tk.StringVar(value="")
-        self._model_cb = ttk.Combobox(row1b, textvariable=self.model_var,
-                                       values=[], width=22, state="disabled")
-        self._model_cb.pack(side="left")
-
         row1c = ttk.Frame(self.root)
         row1c.pack(fill="x", padx=20, pady=(2, 10))
         ttk.Label(row1c, text="", width=14).pack(side="left")
@@ -198,6 +190,14 @@ class LauncherWindow:
                                         state="disabled", width=22)
         self._client_cb.pack(side="left")
         self._client_cb.bind("<<ComboboxSelected>>", self._on_client_change)
+
+        row2m = ttk.Frame(self.root)
+        row2m.pack(fill="x", **pad)
+        ttk.Label(row2m, text="Model:", width=14, anchor="w").pack(side="left")
+        self.model_var = tk.StringVar(value="")
+        self._model_cb = ttk.Combobox(row2m, textvariable=self.model_var,
+                                       values=[], width=22, state="disabled")
+        self._model_cb.pack(side="left")
 
         # Container for conditional client rows (work dir OR app path + env var)
         self._client_details = ttk.Frame(self.root)
@@ -266,9 +266,19 @@ class LauncherWindow:
     # ── Step 1: Ollama ──
 
     def _on_launch_ollama(self) -> None:
-        ctx_value = _CTX_OPTIONS.get(self.ctx_var.get(), 4096)
         self._launch_ollama_btn.config(state="disabled")
-        self.status_var.set("Launching Ollama server...")
+        self.status_var.set("Checking Ollama...")
+        threading.Thread(target=self._check_or_launch_ollama, daemon=True).start()
+
+    def _check_or_launch_ollama(self) -> None:
+        config = get_config()
+        models = _fetch_ollama_models(config.target)
+        if models:
+            self.root.after(0, lambda: self.status_var.set("Ollama already running."))
+            self.root.after(0, self._on_models_ready, models)
+            return
+        ctx_value = _CTX_OPTIONS.get(self.ctx_var.get(), 32768)
+        self.root.after(0, lambda: self.status_var.set("Launching Ollama server..."))
         try:
             subprocess.Popen(
                 ["cmd", "/c", "start", "cmd", "/k",
@@ -276,12 +286,14 @@ class LauncherWindow:
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
             )
         except FileNotFoundError:
-            self._launch_ollama_btn.config(state="normal")
-            self.status_var.set("Error: 'ollama' command not found. Is Ollama installed?")
+            self.root.after(0, lambda: self._launch_ollama_btn.config(state="normal"))
+            self.root.after(0, lambda: self.status_var.set(
+                "Error: 'ollama' command not found. Is Ollama installed?"))
             return
         except OSError as exc:
-            self._launch_ollama_btn.config(state="normal")
-            self.status_var.set(f"Error launching Ollama: {exc}")
+            msg = str(exc)
+            self.root.after(0, lambda: self._launch_ollama_btn.config(state="normal"))
+            self.root.after(0, lambda: self.status_var.set(f"Error launching Ollama: {msg}"))
             return
         threading.Thread(target=self._fetch_models_after_launch, daemon=True).start()
 
