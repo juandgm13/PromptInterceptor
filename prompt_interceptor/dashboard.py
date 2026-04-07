@@ -241,29 +241,38 @@ async function loadLogs() {
       return;
     }
     tbody.innerHTML = logs.slice().reverse().map(l => {
-      const ts = l.timestamp ? l.timestamp.slice(11,19) : '-';
+      const ts = (l.timestamp || l.response_timestamp || '').slice(11,19) || '-';
       const method = l.method || '-';
       const path = l.path || '-';
-      const model = l.body?.model || '-';
+      const model = l.body?.model || l.response_body?.model || '-';
       const msgs = l.body?.messages;
       let preview = '-';
       if (msgs && msgs.length) {
         const last = msgs[msgs.length - 1];
-        const txt = (last.content || '').toString().slice(0, 80);
-        preview = txt.length < (last.content||'').length ? txt + '…' : txt;
+        const content = last.content;
+        let txt = '';
+        if (typeof content === 'string') {
+          txt = content.slice(0, 80);
+        } else if (Array.isArray(content)) {
+          const textBlock = content.find(b => b.type === 'text');
+          txt = (textBlock?.text || '').slice(0, 80);
+        }
+        preview = txt || '-';
+        if (txt.length === 80) preview += '…';
       } else if (l.body?.prompt) {
         preview = l.body.prompt.toString().slice(0, 80);
       }
-      const status = l.type === 'response' ?
-        '<span class="badge green">resp</span>' :
-        '<span class="badge blue">req</span>';
+      const statusCode = l.status_code ? `<span class="badge ${l.status_code < 400 ? 'green' : 'red'}">${l.status_code}</span>` : '';
+      const typeTag = l.type === 'response'
+        ? `<span class="badge green">resp</span>`
+        : `<span class="badge blue">req</span>`;
       return `<tr>
         <td>${ts}</td>
         <td>${esc(method)}</td>
         <td><code>${esc(path)}</code></td>
         <td><code>${esc(model)}</code></td>
         <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(preview)}</td>
-        <td>${status}</td>
+        <td>${typeTag} ${statusCode}</td>
       </tr>`;
     }).join('');
   } catch(e) {

@@ -89,7 +89,7 @@ async def _stream_from_ollama(
                     yield chunk
 
 
-async def handle_passthrough(request: Request) -> Response:
+async def handle_passthrough(request: Request, logger: Optional[TrafficLogger] = None) -> Response:
     """Log and forward any unhandled request to Ollama as-is."""
     config = get_config()
     body = await request.body()
@@ -108,14 +108,16 @@ async def handle_passthrough(request: Request) -> Response:
         + f"\n  body: {json.dumps(body_preview, ensure_ascii=False)[:300]}"
     )
 
+    body_json = body_preview if isinstance(body_preview, dict) else None
+    request_id = logger.log_request(method, path, dict(request.headers), body_json) if logger else None
+
     forward_headers = _forward_headers(dict(request.headers))
     url = config.target + path
     if query:
         url += f"?{query}"
 
     try:
-        body_json = body_preview if isinstance(body_preview, dict) else {}
-        is_stream = body_json.get("stream", False)
+        is_stream = body_json.get("stream", False) if body_json else False
     except AttributeError:
         is_stream = False
 
@@ -135,6 +137,8 @@ async def handle_passthrough(request: Request) -> Response:
                 yield json.dumps({"error": "Cannot connect to Ollama"}).encode()
             except Exception as exc:
                 yield json.dumps({"error": str(exc)}).encode()
+            if logger and request_id:
+                logger.log_response(request_id, 200, {}, None)
 
         return StreamingResponse(_stream_gen(), media_type=media)
 
@@ -144,6 +148,16 @@ async def handle_passthrough(request: Request) -> Response:
         ) as client:
             resp = await client.request(method, url, headers=forward_headers, content=body)
         print(f"[PromptInterceptor] PASSTHROUGH response {resp.status_code} from {path}")
+
+        if logger and request_id:
+            try:
+                resp_json = resp.json()
+                if not isinstance(resp_json, (dict, list)):
+                    resp_json = None
+            except Exception:
+                resp_json = None
+            logger.log_response(request_id, resp.status_code, dict(resp.headers), resp_json)
+
         return Response(
             content=resp.content,
             status_code=resp.status_code,
