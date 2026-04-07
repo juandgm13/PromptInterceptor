@@ -242,3 +242,29 @@ def test_main_with_dashboard_disabled():
         main()
 
     assert threads_started == []
+
+
+async def test_passthrough_endpoint_is_registered(proxy_app):
+    """The catch-all route forwards unknown paths through handle_passthrough."""
+    from httpx import AsyncClient, ASGITransport
+    import prompt_interceptor.proxy as proxy_mod
+
+    fake_response = MagicMock()
+    fake_response.content = b'{"forwarded": true}'
+    fake_response.status_code = 200
+    fake_response.headers = {"content-type": "application/json"}
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.request = AsyncMock(return_value=fake_response)
+
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        async with AsyncClient(
+            transport=ASGITransport(app=proxy_app), base_url="http://test"
+        ) as c:
+            resp = await c.get("/v1/models")
+
+    assert resp.status_code == 200
+
+

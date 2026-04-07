@@ -17,6 +17,7 @@ from .rules_engine import RuleEngine
 from .proxy import (
     handle_chat_request, handle_generate_request,
     handle_stream_chat, handle_stream_generate,
+    handle_passthrough,
 )
 from .health import check_target_health, get_status as _get_status
 from .cors_middleware import add_cors_middleware
@@ -90,6 +91,10 @@ def create_app() -> FastAPI:
     @app.post("/api/generate/stream")
     async def stream_generate_endpoint(request: Request):
         return await handle_stream_generate(request, rule_engine, logger)
+
+    @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+    async def passthrough_endpoint(request: Request):
+        return await handle_passthrough(request)
 
     return app
 

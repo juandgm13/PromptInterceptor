@@ -16,6 +16,7 @@ from prompt_interceptor.proxy import (
     handle_generate_request,
     handle_stream_chat,
     handle_stream_generate,
+    handle_passthrough,
 )
 from prompt_interceptor.rules_engine import RuleEngine
 
@@ -807,3 +808,200 @@ async def test_handle_stream_generate_invalid_json_returns_400(cfg, engine_and_l
     resp = await handle_stream_generate(_make_bad_json_req("/api/generate"), engine, logger)
     assert resp.status_code == 400
     assert "invalid json" in json.loads(resp.body)["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# handle_passthrough
+# ---------------------------------------------------------------------------
+
+def _make_passthrough_req(body: dict | bytes | None, path: str = "/v1/messages",
+                           method: str = "POST", query: str = ""):
+    req = MagicMock()
+    raw = json.dumps(body).encode() if isinstance(body, dict) else (body or b"")
+    req.body = AsyncMock(return_value=raw)
+    req.method = method
+    req.url.path = path
+    req.query_params = query
+    req.headers = {"content-type": "application/json"}
+    return req
+
+
+async def test_passthrough_non_streaming_forwards_and_returns(cfg, monkeypatch):
+    """Non-streaming passthrough returns Ollama's response body and status."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    fake_resp = MagicMock()
+    fake_resp.content = b'{"ok": true}'
+    fake_resp.status_code = 200
+    fake_resp.headers = {"content-type": "application/json"}
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.request = AsyncMock(return_value=fake_resp)
+
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_passthrough(_make_passthrough_req({"model": "llama3"}, "/v1/messages"))
+
+    assert resp.status_code == 200
+    assert b'"ok"' in resp.body
+
+
+async def test_passthrough_streaming_returns_streaming_response(cfg, monkeypatch):
+    """Streaming passthrough returns a StreamingResponse with SSE media type for /v1/ paths."""
+    from fastapi.responses import StreamingResponse
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    req = _make_passthrough_req({"model": "llama3", "stream": True}, "/v1/messages")
+
+    resp = await handle_passthrough(req)
+
+    assert isinstance(resp, StreamingResponse)
+    assert "text/event-stream" in resp.media_type
+
+
+async def test_passthrough_streaming_ndjson_for_api_path(cfg, monkeypatch):
+    """Streaming passthrough uses application/x-ndjson for /api/ paths."""
+    from fastapi.responses import StreamingResponse
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    req = _make_passthrough_req({"model": "llama3", "stream": True}, "/api/generate")
+
+    resp = await handle_passthrough(req)
+
+    assert isinstance(resp, StreamingResponse)
+    assert "ndjson" in resp.media_type
+
+
+async def test_passthrough_timeout_returns_408(cfg, monkeypatch):
+    """Passthrough returns 408 when Ollama times out."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.request = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
+
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_passthrough(_make_passthrough_req({"model": "llama3"}, "/v1/messages"))
+
+    assert resp.status_code == 408
+
+
+async def test_passthrough_connect_error_returns_502(cfg, monkeypatch):
+    """Passthrough returns 502 when Ollama is unreachable."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.request = AsyncMock(side_effect=httpx.ConnectError("refused"))
+
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_passthrough(_make_passthrough_req(None, "/api/tags", "GET"))
+
+    assert resp.status_code == 502
+
+
+async def test_passthrough_non_json_body_is_handled(cfg, monkeypatch):
+    """Passthrough handles binary/non-JSON bodies without crashing."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    fake_resp = MagicMock()
+    fake_resp.content = b"pong"
+    fake_resp.status_code = 200
+    fake_resp.headers = {"content-type": "text/plain"}
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.request = AsyncMock(return_value=fake_resp)
+
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_passthrough(_make_passthrough_req(b"not json", "/api/version", "GET"))
+
+    assert resp.status_code == 200
+
+
+async def test_passthrough_query_params_appended_to_url(cfg, monkeypatch):
+    """Query params are appended to the forwarded URL."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    captured_urls = []
+
+    fake_resp = MagicMock()
+    fake_resp.content = b"{}"
+    fake_resp.status_code = 200
+    fake_resp.headers = {"content-type": "application/json"}
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    async def capture_request(method, url, **kwargs):
+        captured_urls.append(url)
+        return fake_resp
+
+    mock_client.request = capture_request
+
+    req = _make_passthrough_req(None, "/api/tags", "GET", query="name=llama3")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_passthrough(req)
+
+    assert resp.status_code == 200
+    assert "name=llama3" in captured_urls[0]
+
+
+async def test_passthrough_generic_exception_returns_500(cfg, monkeypatch):
+    """Passthrough returns 500 on unexpected errors."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.request = AsyncMock(side_effect=RuntimeError("unexpected"))
+
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_passthrough(_make_passthrough_req({"model": "llama3"}, "/v1/messages"))
+
+    assert resp.status_code == 500
+
+
+async def test_passthrough_streaming_chunks_yielded(cfg, monkeypatch):
+    """Streaming passthrough yields chunks from Ollama."""
+    from fastapi.responses import StreamingResponse
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    chunks = [b'data: {"text": "hello"}', b'data: {"text": " world"}']
+
+    async def fake_aiter_bytes():
+        for c in chunks:
+            yield c
+
+    fake_stream_resp = MagicMock()
+    fake_stream_resp.aiter_bytes = fake_aiter_bytes
+    fake_stream_resp.__aenter__ = AsyncMock(return_value=fake_stream_resp)
+    fake_stream_resp.__aexit__ = AsyncMock(return_value=False)
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.stream = MagicMock(return_value=fake_stream_resp)
+
+    req = _make_passthrough_req({"model": "llama3", "stream": True}, "/v1/messages")
+
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_passthrough(req)
+        assert isinstance(resp, StreamingResponse)
+        collected = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert b"hello" in collected

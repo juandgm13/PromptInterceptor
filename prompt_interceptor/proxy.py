@@ -89,6 +89,75 @@ async def _stream_from_ollama(
                     yield chunk
 
 
+async def handle_passthrough(request: Request) -> Response:
+    """Log and forward any unhandled request to Ollama as-is."""
+    config = get_config()
+    body = await request.body()
+    method = request.method
+    path = str(request.url.path)
+    query = str(request.query_params)
+
+    try:
+        body_preview = json.loads(body) if body else {}
+    except (json.JSONDecodeError, ValueError):
+        body_preview = body.decode("utf-8", errors="replace")[:500]
+
+    print(
+        f"[PromptInterceptor] PASSTHROUGH {method} {path}"
+        + (f"?{query}" if query else "")
+        + f"\n  body: {json.dumps(body_preview, ensure_ascii=False)[:300]}"
+    )
+
+    forward_headers = _forward_headers(dict(request.headers))
+    url = config.target + path
+    if query:
+        url += f"?{query}"
+
+    try:
+        body_json = body_preview if isinstance(body_preview, dict) else {}
+        is_stream = body_json.get("stream", False)
+    except AttributeError:
+        is_stream = False
+
+    if is_stream:
+        media = "text/event-stream" if path.startswith("/v1/") else "application/x-ndjson"
+
+        async def _stream_gen():
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(config.timeout), follow_redirects=True
+                ) as client:
+                    async with client.stream(method, url, headers=forward_headers, content=body) as resp:
+                        async for chunk in resp.aiter_bytes():
+                            if chunk:
+                                yield chunk
+            except httpx.ConnectError:
+                yield json.dumps({"error": "Cannot connect to Ollama"}).encode()
+            except Exception as exc:
+                yield json.dumps({"error": str(exc)}).encode()
+
+        return StreamingResponse(_stream_gen(), media_type=media)
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(config.timeout), follow_redirects=True
+        ) as client:
+            resp = await client.request(method, url, headers=forward_headers, content=body)
+        print(f"[PromptInterceptor] PASSTHROUGH response {resp.status_code} from {path}")
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers=_forward_headers(dict(resp.headers)),
+            media_type=resp.headers.get("content-type"),
+        )
+    except httpx.TimeoutException:
+        return _error_response(408, "Request timeout")
+    except httpx.ConnectError:
+        return _error_response(502, "Cannot connect to Ollama")
+    except Exception as exc:
+        return _error_response(500, str(exc))
+
+
 def _error_response(status_code: int, message: str) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,

@@ -10,10 +10,11 @@ These endpoints replicate the Ollama API. Point your AI client to `http://localh
 | `GET` | `/status` | Full system status (proxy + target + rules) |
 | `GET` | `/dashboard` | Redirect to dashboard UI |
 | `GET` | `/api/models` | List available models from Ollama |
-| `POST` | `/api/chat` | Chat completion (non-streaming) |
-| `POST` | `/api/generate` | Text generation (non-streaming) |
-| `POST` | `/api/chat/stream` | Chat completion with streaming |
-| `POST` | `/api/generate/stream` | Text generation with streaming |
+| `POST` | `/api/chat` | Chat completion (non-streaming) — intercepted by rules engine |
+| `POST` | `/api/generate` | Text generation (non-streaming) — intercepted by rules engine |
+| `POST` | `/api/chat/stream` | Chat completion with streaming — intercepted by rules engine |
+| `POST` | `/api/generate/stream` | Text generation with streaming — intercepted by rules engine |
+| `ANY` | `/{path}` | Pass-through: any other path (e.g. `/v1/messages`, `/api/tags`) is forwarded to Ollama as-is and logged to stdout |
 
 ### Example: Chat Request
 
