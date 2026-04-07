@@ -168,9 +168,9 @@ pip install -r prompt_interceptor/requirements.txt</code></pre>
   <li>Make sure Claude Code is installed: <code>claude --version</code></li>
   <li>Run <code>python -m prompt_interceptor</code></li>
   <li>Step 1: choose context size → click <strong>Launch Ollama Server</strong></li>
-  <li>Step 2: select <em>Claude Code</em>, choose a work directory → click <strong>Launch Client</strong></li>
+  <li>Step 2: select model, select <em>Claude Code</em>, choose a work directory → click <strong>Launch Client</strong></li>
   <li>Step 3: click <strong>Start</strong></li>
-  <li>All prompts now flow through PromptInterceptor &#8212; open the dashboard to see them</li>
+  <li>The launcher sets <code>ANTHROPIC_BASE_URL=http://localhost:8080</code> and passes <code>--model &lt;model&gt;</code> automatically. All prompts now flow through PromptInterceptor &#8212; open the dashboard to see them.</li>
 </ol>
 
 <h3>Use case: Ollama + custom Python app</h3>
@@ -191,7 +191,7 @@ pip install -r prompt_interceptor/requirements.txt</code></pre>
   "proxy_port": 8080,
   "target": "http://localhost:11434",
   "mode": "passthrough",
-  "context_size": 4096,
+  "context_size": 32768,
   "default_model": "qwen3.5",
   "dashboard_enabled": true,
   "dashboard_port": 9090,
@@ -212,6 +212,7 @@ pip install -r prompt_interceptor/requirements.txt</code></pre>
   <tr><td><span class="badge">POST</span></td><td><code>/api/generate</code></td><td>Text generation</td></tr>
   <tr><td><span class="badge">POST</span></td><td><code>/api/chat/stream</code></td><td>Streaming chat</td></tr>
   <tr><td><span class="badge">POST</span></td><td><code>/api/generate/stream</code></td><td>Streaming generate</td></tr>
+  <tr><td><span class="badge">ANY</span></td><td><code>/{path}</code></td><td>Pass-through: any unmatched path is forwarded to Ollama and logged</td></tr>
 </table>
 
 <h3>Dashboard (port 9090)</h3>
