@@ -258,15 +258,16 @@ def test_on_launch_ollama_opens_process_and_thread(tmp_path, monkeypatch):
 
     popen_calls = []
     with patch("prompt_interceptor.launcher.subprocess.Popen",
-               side_effect=lambda *a, **kw: popen_calls.append(a[0])), \
+               side_effect=lambda *a, **kw: popen_calls.append((a[0], kw))), \
          patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
         mock_thread.return_value = MagicMock()
         win._check_or_launch_ollama()
 
     assert len(popen_calls) == 1
-    cmd_str = " ".join(popen_calls[0])
-    assert "8192" in cmd_str
+    cmd_args, kw = popen_calls[0]
+    cmd_str = " ".join(cmd_args)
     assert "ollama serve" in cmd_str
+    assert kw.get("env", {}).get("OLLAMA_NUM_CTX") == "8192"
     mock_thread.assert_called_once()
 
 
@@ -323,12 +324,12 @@ def test_on_launch_ollama_uses_selected_ctx(tmp_path, monkeypatch):
 
     popen_calls = []
     with patch("prompt_interceptor.launcher.subprocess.Popen",
-               side_effect=lambda *a, **kw: popen_calls.append(a[0])), \
+               side_effect=lambda *a, **kw: popen_calls.append((a[0], kw))), \
          patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
         mock_thread.return_value = MagicMock()
         win._check_or_launch_ollama()
 
-    assert "32768" in " ".join(popen_calls[0])
+    assert popen_calls[0][1].get("env", {}).get("OLLAMA_NUM_CTX") == "32768"
 
 
 # ---------------------------------------------------------------------------

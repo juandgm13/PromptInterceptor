@@ -291,9 +291,11 @@ class LauncherWindow:
         ctx_value = _CTX_OPTIONS.get(self.ctx_var.get(), 32768)
         self.root.after(0, lambda: self.status_var.set("Launching Ollama server..."))
         try:
+            env = os.environ.copy()
+            env["OLLAMA_NUM_CTX"] = str(ctx_value)
             subprocess.Popen(
-                ["cmd", "/c", "start", "cmd", "/k",
-                 f"set OLLAMA_NUM_CTX={ctx_value} && ollama serve"],
+                ["cmd", "/c", "start", "", "cmd", "/k", "ollama serve"],
+                env=env,
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
             )
         except FileNotFoundError:
