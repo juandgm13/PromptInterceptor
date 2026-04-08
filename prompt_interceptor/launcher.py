@@ -443,8 +443,20 @@ class LauncherWindow:
 
         threading.Thread(target=_start_proxy_thread, daemon=True).start()
 
+        dashboard_port = config.dashboard_port
+
+        def _reset_session():
+            reset_url = f"http://localhost:{dashboard_port}/api/reset"
+            try:
+                req = urllib.request.Request(reset_url, data=b"{}", method="POST")
+                req.add_header("Content-Type", "application/json")
+                urllib.request.urlopen(req, timeout=3)
+            except Exception:
+                pass
+
+        self.root.after(1500, _reset_session)
         self.root.after(2000, lambda: webbrowser.open(
-            f"http://localhost:{config.dashboard_port}"
+            f"http://localhost:{dashboard_port}"
         ))
 
         self.status_var.set("Proxy starting... Dashboard will open shortly.")

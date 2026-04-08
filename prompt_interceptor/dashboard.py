@@ -507,6 +507,13 @@ async def stats():
     return await get_status()
 
 
+@router.post("/reset")
+async def reset_session():
+    """Clear all logs from the current session (today's log files)."""
+    deleted = _logger.clear_logs()
+    return {"status": "reset", "deleted": deleted}
+
+
 @router.get("/logs")
 async def logs(limit: int = 20):
     return {"logs": _logger.get_logs(limit=limit)}

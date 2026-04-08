@@ -792,6 +792,119 @@ def test_on_start_saves_model_to_config(tmp_path, monkeypatch):
     assert saved[0].default_model == "deepseek-coder"
 
 
+def test_on_start_schedules_reset_before_dashboard(tmp_path, monkeypatch):
+    """_on_start schedules a session reset (at 1500ms) before opening the dashboard (at 2000ms)."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, dashboard_port=9090)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    monkeypatch.setattr("prompt_interceptor.launcher.save_config", lambda c: None)
+
+    win, mock_root = _make_headless_win(cfg)
+    win.ctx_var = MagicMock()
+    win.ctx_var.get.return_value = "4k  (4096)"
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = "llama3"
+    win.work_dir_var = MagicMock()
+    win.work_dir_var.get.return_value = ""
+    win.app_path_var = MagicMock()
+    win.app_path_var.get.return_value = ""
+    win.env_var_var = MagicMock()
+    win.env_var_var.get.return_value = ""
+    win.status_var = MagicMock()
+
+    after_calls = []
+    mock_root.after.side_effect = lambda delay, fn, *args: after_calls.append((delay, fn))
+
+    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+        mock_thread.return_value = MagicMock()
+        win._on_start()
+
+    delays = [delay for delay, _ in after_calls]
+    # reset (1500ms), open browser (2000ms), iconify (2500ms)
+    assert 1500 in delays
+    assert 2000 in delays
+    assert 2500 in delays
+    # reset must come before browser open
+    assert delays.index(1500) < delays.index(2000)
+
+
+def test_on_start_reset_calls_api_endpoint(tmp_path, monkeypatch):
+    """The reset function scheduled by _on_start calls POST /api/reset on the dashboard."""
+    import urllib.request as _urllib_request
+
+    cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, dashboard_port=9090)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    monkeypatch.setattr("prompt_interceptor.launcher.save_config", lambda c: None)
+
+    win, mock_root = _make_headless_win(cfg)
+    win.ctx_var = MagicMock()
+    win.ctx_var.get.return_value = "4k  (4096)"
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = ""
+    win.work_dir_var = MagicMock()
+    win.work_dir_var.get.return_value = ""
+    win.app_path_var = MagicMock()
+    win.app_path_var.get.return_value = ""
+    win.env_var_var = MagicMock()
+    win.env_var_var.get.return_value = ""
+    win.status_var = MagicMock()
+
+    after_calls = []
+    mock_root.after.side_effect = lambda delay, fn, *args: after_calls.append((delay, fn))
+
+    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+        mock_thread.return_value = MagicMock()
+        win._on_start()
+
+    # Find the reset function (delay=1500)
+    reset_fn = next(fn for delay, fn in after_calls if delay == 1500)
+
+    # Call it and verify it hits the reset endpoint (or silently handles errors)
+    opened_urls = []
+
+    def _fake_urlopen(req, timeout=None):
+        opened_urls.append(req.full_url)
+        return MagicMock()
+
+    with patch("prompt_interceptor.launcher.urllib.request.urlopen", side_effect=_fake_urlopen), \
+         patch("prompt_interceptor.launcher.urllib.request.Request", wraps=_urllib_request.Request):
+        reset_fn()
+
+    assert any("9090" in url and "reset" in url for url in opened_urls)
+
+
+def test_on_start_reset_silences_connection_error(tmp_path, monkeypatch):
+    """The reset function does not raise if the dashboard is not yet up."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, dashboard_port=9090)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    monkeypatch.setattr("prompt_interceptor.launcher.save_config", lambda c: None)
+
+    win, mock_root = _make_headless_win(cfg)
+    win.ctx_var = MagicMock()
+    win.ctx_var.get.return_value = "4k  (4096)"
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = ""
+    win.work_dir_var = MagicMock()
+    win.work_dir_var.get.return_value = ""
+    win.app_path_var = MagicMock()
+    win.app_path_var.get.return_value = ""
+    win.env_var_var = MagicMock()
+    win.env_var_var.get.return_value = ""
+    win.status_var = MagicMock()
+
+    after_calls = []
+    mock_root.after.side_effect = lambda delay, fn, *args: after_calls.append((delay, fn))
+
+    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+        mock_thread.return_value = MagicMock()
+        win._on_start()
+
+    reset_fn = next(fn for delay, fn in after_calls if delay == 1500)
+
+    with patch("prompt_interceptor.launcher.urllib.request.urlopen",
+               side_effect=Exception("connection refused")):
+        reset_fn()  # must not raise
+
+
 # ---------------------------------------------------------------------------
 # _fetch_ollama_models
 # ---------------------------------------------------------------------------

@@ -363,6 +363,31 @@ async def test_delete_rule_valid(client):
 
 
 # ---------------------------------------------------------------------------
+# POST /api/reset
+# ---------------------------------------------------------------------------
+
+async def test_reset_session_clears_logs(client):
+    """POST /api/reset calls clear_logs and returns status=reset."""
+    import prompt_interceptor.dashboard as dash_mod
+    with patch.object(dash_mod._logger, "clear_logs", return_value=5) as mock_clear:
+        resp = await client.post("/api/reset")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "reset"
+    assert data["deleted"] == 5
+    mock_clear.assert_called_once()
+
+
+async def test_reset_session_no_logs(client):
+    """POST /api/reset returns deleted=0 when there are no log files."""
+    import prompt_interceptor.dashboard as dash_mod
+    with patch.object(dash_mod._logger, "clear_logs", return_value=0):
+        resp = await client.post("/api/reset")
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] == 0
+
+
+# ---------------------------------------------------------------------------
 # get_app
 # ---------------------------------------------------------------------------
 

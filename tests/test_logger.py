@@ -307,3 +307,48 @@ def test_get_all_logs_skips_unreadable_file(tmp_path):
         logs = tl.get_all_logs()
 
     assert logs == []
+
+
+# ---------------------------------------------------------------------------
+# clear_logs
+# ---------------------------------------------------------------------------
+
+def test_clear_logs_removes_all_files(tl, cfg):
+    """clear_logs deletes all req_*.json files in today's directory."""
+    for i in range(3):
+        tl.log_request("GET", f"/path/{i}", {}, None)
+        time.sleep(0.01)
+
+    date_dir = tl._get_date_dir()
+    assert len(list(date_dir.glob("req_*.json"))) == 3
+
+    deleted = tl.clear_logs()
+
+    assert deleted == 3
+    assert len(list(date_dir.glob("req_*.json"))) == 0
+
+
+def test_clear_logs_returns_zero_when_empty(tl):
+    """clear_logs returns 0 when there are no log files."""
+    deleted = tl.clear_logs()
+    assert deleted == 0
+
+
+def test_clear_logs_no_dir(tmp_path):
+    """clear_logs returns 0 when today's log directory does not yet exist."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    tl = TrafficLogger(cfg)
+
+    # Patch _get_date_dir to return a non-existent path
+    nonexistent = tmp_path / "no-such-dir"
+    with patch.object(tl, "_get_date_dir", return_value=nonexistent):
+        deleted = tl.clear_logs()
+
+    assert deleted == 0
+
+
+def test_clear_logs_then_get_logs_is_empty(tl):
+    """After clear_logs, get_logs returns an empty list."""
+    tl.log_request("POST", "/api/chat", {}, {"model": "llama3"})
+    tl.clear_logs()
+    assert tl.get_logs() == []
