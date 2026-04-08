@@ -249,3 +249,16 @@ class TrafficLogger:
                 continue
 
         return all_logs
+
+    def clear_logs(self) -> int:
+        """Delete all log files in today's directory. Returns number of files deleted."""
+        date_dir = self._get_date_dir()
+        if not date_dir.exists():
+            return 0
+        files = list(date_dir.glob("req_*.json"))
+        for f in files:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        return len(files)
