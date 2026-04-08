@@ -240,7 +240,7 @@ function showRaw(id) {
   document.getElementById('modal-title').textContent =
     (l.method || '') + ' ' + (l.path || '') + ' — ' + (l.timestamp || l.response_timestamp || '');
   document.getElementById('modal-content').textContent = JSON.stringify(l, null, 2);
-  document.getElementById('modal-overlay').style.display = '';
+  document.getElementById('modal-overlay').style.display = 'block';
 }
 
 function closeModal() {
