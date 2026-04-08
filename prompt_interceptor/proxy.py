@@ -30,6 +30,52 @@ def _forward_headers(headers: Dict[str, str]) -> Dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP}
 
 
+def _inject_num_ctx(body_json: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Inject num_ctx into request options based on configured context_size."""
+    if not body_json:
+        return body_json
+    config = get_config()
+    if not config.context_size:
+        return body_json
+    options = dict(body_json.get("options") or {})
+    if "num_ctx" not in options:
+        options["num_ctx"] = config.context_size
+        return {**body_json, "options": options}
+    return body_json
+
+
+def _parse_stream_response(chunks: list) -> Optional[Dict[str, Any]]:
+    """Assemble accumulated NDJSON streaming chunks into a loggable response body."""
+    full_content = ""
+    final_obj: Dict[str, Any] = {}
+    for chunk in chunks:
+        for line in chunk.split(b"\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                # /api/chat streaming: each chunk carries message.content
+                if "message" in obj:
+                    full_content += obj.get("message", {}).get("content", "")
+                # /api/generate streaming: each chunk carries response
+                elif "response" in obj:
+                    full_content += obj.get("response", "")
+                if obj.get("done"):
+                    final_obj = obj
+            except (json.JSONDecodeError, AttributeError):
+                pass
+    if not full_content and not final_obj:
+        return None
+    result = dict(final_obj)
+    if full_content:
+        if "message" in final_obj:
+            result["message"] = {**final_obj.get("message", {}), "content": full_content}
+        else:
+            result["response"] = full_content
+    return result
+
+
 async def _fetch_from_ollama(
     target: str,
     method: str,
@@ -218,6 +264,8 @@ async def handle_chat_request(
     if modified:
         body_json = body
 
+    body_json = _inject_num_ctx(body_json)
+
     if config.mode == "intercept":
         drop, body_json = await _apply_intercept(
             request_id, "POST", request.url.path, dict(request.headers), body_json
@@ -272,6 +320,8 @@ async def handle_generate_request(
     )
     if modified:
         body_json = body
+
+    body_json = _inject_num_ctx(body_json)
 
     if config.mode == "intercept":
         drop, body_json = await _apply_intercept(
@@ -328,6 +378,8 @@ async def handle_stream_chat(
     if modified:
         body_json = body
 
+    body_json = _inject_num_ctx(body_json)
+
     if config.mode == "intercept":
         drop, body_json = await _apply_intercept(
             request_id, "POST", request.url.path, dict(request.headers), body_json
@@ -339,11 +391,13 @@ async def handle_stream_chat(
     forward_headers = dict(request.headers)
 
     async def generate() -> AsyncIterator[bytes]:
+        accumulated = []
         try:
             async for chunk in _stream_from_ollama(
                 config.target, "POST", request.url.path,
                 forward_headers, body_bytes, config.timeout,
             ):
+                accumulated.append(chunk)
                 yield chunk
         except httpx.TimeoutException:
             yield json.dumps({"error": "Request timeout"}).encode()
@@ -352,7 +406,7 @@ async def handle_stream_chat(
         except Exception as e:
             yield json.dumps({"error": str(e)}).encode()
 
-        logger.log_response(request_id, 200, {}, None)
+        logger.log_response(request_id, 200, {}, _parse_stream_response(accumulated))
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
 
@@ -375,6 +429,8 @@ async def handle_stream_generate(
     if modified:
         body_json = body
 
+    body_json = _inject_num_ctx(body_json)
+
     if config.mode == "intercept":
         drop, body_json = await _apply_intercept(
             request_id, "POST", request.url.path, dict(request.headers), body_json
@@ -386,11 +442,13 @@ async def handle_stream_generate(
     forward_headers = dict(request.headers)
 
     async def generate() -> AsyncIterator[bytes]:
+        accumulated = []
         try:
             async for chunk in _stream_from_ollama(
                 config.target, "POST", request.url.path,
                 forward_headers, body_bytes, config.timeout,
             ):
+                accumulated.append(chunk)
                 yield chunk
         except httpx.TimeoutException:
             yield json.dumps({"error": "Request timeout"}).encode()
@@ -399,6 +457,6 @@ async def handle_stream_generate(
         except Exception as e:
             yield json.dumps({"error": str(e)}).encode()
 
-        logger.log_response(request_id, 200, {}, None)
+        logger.log_response(request_id, 200, {}, _parse_stream_response(accumulated))
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")

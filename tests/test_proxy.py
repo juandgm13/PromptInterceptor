@@ -12,6 +12,8 @@ from prompt_interceptor.logger import TrafficLogger
 from prompt_interceptor.proxy import (
     _forward_headers,
     _HOP_BY_HOP,
+    _inject_num_ctx,
+    _parse_stream_response,
     handle_chat_request,
     handle_generate_request,
     handle_stream_chat,
@@ -75,6 +77,80 @@ def test_forward_headers_case_insensitive():
 
 def test_forward_headers_empty():
     assert _forward_headers({}) == {}
+
+
+# ---------------------------------------------------------------------------
+# _inject_num_ctx
+# ---------------------------------------------------------------------------
+
+def test_inject_num_ctx_adds_option(monkeypatch):
+    cfg = Config(context_size=16384)
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    body = {"model": "llama3", "messages": []}
+    result = _inject_num_ctx(body)
+    assert result["options"]["num_ctx"] == 16384
+    # original dict not mutated
+    assert "options" not in body
+
+
+def test_inject_num_ctx_does_not_overwrite_existing(monkeypatch):
+    cfg = Config(context_size=16384)
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    body = {"model": "llama3", "options": {"num_ctx": 4096, "temperature": 0.7}}
+    result = _inject_num_ctx(body)
+    # existing num_ctx is preserved
+    assert result["options"]["num_ctx"] == 4096
+
+
+def test_inject_num_ctx_none_body(monkeypatch):
+    cfg = Config(context_size=16384)
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    assert _inject_num_ctx(None) is None
+
+
+def test_inject_num_ctx_zero_context_size(monkeypatch):
+    cfg = Config(context_size=0)
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    body = {"model": "llama3"}
+    result = _inject_num_ctx(body)
+    assert "options" not in result
+
+
+# ---------------------------------------------------------------------------
+# _parse_stream_response
+# ---------------------------------------------------------------------------
+
+def test_parse_stream_response_chat():
+    chunks = [
+        b'{"message":{"role":"assistant","content":"Hello"},"done":false}\n',
+        b'{"message":{"role":"assistant","content":" world"},"done":true,"total_duration":100}\n',
+    ]
+    result = _parse_stream_response(chunks)
+    assert result["message"]["content"] == "Hello world"
+    assert result["total_duration"] == 100
+
+
+def test_parse_stream_response_generate():
+    chunks = [
+        b'{"response":"foo","done":false}\n',
+        b'{"response":"bar","done":true}\n',
+    ]
+    result = _parse_stream_response(chunks)
+    assert result["response"] == "foobar"
+
+
+def test_parse_stream_response_empty():
+    assert _parse_stream_response([]) is None
+
+
+def test_parse_stream_response_invalid_json():
+    chunks = [b"not json\n", b'{"response":"ok","done":true}\n']
+    result = _parse_stream_response(chunks)
+    assert result["response"] == "ok"
 
 
 # ---------------------------------------------------------------------------

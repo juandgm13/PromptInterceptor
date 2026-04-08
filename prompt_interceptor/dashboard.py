@@ -101,6 +101,18 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   a{color:#4fc3f7;text-decoration:none}
   a:hover{text-decoration:underline}
   .empty{color:#555;font-style:italic}
+  .link-show{color:#4fc3f7;cursor:pointer;font-size:.8em;text-decoration:underline;
+    background:none;border:none;padding:0}
+  .modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;
+    background:rgba(0,0,0,.75);z-index:1000;overflow-y:auto}
+  .modal-box{background:#16213e;border-radius:8px;padding:24px;max-width:900px;
+    margin:40px auto;position:relative;border:1px solid #2a2a4e}
+  .modal-close{position:absolute;top:10px;right:14px;background:none;border:none;
+    color:#888;font-size:1.3em;cursor:pointer}
+  .modal-close:hover{color:#eee}
+  .modal-pre{background:#0d0d1e;padding:14px;border-radius:6px;font-size:.78em;
+    overflow:auto;max-height:70vh;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+  .modal-title{color:#4fc3f7;margin-bottom:14px;padding-right:24px}
 </style>
 </head>
 <body>
@@ -144,9 +156,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <h2>Live Prompts</h2>
     <table>
       <thead><tr>
-        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Preview</th><th>Status</th>
+        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Preview</th><th>Status</th><th>Raw</th>
       </tr></thead>
-      <tbody id="logs-body"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody>
+      <tbody id="logs-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
     </table>
   </div>
 
@@ -201,7 +213,18 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   </footer>
 </div>
 
+<!-- Raw data modal -->
+<div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeModal()">&#x2715;</button>
+    <h3 class="modal-title" id="modal-title">Raw Data</h3>
+    <pre class="modal-pre" id="modal-content"></pre>
+  </div>
+</div>
+
 <script>
+const _logsCache = {};
+
 function esc(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -209,6 +232,19 @@ function esc(s) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function showRaw(id) {
+  const l = _logsCache[id];
+  if (!l) return;
+  document.getElementById('modal-title').textContent =
+    (l.method || '') + ' ' + (l.path || '') + ' — ' + (l.timestamp || l.response_timestamp || '');
+  document.getElementById('modal-content').textContent = JSON.stringify(l, null, 2);
+  document.getElementById('modal-overlay').style.display = '';
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').style.display = 'none';
 }
 
 async function fetchJSON(url, opts) {
@@ -240,7 +276,9 @@ async function loadLogs() {
       tbody.innerHTML = '<tr><td colspan="6" class="empty">No requests yet.</td></tr>';
       return;
     }
-    tbody.innerHTML = logs.slice().reverse().map(l => {
+    tbody.innerHTML = logs.slice().reverse().map((l, i) => {
+      const cacheKey = l.request_id || i;
+      _logsCache[cacheKey] = l;
       const ts = (l.timestamp || l.response_timestamp || '').slice(11,19) || '-';
       const method = l.method || '-';
       const path = l.path || '-';
@@ -273,11 +311,12 @@ async function loadLogs() {
         <td><code>${esc(model)}</code></td>
         <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(preview)}</td>
         <td>${typeTag} ${statusCode}</td>
+        <td><button class="link-show" onclick="showRaw('${esc(String(cacheKey))}')">show</button></td>
       </tr>`;
     }).join('');
   } catch(e) {
     const tb = document.getElementById('logs-body');
-    tb.innerHTML = '<tr><td colspan="6" id="_logs-err"></td></tr>';
+    tb.innerHTML = '<tr><td colspan="7" id="_logs-err"></td></tr>';
     document.getElementById('_logs-err').textContent = 'Error: ' + e.message;
   }
 }
