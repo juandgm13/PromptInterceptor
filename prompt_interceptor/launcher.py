@@ -95,6 +95,29 @@ def _start_proxy_thread():
         print(f"[PromptInterceptor] Proxy thread error: {exc}")
 
 
+def _write_opencode_config(model: str, proxy_url: str) -> None:
+    """Write/update ~/.config/opencode/opencode.json to point at the proxy with the selected model."""
+    config_path = Path.home() / ".config" / "opencode" / "opencode.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        existing = json.loads(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        existing = {}
+
+    providers = existing.setdefault("provider", {})
+    ollama = providers.setdefault("ollama", {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "Ollama",
+    })
+    ollama.setdefault("options", {})["baseURL"] = f"{proxy_url}/v1"
+    ollama.setdefault("models", {})[model] = {"name": model}
+    existing.setdefault("$schema", "https://opencode.ai/config.json")
+
+    config_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    print(f"[PromptInterceptor] opencode config written to {config_path}")
+
+
 class LauncherWindow:
     """Main launcher window for PromptInterceptor."""
 
@@ -403,12 +426,15 @@ class LauncherWindow:
                 work_dir = self.work_dir_var.get().strip() or None
                 model = self.model_var.get().strip()
                 proxy_url = f"http://localhost:{config.proxy_port}"
-                shell_cmd = f"{cmd_name} --model {model}" if model else cmd_name
                 env = os.environ.copy()
                 if cmd_name == "claude":
                     env["ANTHROPIC_BASE_URL"] = proxy_url
+                    shell_cmd = f"claude --model {model}" if model else "claude"
                 elif cmd_name == "opencode":
-                    env["OPENAI_BASE_URL"] = proxy_url
+                    _write_opencode_config(model, proxy_url)
+                    shell_cmd = f"opencode --model ollama/{model}" if model else "opencode"
+                else:
+                    shell_cmd = cmd_name
                 subprocess.Popen(
                     ["cmd", "/c", "start", "cmd", "/k", shell_cmd],
                     cwd=work_dir,
