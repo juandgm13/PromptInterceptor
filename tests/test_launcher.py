@@ -1,4 +1,5 @@
 """Tests for prompt_interceptor/launcher.py."""
+import json
 import shutil
 import threading
 from pathlib import Path
@@ -608,7 +609,8 @@ def test_on_launch_client_open_code(tmp_path, monkeypatch):
 
     popen_calls = []
     with patch("prompt_interceptor.launcher.subprocess.Popen",
-               side_effect=lambda *a, **kw: popen_calls.append((a[0], kw))):
+               side_effect=lambda *a, **kw: popen_calls.append((a[0], kw))), \
+         patch("prompt_interceptor.launcher._write_opencode_config"):
         win._on_launch_client()
 
     assert len(popen_calls) == 1
@@ -616,8 +618,7 @@ def test_on_launch_client_open_code(tmp_path, monkeypatch):
     cmd_str = " ".join(args)
     assert "opencode" in cmd_str
     assert "--model" in cmd_str
-    assert "mistral:latest" in cmd_str
-    assert kwargs.get("env", {}).get("OPENAI_BASE_URL") == "http://localhost:8080"
+    assert "ollama/mistral:latest" in cmd_str
 
 
 def test_on_launch_client_python_app(tmp_path, monkeypatch):
@@ -673,6 +674,58 @@ def test_on_launch_client_python_app_no_path(tmp_path, monkeypatch):
     win._start_btn.config.assert_not_called()
     win.status_var.set.assert_called()
 
+
+# ---------------------------------------------------------------------------
+# _write_opencode_config
+# ---------------------------------------------------------------------------
+
+def test_write_opencode_config_creates_file(tmp_path):
+    """Creates opencode.json when it does not exist."""
+    from prompt_interceptor.launcher import _write_opencode_config
+
+    config_path = tmp_path / "opencode.json"
+    with patch("prompt_interceptor.launcher.Path.home", return_value=tmp_path):
+        _write_opencode_config("qwen2.5:7b", "http://localhost:8080")
+
+    # Reconstruct the expected path: home / .config / opencode / opencode.json
+    written = tmp_path / ".config" / "opencode" / "opencode.json"
+    assert written.exists()
+    data = json.loads(written.read_text())
+    assert data["provider"]["ollama"]["options"]["baseURL"] == "http://localhost:8080/v1"
+    assert "qwen2.5:7b" in data["provider"]["ollama"]["models"]
+
+
+def test_write_opencode_config_updates_existing(tmp_path):
+    """Merges into an existing opencode.json without overwriting unrelated keys."""
+    import json as _json
+    from prompt_interceptor.launcher import _write_opencode_config
+
+    config_dir = tmp_path / ".config" / "opencode"
+    config_dir.mkdir(parents=True)
+    existing = {"$schema": "https://opencode.ai/config.json", "theme": "dark"}
+    (config_dir / "opencode.json").write_text(_json.dumps(existing))
+
+    with patch("prompt_interceptor.launcher.Path.home", return_value=tmp_path):
+        _write_opencode_config("mistral:latest", "http://localhost:8080")
+
+    data = _json.loads((config_dir / "opencode.json").read_text())
+    assert data["theme"] == "dark"
+    assert "mistral:latest" in data["provider"]["ollama"]["models"]
+
+
+def test_write_opencode_config_idempotent(tmp_path):
+    """Calling twice with the same model does not duplicate entries."""
+    import json as _json
+    from prompt_interceptor.launcher import _write_opencode_config
+
+    with patch("prompt_interceptor.launcher.Path.home", return_value=tmp_path):
+        _write_opencode_config("llama3:8b", "http://localhost:8080")
+        _write_opencode_config("llama3:8b", "http://localhost:8080")
+
+    written = tmp_path / ".config" / "opencode" / "opencode.json"
+    data = _json.loads(written.read_text())
+    models = data["provider"]["ollama"]["models"]
+    assert list(models.keys()).count("llama3:8b") == 1
 
 def test_on_launch_client_python_app_custom_env_var(tmp_path, monkeypatch):
     """Custom env var name is used instead of the default OLLAMA_HOST."""
