@@ -44,6 +44,74 @@ def _inject_num_ctx(body_json: Optional[Dict[str, Any]]) -> Optional[Dict[str, A
     return body_json
 
 
+def _parse_sse_response(chunks: list) -> Optional[Dict[str, Any]]:
+    """Parse Anthropic SSE streaming chunks (/v1/messages) into a loggable response body."""
+    full_content = ""
+    final_message: Dict[str, Any] = {}
+
+    for chunk in chunks:
+        text = chunk.decode("utf-8", errors="replace") if isinstance(chunk, bytes) else chunk
+        for line in text.split("\n"):
+            if not line.startswith("data: "):
+                continue
+            data_str = line[6:].strip()
+            if not data_str or data_str == "[DONE]":
+                continue
+            try:
+                obj = json.loads(data_str)
+                obj_type = obj.get("type", "")
+                if obj_type == "content_block_delta":
+                    delta = obj.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        full_content += delta.get("text", "")
+                elif obj_type == "message_start":
+                    final_message = dict(obj.get("message", {}))
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+    if not full_content and not final_message:
+        return None
+    result = dict(final_message)
+    if full_content:
+        result["content"] = [{"type": "text", "text": full_content}]
+    return result
+
+
+def _parse_openai_sse_response(chunks: list) -> Optional[Dict[str, Any]]:
+    """Parse OpenAI-compatible SSE streaming chunks (/v1/chat/completions) into a loggable response body."""
+    full_content = ""
+    final_obj: Dict[str, Any] = {}
+
+    for chunk in chunks:
+        text = chunk.decode("utf-8", errors="replace") if isinstance(chunk, bytes) else chunk
+        for line in text.split("\n"):
+            if not line.startswith("data: "):
+                continue
+            data_str = line[6:].strip()
+            if not data_str or data_str == "[DONE]":
+                continue
+            try:
+                obj = json.loads(data_str)
+                choices = obj.get("choices", [])
+                if choices:
+                    delta = choices[0].get("delta", {})
+                    full_content += delta.get("content", "") or ""
+                final_obj = obj
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+    if not full_content and not final_obj:
+        return None
+    result = dict(final_obj)
+    if full_content:
+        base_choice = result["choices"][0] if result.get("choices") else {}
+        result["choices"] = [{
+            **base_choice,
+            "message": {"role": "assistant", "content": full_content},
+        }]
+    return result
+
+
 def _parse_stream_response(chunks: list) -> Optional[Dict[str, Any]]:
     """Assemble accumulated NDJSON streaming chunks into a loggable response body."""
     full_content = ""
@@ -171,6 +239,7 @@ async def handle_passthrough(request: Request, logger: Optional[TrafficLogger] =
         media = "text/event-stream" if path.startswith("/v1/") else "application/x-ndjson"
 
         async def _stream_gen():
+            accumulated = []
             try:
                 async with httpx.AsyncClient(
                     timeout=httpx.Timeout(config.timeout), follow_redirects=True
@@ -178,13 +247,15 @@ async def handle_passthrough(request: Request, logger: Optional[TrafficLogger] =
                     async with client.stream(method, url, headers=forward_headers, content=body) as resp:
                         async for chunk in resp.aiter_bytes():
                             if chunk:
+                                accumulated.append(chunk)
                                 yield chunk
             except httpx.ConnectError:
                 yield json.dumps({"error": "Cannot connect to Ollama"}).encode()
             except Exception as exc:
                 yield json.dumps({"error": str(exc)}).encode()
             if logger and request_id:
-                logger.log_response(request_id, 200, {}, None)
+                parsed = _parse_sse_response(accumulated) if path.startswith("/v1/") else _parse_stream_response(accumulated)
+                logger.log_response(request_id, 200, {}, parsed)
 
         return StreamingResponse(_stream_gen(), media_type=media)
 
@@ -209,6 +280,160 @@ async def handle_passthrough(request: Request, logger: Optional[TrafficLogger] =
             status_code=resp.status_code,
             headers=_forward_headers(dict(resp.headers)),
             media_type=resp.headers.get("content-type"),
+        )
+    except httpx.TimeoutException:
+        return _error_response(408, "Request timeout")
+    except httpx.ConnectError:
+        return _error_response(502, "Cannot connect to Ollama")
+    except Exception as exc:
+        return _error_response(500, str(exc))
+
+
+async def handle_v1_messages(
+    request: Request,
+    rule_engine: RuleEngine,
+    logger: TrafficLogger,
+) -> Response:
+    """Handle /v1/messages (Anthropic-compatible) request to Ollama."""
+    config = get_config()
+    try:
+        body_json = await request.json()
+    except Exception:
+        return _error_response(400, "Invalid JSON in request body")
+
+    _modified, body_json, request_id = await rule_engine.process_request(
+        "POST", request.url.path, dict(request.headers), body_json
+    )
+
+    is_stream = bool(body_json.get("stream", False)) if body_json else False
+
+    if config.mode == "intercept":
+        drop, body_json = await _apply_intercept(
+            request_id, "POST", request.url.path, dict(request.headers), body_json
+        )
+        if drop:
+            return Response(status_code=204)
+
+    body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
+    forward_headers = _forward_headers(dict(request.headers))
+
+    if is_stream:
+        async def generate() -> AsyncIterator[bytes]:
+            accumulated = []
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(config.timeout), follow_redirects=True
+                ) as client:
+                    async with client.stream(
+                        "POST", config.target + request.url.path,
+                        headers=forward_headers, content=body_bytes,
+                    ) as resp:
+                        async for chunk in resp.aiter_bytes():
+                            if chunk:
+                                accumulated.append(chunk)
+                                yield chunk
+            except httpx.TimeoutException:
+                yield json.dumps({"error": "Request timeout"}).encode()
+            except httpx.ConnectError:
+                yield json.dumps({"error": "Cannot connect to Ollama"}).encode()
+            except Exception as exc:
+                yield json.dumps({"error": str(exc)}).encode()
+            logger.log_response(request_id, 200, {}, _parse_sse_response(accumulated))
+
+        return StreamingResponse(generate(), media_type="text/event-stream")
+
+    try:
+        status_code, response_headers, response_body = await _fetch_from_ollama(
+            config.target, "POST", request.url.path,
+            dict(request.headers), body_bytes, config.timeout,
+        )
+        try:
+            response_json = json.loads(response_body)
+        except json.JSONDecodeError:
+            response_json = None
+        logger.log_response(request_id, status_code, response_headers, response_json)
+        return Response(
+            content=response_body,
+            status_code=status_code,
+            headers=_forward_headers(response_headers),
+            media_type=response_headers.get("content-type", "application/json"),
+        )
+    except httpx.TimeoutException:
+        return _error_response(408, "Request timeout")
+    except httpx.ConnectError:
+        return _error_response(502, "Cannot connect to Ollama")
+    except Exception as exc:
+        return _error_response(500, str(exc))
+
+
+async def handle_v1_chat_completions(
+    request: Request,
+    rule_engine: RuleEngine,
+    logger: TrafficLogger,
+) -> Response:
+    """Handle /v1/chat/completions (OpenAI-compatible) request to Ollama."""
+    config = get_config()
+    try:
+        body_json = await request.json()
+    except Exception:
+        return _error_response(400, "Invalid JSON in request body")
+
+    _modified, body_json, request_id = await rule_engine.process_request(
+        "POST", request.url.path, dict(request.headers), body_json
+    )
+
+    is_stream = bool(body_json.get("stream", False)) if body_json else False
+
+    if config.mode == "intercept":
+        drop, body_json = await _apply_intercept(
+            request_id, "POST", request.url.path, dict(request.headers), body_json
+        )
+        if drop:
+            return Response(status_code=204)
+
+    body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
+    forward_headers = _forward_headers(dict(request.headers))
+
+    if is_stream:
+        async def generate() -> AsyncIterator[bytes]:
+            accumulated = []
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(config.timeout), follow_redirects=True
+                ) as client:
+                    async with client.stream(
+                        "POST", config.target + request.url.path,
+                        headers=forward_headers, content=body_bytes,
+                    ) as resp:
+                        async for chunk in resp.aiter_bytes():
+                            if chunk:
+                                accumulated.append(chunk)
+                                yield chunk
+            except httpx.TimeoutException:
+                yield json.dumps({"error": "Request timeout"}).encode()
+            except httpx.ConnectError:
+                yield json.dumps({"error": "Cannot connect to Ollama"}).encode()
+            except Exception as exc:
+                yield json.dumps({"error": str(exc)}).encode()
+            logger.log_response(request_id, 200, {}, _parse_openai_sse_response(accumulated))
+
+        return StreamingResponse(generate(), media_type="text/event-stream")
+
+    try:
+        status_code, response_headers, response_body = await _fetch_from_ollama(
+            config.target, "POST", request.url.path,
+            dict(request.headers), body_bytes, config.timeout,
+        )
+        try:
+            response_json = json.loads(response_body)
+        except json.JSONDecodeError:
+            response_json = None
+        logger.log_response(request_id, status_code, response_headers, response_json)
+        return Response(
+            content=response_body,
+            status_code=status_code,
+            headers=_forward_headers(response_headers),
+            media_type=response_headers.get("content-type", "application/json"),
         )
     except httpx.TimeoutException:
         return _error_response(408, "Request timeout")

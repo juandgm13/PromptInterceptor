@@ -153,12 +153,18 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 
   <!-- Live Prompts -->
   <div class="section">
-    <h2>Live Prompts</h2>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <h2 style="margin-bottom:0">Live Prompts</h2>
+      <div style="display:flex;gap:6px">
+        <button class="btn-add" onclick="saveLogs()" style="background:#1a4d1a;border-color:#2a6b2a;color:#5f5">&#8595; Guardar</button>
+        <button class="btn-add" onclick="clearLogs()" style="background:#4d1a1a;border-color:#6b2a2a;color:#f88">&#x2715; Limpiar</button>
+      </div>
+    </div>
     <table>
       <thead><tr>
-        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Preview</th><th>Status</th><th>Raw</th>
+        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Prompt</th><th>Response</th><th>Status</th><th>Raw</th>
       </tr></thead>
-      <tbody id="logs-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
+      <tbody id="logs-body"><tr><td colspan="8" class="empty">Loading...</td></tr></tbody>
     </table>
   </div>
 
@@ -273,7 +279,7 @@ async function loadLogs() {
     const logs = data.logs || [];
     document.getElementById('stat-requests').textContent = logs.length;
     if (!logs.length) {
-      tbody.innerHTML = '<tr><td colspan="6" class="empty">No requests yet.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">No requests yet.</td></tr>';
       return;
     }
     tbody.innerHTML = logs.slice().reverse().map((l, i) => {
@@ -300,6 +306,25 @@ async function loadLogs() {
       } else if (l.body?.prompt) {
         preview = l.body.prompt.toString().slice(0, 80);
       }
+      // Extract LLM response text from response_body
+      let respText = '';
+      const rb = l.response_body;
+      if (rb) {
+        // /v1/chat/completions (OpenAI-compatible)
+        if (rb.choices && rb.choices[0]?.message?.content) {
+          respText = rb.choices[0].message.content;
+        // /api/chat (Ollama native)
+        } else if (rb.message?.content) {
+          respText = rb.message.content;
+        // /api/generate (Ollama native)
+        } else if (typeof rb.response === 'string') {
+          respText = rb.response;
+        // /v1/messages (Anthropic-compatible)
+        } else if (rb.content && rb.content[0]?.text) {
+          respText = rb.content[0].text;
+        }
+      }
+      const respPreview = respText ? esc(respText.slice(0, 100)) + (respText.length > 100 ? '…' : '') : '<span class="empty">-</span>';
       const statusCode = l.status_code ? `<span class="badge ${l.status_code < 400 ? 'green' : 'red'}">${l.status_code}</span>` : '';
       const typeTag = l.type === 'response'
         ? `<span class="badge green">resp</span>`
@@ -309,14 +334,15 @@ async function loadLogs() {
         <td>${esc(method)}</td>
         <td><code>${esc(path)}</code></td>
         <td><code>${esc(model)}</code></td>
-        <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(preview)}</td>
+        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(preview)}</td>
+        <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${respPreview}</td>
         <td>${typeTag} ${statusCode}</td>
         <td><button class="link-show" onclick="showRaw('${esc(String(cacheKey))}')">show</button></td>
       </tr>`;
     }).join('');
   } catch(e) {
     const tb = document.getElementById('logs-body');
-    tb.innerHTML = '<tr><td colspan="7" id="_logs-err"></td></tr>';
+    tb.innerHTML = '<tr><td colspan="8" id="_logs-err"></td></tr>';
     document.getElementById('_logs-err').textContent = 'Error: ' + e.message;
   }
 }
@@ -453,6 +479,26 @@ async function editRequest(id) {
 async function dropRequest(id) {
   await fetch(`/api/intercept/${id}/drop`, {method: 'POST'});
   loadPending();
+}
+
+async function clearLogs() {
+  if (!confirm('¿Limpiar todos los logs de la sesión actual?')) return;
+  await fetch('/api/reset', {method: 'POST'});
+  Object.keys(_logsCache).forEach(k => delete _logsCache[k]);
+  loadLogs();
+  loadStatus();
+}
+
+function saveLogs() {
+  const logs = Object.values(_logsCache);
+  if (!logs.length) { alert('No hay logs para guardar.'); return; }
+  const blob = new Blob([JSON.stringify(logs, null, 2)], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const ts = new Date().toISOString().slice(0,19).replace(/[T:]/g, '-');
+  a.href = url; a.download = `prompt-interceptor-logs-${ts}.json`;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
 }
 
 function refreshAll() { loadStatus(); loadRules(); loadLogs(); }
