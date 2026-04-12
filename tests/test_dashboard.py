@@ -461,3 +461,46 @@ async def test_root_serves_static_index_when_present(plain_client):
         assert "text/html" in resp.headers["content-type"]
     finally:
         os.unlink(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Live Prompts — Guardar / Limpiar buttons in HTML
+# ---------------------------------------------------------------------------
+
+async def test_dashboard_html_has_clear_logs_button(client):
+    """Dashboard HTML includes the Limpiar button that calls clearLogs()."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "clearLogs()" in resp.text
+    assert "Limpiar" in resp.text
+
+
+async def test_dashboard_html_has_save_logs_button(client):
+    """Dashboard HTML includes the Guardar button that calls saveLogs()."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "saveLogs()" in resp.text
+    assert "Guardar" in resp.text
+
+
+async def test_dashboard_html_save_logs_js_function(client):
+    """saveLogs() JS function creates a download link with the logs cache."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "URL.createObjectURL" in resp.text
+    assert "prompt-interceptor-logs-" in resp.text
+
+
+async def test_dashboard_html_clear_logs_calls_reset_api(client):
+    """clearLogs() JS function calls /api/reset via fetch."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "/api/reset" in resp.text
+
+
+async def test_dashboard_html_has_response_column(client):
+    """Dashboard table has a Response column for LLM output."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "<th>Response</th>" in resp.text
+    assert "response_body" in resp.text

@@ -14,10 +14,14 @@ from prompt_interceptor.proxy import (
     _HOP_BY_HOP,
     _inject_num_ctx,
     _parse_stream_response,
+    _parse_sse_response,
+    _parse_openai_sse_response,
     handle_chat_request,
     handle_generate_request,
     handle_stream_chat,
     handle_stream_generate,
+    handle_v1_messages,
+    handle_v1_chat_completions,
     handle_passthrough,
 )
 from prompt_interceptor.rules_engine import RuleEngine
@@ -1161,6 +1165,55 @@ async def test_passthrough_streaming_logs_response_with_logger(cfg, monkeypatch,
     assert len(logged) == 1
 
 
+async def test_passthrough_body_json_attribute_error_handled(cfg, monkeypatch):
+    """When body_json.get raises AttributeError, is_stream defaults to False."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    fake_resp = MagicMock()
+    fake_resp.content = b'{"ok": true}'
+    fake_resp.status_code = 200
+    fake_resp.headers = {"content-type": "application/json"}
+    fake_resp.json = MagicMock(return_value={"ok": True})
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.request = AsyncMock(return_value=fake_resp)
+
+    # Craft a request whose body is a non-JSON string so body_json ends up None
+    # then override body_json inside handle_passthrough via a body that json.loads returns a string
+    req = _make_passthrough_req(b'"just a string"', "/api/test", "POST")
+
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_passthrough(req)
+
+    assert resp.status_code == 200
+
+
+async def test_passthrough_resp_json_generic_exception_handled(cfg, monkeypatch):
+    """When resp.json() raises a non-JSONDecodeError exception, resp_json is None."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    fake_resp = MagicMock()
+    fake_resp.content = b'data'
+    fake_resp.status_code = 200
+    fake_resp.headers = {"content-type": "application/octet-stream"}
+    fake_resp.json = MagicMock(side_effect=RuntimeError("not json at all"))
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.request = AsyncMock(return_value=fake_resp)
+
+    logger = TrafficLogger(cfg)
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_passthrough(_make_passthrough_req({"model": "x"}, "/api/test"), logger=logger)
+
+    assert resp.status_code == 200
+
+
 async def test_passthrough_non_dict_json_response_handled(cfg, monkeypatch):
     """Non-dict resp.json() is treated as None when logging."""
     import prompt_interceptor.proxy as proxy_mod
@@ -1184,5 +1237,630 @@ async def test_passthrough_non_dict_json_response_handled(cfg, monkeypatch):
             _make_passthrough_req({"model": "llama3"}, "/v1/test"),
             logger=logger,
         )
+
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# _parse_sse_response
+# ---------------------------------------------------------------------------
+
+def test_parse_sse_response_assembles_content():
+    chunks = [
+        b'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_01","model":"qwen3:9b","role":"assistant","content":[]}}\n\n',
+        b'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}\n\n',
+        b'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}\n\n',
+        b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ]
+    result = _parse_sse_response(chunks)
+    assert result is not None
+    assert result["content"] == [{"type": "text", "text": "Hello world"}]
+
+
+def test_parse_sse_response_preserves_message_start_metadata():
+    chunks = [
+        b'data: {"type":"message_start","message":{"id":"msg_01","model":"qwen3:9b","role":"assistant"}}\n',
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}\n',
+    ]
+    result = _parse_sse_response(chunks)
+    assert result["id"] == "msg_01"
+    assert result["model"] == "qwen3:9b"
+
+
+def test_parse_sse_response_empty_chunks_returns_none():
+    assert _parse_sse_response([]) is None
+
+
+def test_parse_sse_response_ping_only_returns_none():
+    chunks = [b'event: ping\ndata: {"type":"ping"}\n\n']
+    assert _parse_sse_response(chunks) is None
+
+
+def test_parse_sse_response_done_marker_skipped():
+    """data: [DONE] line is skipped without crashing."""
+    chunks = [
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n',
+        b'data: [DONE]\n',
+    ]
+    result = _parse_sse_response(chunks)
+    assert result["content"][0]["text"] == "hi"
+
+
+def test_parse_sse_response_skips_invalid_json():
+    chunks = [
+        b'data: not-valid-json\n',
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n',
+    ]
+    result = _parse_sse_response(chunks)
+    assert result["content"] == [{"type": "text", "text": "ok"}]
+
+
+def test_parse_sse_response_accepts_string_chunks():
+    chunks = [
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"x"}}\n',
+    ]
+    result = _parse_sse_response(chunks)
+    assert result["content"][0]["text"] == "x"
+
+
+# ---------------------------------------------------------------------------
+# _parse_openai_sse_response
+# ---------------------------------------------------------------------------
+
+def test_parse_openai_sse_response_assembles_content():
+    chunks = [
+        b'data: {"id":"cmp-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}\n',
+        b'data: {"id":"cmp-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":null}]}\n',
+        b'data: [DONE]\n',
+    ]
+    result = _parse_openai_sse_response(chunks)
+    assert result is not None
+    assert result["choices"][0]["message"]["content"] == "Hello world"
+
+
+def test_parse_openai_sse_response_empty_returns_none():
+    assert _parse_openai_sse_response([]) is None
+
+
+def test_parse_openai_sse_response_done_only_returns_none():
+    chunks = [b'data: [DONE]\n']
+    assert _parse_openai_sse_response(chunks) is None
+
+
+def test_parse_openai_sse_response_skips_invalid_json():
+    chunks = [
+        b'data: bad json\n',
+        b'data: {"id":"x","choices":[{"index":0,"delta":{"content":"y"},"finish_reason":null}]}\n',
+    ]
+    result = _parse_openai_sse_response(chunks)
+    assert result["choices"][0]["message"]["content"] == "y"
+
+
+def test_parse_openai_sse_response_ollama_usage_chunk_last():
+    """Ollama sends a final chunk with choices:[] and usage stats. Content must still be captured."""
+    chunks = [
+        b'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}\n',
+        b'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":"stop"}]}\n',
+        b'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}\n',
+        b'data: [DONE]\n',
+    ]
+    result = _parse_openai_sse_response(chunks)
+    assert result is not None
+    assert result["choices"][0]["message"]["content"] == "Hello world"
+    assert result["usage"]["completion_tokens"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Helpers for v1 handler tests
+# ---------------------------------------------------------------------------
+
+def _make_v1_streaming_client(chunks: list):
+    """Build a mock httpx.AsyncClient that streams the given byte chunks."""
+    async def fake_aiter_bytes():
+        for c in chunks:
+            yield c
+
+    fake_stream_resp = MagicMock()
+    fake_stream_resp.aiter_bytes = fake_aiter_bytes
+    fake_stream_resp.__aenter__ = AsyncMock(return_value=fake_stream_resp)
+    fake_stream_resp.__aexit__ = AsyncMock(return_value=False)
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.stream = MagicMock(return_value=fake_stream_resp)
+    return mock_client
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_messages — non-streaming
+# ---------------------------------------------------------------------------
+
+async def test_handle_v1_messages_non_streaming_success(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    response_bytes = json.dumps({
+        "id": "msg_01", "type": "message", "role": "assistant",
+        "content": [{"type": "text", "text": "Hi"}],
+        "model": "qwen3:9b", "stop_reason": "end_turn",
+    }).encode()
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(return_value=(200, {"content-type": "application/json"}, response_bytes)),
+    ):
+        req = make_req(
+            {"model": "qwen3:9b", "max_tokens": 100, "messages": [{"role": "user", "content": "Hi"}]},
+            path="/v1/messages",
+        )
+        resp = await handle_v1_messages(req, engine, logger)
+
+    assert resp.status_code == 200
+    assert json.loads(resp.body)["id"] == "msg_01"
+
+
+async def test_handle_v1_messages_non_streaming_non_json_response(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(return_value=(200, {"content-type": "text/plain"}, b"plain")),
+    ):
+        req = make_req({"model": "qwen3:9b", "messages": []}, path="/v1/messages")
+        resp = await handle_v1_messages(req, engine, logger)
+
+    assert resp.status_code == 200
+
+
+async def test_handle_v1_messages_timeout(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(side_effect=httpx.TimeoutException("timeout")),
+    ):
+        req = make_req({"model": "qwen3:9b", "messages": []}, path="/v1/messages")
+        resp = await handle_v1_messages(req, engine, logger)
+
+    assert resp.status_code == 408
+
+
+async def test_handle_v1_messages_connect_error(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(side_effect=httpx.ConnectError("refused")),
+    ):
+        req = make_req({"model": "qwen3:9b", "messages": []}, path="/v1/messages")
+        resp = await handle_v1_messages(req, engine, logger)
+
+    assert resp.status_code == 502
+
+
+async def test_handle_v1_messages_generic_error(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(side_effect=RuntimeError("boom")),
+    ):
+        req = make_req({"model": "qwen3:9b", "messages": []}, path="/v1/messages")
+        resp = await handle_v1_messages(req, engine, logger)
+
+    assert resp.status_code == 500
+
+
+async def test_handle_v1_messages_invalid_json_returns_400(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    resp = await handle_v1_messages(_make_bad_json_req("/v1/messages"), engine, logger)
+    assert resp.status_code == 400
+    assert "invalid json" in json.loads(resp.body)["error"].lower()
+
+
+async def test_handle_v1_messages_intercept_drop(tmp_path, monkeypatch):
+    cfg = Config(log_dir=str(tmp_path / "logs"), mode="intercept")
+    import prompt_interceptor.rules_engine as re_mod, prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+
+    monkeypatch.setattr(
+        "prompt_interceptor.proxy.interceptor.intercept",
+        AsyncMock(return_value=("drop", None)),
+    )
+    req = make_req({"model": "qwen3:9b", "messages": []}, path="/v1/messages")
+    resp = await handle_v1_messages(req, engine, logger)
+    assert resp.status_code == 204
+
+
+async def test_handle_v1_messages_intercept_forward(tmp_path, monkeypatch):
+    cfg = Config(log_dir=str(tmp_path / "logs"), mode="intercept")
+    import prompt_interceptor.rules_engine as re_mod, prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+
+    body = {"model": "qwen3:9b", "messages": []}
+    monkeypatch.setattr(
+        "prompt_interceptor.proxy.interceptor.intercept",
+        AsyncMock(return_value=("forward", body)),
+    )
+    response_bytes = json.dumps({"id": "msg_01", "type": "message"}).encode()
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(return_value=(200, {"content-type": "application/json"}, response_bytes)),
+    ):
+        req = make_req(body, path="/v1/messages")
+        resp = await handle_v1_messages(req, engine, logger)
+
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_messages — streaming
+# ---------------------------------------------------------------------------
+
+async def test_handle_v1_messages_streaming_returns_event_stream(cfg, engine_and_logger, monkeypatch):
+    from fastapi.responses import StreamingResponse
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    sse_chunks = [
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}\n\n',
+        b'data: {"type":"message_stop"}\n\n',
+    ]
+    mock_client = _make_v1_streaming_client(sse_chunks)
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/messages")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_v1_messages(req, engine, logger)
+        assert isinstance(resp, StreamingResponse)
+        assert "text/event-stream" in resp.media_type
+        body = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert b"Hi" in body
+
+
+async def test_handle_v1_messages_streaming_logs_response(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    sse_chunks = [
+        b'data: {"type":"message_start","message":{"id":"msg_01","model":"qwen3:9b","role":"assistant"}}\n\n',
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}\n\n',
+    ]
+    mock_client = _make_v1_streaming_client(sse_chunks)
+
+    logged = []
+    original = logger.log_response
+    logger.log_response = lambda *a, **kw: logged.append(a) or original(*a, **kw)
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/messages")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_v1_messages(req, engine, logger)
+        b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert len(logged) >= 1
+    # The response body logged should contain the assembled content
+    logged_body = logged[-1][3]  # 4th arg to log_response is body
+    assert logged_body is not None
+    assert logged_body["content"][0]["text"] == "Hello"
+
+
+async def test_handle_v1_messages_streaming_connect_error_yields_json(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    fake_stream_resp = MagicMock()
+    fake_stream_resp.__aenter__ = AsyncMock(side_effect=httpx.ConnectError("refused"))
+    fake_stream_resp.__aexit__ = AsyncMock(return_value=False)
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.stream = MagicMock(return_value=fake_stream_resp)
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/messages")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_v1_messages(req, engine, logger)
+        body = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert "error" in json.loads(body)
+
+
+async def test_handle_v1_messages_streaming_timeout_yields_json(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    fake_stream_resp = MagicMock()
+    fake_stream_resp.__aenter__ = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
+    fake_stream_resp.__aexit__ = AsyncMock(return_value=False)
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.stream = MagicMock(return_value=fake_stream_resp)
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/messages")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_v1_messages(req, engine, logger)
+        body = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert "timeout" in json.loads(body)["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_chat_completions — non-streaming
+# ---------------------------------------------------------------------------
+
+async def test_handle_v1_chat_completions_non_streaming_success(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    response_bytes = json.dumps({
+        "id": "chatcmpl-1", "object": "chat.completion",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "Hi"}, "finish_reason": "stop"}],
+        "model": "qwen3:9b",
+    }).encode()
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(return_value=(200, {"content-type": "application/json"}, response_bytes)),
+    ):
+        req = make_req(
+            {"model": "qwen3:9b", "messages": [{"role": "user", "content": "Hi"}]},
+            path="/v1/chat/completions",
+        )
+        resp = await handle_v1_chat_completions(req, engine, logger)
+
+    assert resp.status_code == 200
+    assert json.loads(resp.body)["id"] == "chatcmpl-1"
+
+
+async def test_handle_v1_chat_completions_timeout(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(side_effect=httpx.TimeoutException("timeout")),
+    ):
+        req = make_req({"model": "qwen3:9b", "messages": []}, path="/v1/chat/completions")
+        resp = await handle_v1_chat_completions(req, engine, logger)
+
+    assert resp.status_code == 408
+
+
+async def test_handle_v1_chat_completions_connect_error(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(side_effect=httpx.ConnectError("refused")),
+    ):
+        req = make_req({"model": "qwen3:9b", "messages": []}, path="/v1/chat/completions")
+        resp = await handle_v1_chat_completions(req, engine, logger)
+
+    assert resp.status_code == 502
+
+
+async def test_handle_v1_chat_completions_generic_error(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(side_effect=RuntimeError("boom")),
+    ):
+        req = make_req({"model": "qwen3:9b", "messages": []}, path="/v1/chat/completions")
+        resp = await handle_v1_chat_completions(req, engine, logger)
+
+    assert resp.status_code == 500
+
+
+async def test_handle_v1_chat_completions_invalid_json_returns_400(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    resp = await handle_v1_chat_completions(_make_bad_json_req("/v1/chat/completions"), engine, logger)
+    assert resp.status_code == 400
+
+
+async def test_handle_v1_chat_completions_intercept_drop(tmp_path, monkeypatch):
+    cfg = Config(log_dir=str(tmp_path / "logs"), mode="intercept")
+    import prompt_interceptor.rules_engine as re_mod, prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+
+    monkeypatch.setattr(
+        "prompt_interceptor.proxy.interceptor.intercept",
+        AsyncMock(return_value=("drop", None)),
+    )
+    req = make_req({"model": "qwen3:9b", "messages": []}, path="/v1/chat/completions")
+    resp = await handle_v1_chat_completions(req, engine, logger)
+    assert resp.status_code == 204
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_chat_completions — streaming
+# ---------------------------------------------------------------------------
+
+async def test_handle_v1_chat_completions_streaming_returns_event_stream(cfg, engine_and_logger, monkeypatch):
+    from fastapi.responses import StreamingResponse
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    sse_chunks = [
+        b'data: {"id":"cmp-1","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}\n',
+        b'data: [DONE]\n',
+    ]
+    mock_client = _make_v1_streaming_client(sse_chunks)
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/chat/completions")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_v1_chat_completions(req, engine, logger)
+        assert isinstance(resp, StreamingResponse)
+        assert "text/event-stream" in resp.media_type
+        body = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert b"Hi" in body
+
+
+async def test_handle_v1_chat_completions_streaming_logs_response(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    sse_chunks = [
+        b'data: {"id":"cmp-1","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}\n',
+        b'data: [DONE]\n',
+    ]
+    mock_client = _make_v1_streaming_client(sse_chunks)
+
+    logged = []
+    original = logger.log_response
+    logger.log_response = lambda *a, **kw: logged.append(a) or original(*a, **kw)
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/chat/completions")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_v1_chat_completions(req, engine, logger)
+        b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert len(logged) >= 1
+    logged_body = logged[-1][3]
+    assert logged_body is not None
+    assert logged_body["choices"][0]["message"]["content"] == "Hello"
+
+
+async def test_handle_v1_messages_streaming_generic_error_yields_json(cfg, engine_and_logger, monkeypatch):
+    """Generic exception inside handle_v1_messages streaming yields error JSON."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    fake_stream_resp = MagicMock()
+    fake_stream_resp.__aenter__ = AsyncMock(side_effect=RuntimeError("unexpected"))
+    fake_stream_resp.__aexit__ = AsyncMock(return_value=False)
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.stream = MagicMock(return_value=fake_stream_resp)
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/messages")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_v1_messages(req, engine, logger)
+        body = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert "unexpected" in json.loads(body)["error"]
+
+
+async def test_handle_v1_chat_completions_streaming_timeout_yields_json(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    fake_stream_resp = MagicMock()
+    fake_stream_resp.__aenter__ = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
+    fake_stream_resp.__aexit__ = AsyncMock(return_value=False)
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.stream = MagicMock(return_value=fake_stream_resp)
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/chat/completions")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_v1_chat_completions(req, engine, logger)
+        body = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert "timeout" in json.loads(body)["error"].lower()
+
+
+async def test_handle_v1_chat_completions_streaming_connect_error_yields_json(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    fake_stream_resp = MagicMock()
+    fake_stream_resp.__aenter__ = AsyncMock(side_effect=httpx.ConnectError("refused"))
+    fake_stream_resp.__aexit__ = AsyncMock(return_value=False)
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.stream = MagicMock(return_value=fake_stream_resp)
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/chat/completions")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_v1_chat_completions(req, engine, logger)
+        body = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert "error" in json.loads(body)
+
+
+async def test_handle_v1_chat_completions_streaming_generic_error_yields_json(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    fake_stream_resp = MagicMock()
+    fake_stream_resp.__aenter__ = AsyncMock(side_effect=RuntimeError("boom"))
+    fake_stream_resp.__aexit__ = AsyncMock(return_value=False)
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.stream = MagicMock(return_value=fake_stream_resp)
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/chat/completions")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_v1_chat_completions(req, engine, logger)
+        body = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert "boom" in json.loads(body)["error"]
+
+
+async def test_handle_v1_chat_completions_non_streaming_non_json_response(cfg, engine_and_logger, monkeypatch):
+    """handle_v1_chat_completions handles non-JSON response body without crashing."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(return_value=(200, {"content-type": "text/plain"}, b"plain text")),
+    ):
+        req = make_req({"model": "qwen3:9b", "messages": []}, path="/v1/chat/completions")
+        resp = await handle_v1_chat_completions(req, engine, logger)
 
     assert resp.status_code == 200
