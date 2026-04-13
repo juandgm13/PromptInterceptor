@@ -66,6 +66,12 @@ class Config(BaseModel):
     # Launcher: Python app entry point path
     python_app_path: str = ""
 
+    # Launcher: command to launch the Python app (supports arguments)
+    python_app_command: str = "python main.py"
+
+    # Launcher: whether to activate a .venv before running the Python app
+    python_app_use_venv: bool = False
+
     # Launcher: environment variable name the Python app uses to configure the Ollama host
     python_app_env_var: str = "OLLAMA_HOST"
 

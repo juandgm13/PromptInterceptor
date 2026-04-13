@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import webbrowser
 import tkinter as tk
@@ -16,6 +17,8 @@ from tkinter import ttk, filedialog
 from pathlib import Path
 
 from .config import get_config, save_config
+
+_LOCALHOST_HOSTS = {"127.0.0.1", "localhost"}
 
 _CTX_OPTIONS = {
     "4k  (4096)":    4096,
@@ -127,10 +130,11 @@ class LauncherWindow:
         self.root.resizable(False, False)
         self.root.configure(bg="#1a1a2e")
         self._step2_enabled = False
+        self._active_target: str = get_config().target
 
         self._set_icon()
         self._build_ui()
-        self._center_window(540, 460)
+        self._center_window(540, 490)
 
     def _set_icon(self) -> None:
         icon_path = Path(__file__).parent.parent / "res" / "PromptInterceptor_Icon.png"
@@ -191,6 +195,16 @@ class LauncherWindow:
         # ── Step 1: Ollama Server ──
         ttk.Label(self.root, text="── Step 1: Ollama Server ──", style="Section.TLabel").pack()
 
+        # Ollama Host row
+        parsed_target = urllib.parse.urlparse(config.target)
+        initial_host = parsed_target.hostname or "127.0.0.1"
+        row_host = ttk.Frame(self.root)
+        row_host.pack(fill="x", **pad)
+        ttk.Label(row_host, text="Ollama Host:", width=14, anchor="w").pack(side="left")
+        self.ollama_host_var = tk.StringVar(value=initial_host)
+        self._host_entry = ttk.Entry(row_host, textvariable=self.ollama_host_var, width=22)
+        self._host_entry.pack(side="left")
+
         row1 = ttk.Frame(self.root)
         row1.pack(fill="x", **pad)
         ttk.Label(row1, text="Context Size:", width=14, anchor="w").pack(side="left")
@@ -225,17 +239,17 @@ class LauncherWindow:
         self._client_cb.pack(side="left")
         self._client_cb.bind("<<ComboboxSelected>>", self._on_client_change)
 
-        row2m = ttk.Frame(self.root)
-        row2m.pack(fill="x", **pad)
-        ttk.Label(row2m, text="Model:", width=14, anchor="w").pack(side="left")
-        self.model_var = tk.StringVar(value="")
-        self._model_cb = ttk.Combobox(row2m, textvariable=self.model_var,
-                                       values=[], width=22, state="disabled")
-        self._model_cb.pack(side="left")
-
-        # Container for conditional client rows (work dir OR app path + env var)
+        # Container for conditional client rows
         self._client_details = ttk.Frame(self.root)
         self._client_details.pack(fill="x")
+
+        # Model row (Claude Code / Open Code only)
+        self._row_model = ttk.Frame(self._client_details)
+        ttk.Label(self._row_model, text="Model:", width=14, anchor="w").pack(side="left")
+        self.model_var = tk.StringVar(value="")
+        self._model_cb = ttk.Combobox(self._row_model, textvariable=self.model_var,
+                                       values=[], width=22, state="disabled")
+        self._model_cb.pack(side="left")
 
         # Work Dir row (Claude Code / Open Code)
         self._row_workdir = ttk.Frame(self._client_details)
@@ -249,9 +263,9 @@ class LauncherWindow:
                                                width=9, state="disabled")
         self._browse_workdir_btn.pack(side="left")
 
-        # App Path row (Python App)
+        # App Dir row (Python App — working directory)
         self._row_apppath = ttk.Frame(self._client_details)
-        ttk.Label(self._row_apppath, text="App Path:", width=14, anchor="w").pack(side="left")
+        ttk.Label(self._row_apppath, text="App Dir:", width=14, anchor="w").pack(side="left")
         self.app_path_var = tk.StringVar(value=config.python_app_path)
         self._app_path_entry = ttk.Entry(self._row_apppath, textvariable=self.app_path_var,
                                           width=26, state="disabled")
@@ -261,6 +275,22 @@ class LauncherWindow:
                                            width=9, state="disabled")
         self._browse_app_btn.pack(side="left")
 
+        # Command row (Python App)
+        self._row_command = ttk.Frame(self._client_details)
+        ttk.Label(self._row_command, text="Command:", width=14, anchor="w").pack(side="left")
+        self.app_command_var = tk.StringVar(value=config.python_app_command or "python main.py")
+        self._command_entry = ttk.Entry(self._row_command, textvariable=self.app_command_var,
+                                         width=36, state="disabled")
+        self._command_entry.pack(side="left")
+
+        # Venv row (Python App)
+        self._row_venv = ttk.Frame(self._client_details)
+        ttk.Label(self._row_venv, text="", width=14).pack(side="left")
+        self.use_venv_var = tk.BooleanVar(value=config.python_app_use_venv)
+        self._venv_check = ttk.Checkbutton(self._row_venv, text="Use venv (.venv)",
+                                            variable=self.use_venv_var, state="disabled")
+        self._venv_check.pack(side="left")
+
         # Env Var row (Python App)
         self._row_envvar = ttk.Frame(self._client_details)
         ttk.Label(self._row_envvar, text="Ollama Env Var:", width=14, anchor="w").pack(side="left")
@@ -269,10 +299,9 @@ class LauncherWindow:
                                          width=26, state="disabled")
         self._env_var_entry.pack(side="left")
 
-        row2c = ttk.Frame(self.root)
-        row2c.pack(fill="x", padx=20, pady=(2, 10))
-        ttk.Label(row2c, text="", width=14).pack(side="left")
-        self._launch_client_btn = ttk.Button(row2c, text="Launch Client",
+        self._row_launch = ttk.Frame(self._client_details)
+        ttk.Label(self._row_launch, text="", width=14).pack(side="left")
+        self._launch_client_btn = ttk.Button(self._row_launch, text="Launch Client",
                                               style="Action.TButton",
                                               command=self._on_launch_client,
                                               width=24, state="disabled")
@@ -305,14 +334,26 @@ class LauncherWindow:
         threading.Thread(target=self._check_or_launch_ollama, daemon=True).start()
 
     def _check_or_launch_ollama(self) -> None:
+        host = self.ollama_host_var.get().strip() or "127.0.0.1"
         config = get_config()
-        models = _fetch_ollama_models(config.target)
+        port = urllib.parse.urlparse(config.target).port or 11434
+        target = f"http://{host}:{port}"
+        is_local = host in _LOCALHOST_HOSTS
+
+        models = _fetch_ollama_models(target)
         if models:
+            self._active_target = target
             self.root.after(0, lambda: self.status_var.set("Ollama already running."))
             self.root.after(0, self._on_models_ready, models)
             return
+
+        if not is_local:
+            self.root.after(0, self._ask_on_remote_fail, host, port)
+            return
+
         ctx_value = _CTX_OPTIONS.get(self.ctx_var.get(), 32768)
         self.root.after(0, lambda: self.status_var.set("Launching Ollama server..."))
+        self._active_target = target
         try:
             env = os.environ.copy()
             env["OLLAMA_NUM_CTX"] = str(ctx_value)
@@ -333,27 +374,80 @@ class LauncherWindow:
             return
         threading.Thread(target=self._fetch_models_after_launch, daemon=True).start()
 
+    def _ask_on_remote_fail(self, host: str, port: int) -> None:
+        """Show a dialog when a remote Ollama host is unreachable."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Connection failed")
+        dialog.configure(bg="#1a1a2e")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        ttk.Label(
+            dialog,
+            text=f"Cannot reach Ollama at {host}:{port}",
+            font=("Segoe UI", 10, "bold"),
+            background="#1a1a2e", foreground="#f48771",
+        ).pack(padx=24, pady=(20, 6))
+        ttk.Label(
+            dialog,
+            text="The server did not respond. What would you like to do?",
+            background="#1a1a2e", foreground="#e0e0e0",
+            font=("Segoe UI", 9),
+        ).pack(padx=24, pady=(0, 16))
+
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(padx=24, pady=(0, 20))
+
+        def _retry():
+            dialog.destroy()
+            self._launch_ollama_btn.config(state="disabled")
+            self.status_var.set(f"Retrying connection to {host}:{port}...")
+            threading.Thread(target=self._check_or_launch_ollama, daemon=True).start()
+
+        def _use_localhost():
+            dialog.destroy()
+            self.ollama_host_var.set("127.0.0.1")
+            self._launch_ollama_btn.config(state="disabled")
+            self.status_var.set("Switching to localhost...")
+            threading.Thread(target=self._check_or_launch_ollama, daemon=True).start()
+
+        def _cancel():
+            dialog.destroy()
+            self._launch_ollama_btn.config(state="normal")
+            self.status_var.set("Connection cancelled.")
+
+        ttk.Button(btn_frame, text="Retry", style="Action.TButton",
+                   command=_retry, width=14).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Use Localhost", style="Action.TButton",
+                   command=_use_localhost, width=14).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Cancel", style="Exit.TButton",
+                   command=_cancel, width=10).pack(side="left", padx=4)
+
+        # Center dialog over launcher
+        dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - dialog.winfo_width()) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{x}+{y}")
+
     def _fetch_models_after_launch(self) -> None:
         """Wait for Ollama to start, fetch downloaded models, then unlock Step 2."""
-        config = get_config()
+        target = getattr(self, "_active_target", None) or get_config().target
         time.sleep(2)
-        models = _fetch_ollama_models(config.target)
+        models = _fetch_ollama_models(target)
         if not models:
             self.root.after(0, lambda: self.status_var.set("Retrying model fetch..."))
             time.sleep(3)
-            models = _fetch_ollama_models(config.target)
+            models = _fetch_ollama_models(target)
         self.root.after(0, self._on_models_ready, models)
 
     def _on_models_ready(self, models: list) -> None:
         if models:
             self._model_cb["values"] = models
-            self._model_cb.config(state="readonly")
             config = get_config()
             initial = config.default_model if config.default_model in models else models[0]
             self.model_var.set(initial)
             self.status_var.set(f"Ollama ready — {len(models)} model(s) available.")
         else:
-            self._model_cb.config(state="normal")
             self.status_var.set("Ollama launched (models unavailable — check Ollama manually).")
         self._set_step2_enabled(True)
 
@@ -362,15 +456,18 @@ class LauncherWindow:
     def _set_step2_enabled(self, enabled: bool) -> None:
         self._step2_enabled = enabled
         self._client_cb.config(state="readonly" if enabled else "disabled")
-        self._launch_client_btn.config(state="normal" if enabled else "disabled")
         self._refresh_client_rows()
+        # _launch_client_btn and _start_btn states are managed by _refresh_client_rows
 
     def _refresh_client_rows(self) -> None:
         """Show/hide and enable/disable conditional rows based on selected client."""
-        # Always hide all rows first, then show the relevant ones
+        self._row_model.pack_forget()
         self._row_workdir.pack_forget()
         self._row_apppath.pack_forget()
+        self._row_command.pack_forget()
+        self._row_venv.pack_forget()
         self._row_envvar.pack_forget()
+        self._row_launch.pack_forget()
 
         name = self.client_var.get()
         is_python = name == "Python App (Ollama)"
@@ -378,14 +475,25 @@ class LauncherWindow:
 
         if is_python:
             self._row_apppath.pack(fill="x", padx=20, pady=2)
+            self._row_command.pack(fill="x", padx=20, pady=2)
+            self._row_venv.pack(fill="x", padx=20, pady=2)
             self._row_envvar.pack(fill="x", padx=20, pady=2)
             self._app_path_entry.config(state=field_state)
             self._browse_app_btn.config(state=field_state)
+            self._command_entry.config(state=field_state)
+            self._venv_check.config(state=field_state)
             self._env_var_entry.config(state=field_state)
+            # For Python App, Start is enabled directly once Ollama is ready
+            if self._step2_enabled:
+                self._start_btn.config(state="normal")
         else:
+            self._row_model.pack(fill="x", padx=20, pady=2)
             self._row_workdir.pack(fill="x", padx=20, pady=2)
+            self._row_launch.pack(fill="x", padx=20, pady=(2, 10))
+            self._model_cb.config(state="readonly" if self._step2_enabled else "disabled")
             self._work_dir_entry.config(state=field_state)
             self._browse_workdir_btn.config(state=field_state)
+            self._launch_client_btn.config(state=field_state)
 
     def _on_client_change(self, event=None) -> None:
         self._refresh_client_rows()
@@ -396,11 +504,7 @@ class LauncherWindow:
             self.work_dir_var.set(path)
 
     def _on_browse_app(self) -> None:
-        path = filedialog.askopenfilename(
-            title="Select Python app entry point",
-            filetypes=[("Python files", "*.py"), ("Executables", "*.exe *.cmd *.bat"),
-                       ("All files", "*.*")],
-        )
+        path = filedialog.askdirectory(title="Select Python app directory")
         if path:
             self.app_path_var.set(path)
 
@@ -408,39 +512,26 @@ class LauncherWindow:
         config = get_config()
         name = self.client_var.get()
         cmd_name = next((c for n, c in self._clients if n == name), "")
+        work_dir = self.work_dir_var.get().strip() or None
+        model = self.model_var.get().strip()
+        proxy_url = f"http://localhost:{config.proxy_port}"
+        env = os.environ.copy()
 
         try:
-            if name == "Python App (Ollama)":
-                app_path = self.app_path_var.get().strip()
-                env_var = self.env_var_var.get().strip() or "OLLAMA_HOST"
-                proxy_url = f"http://localhost:{config.proxy_port}"
-                if not app_path:
-                    self.status_var.set("App Path is required for Python App.")
-                    return
-                subprocess.Popen(
-                    ["cmd", "/c", "start", "cmd", "/k",
-                     f'set {env_var}={proxy_url} && python "{app_path}"'],
-                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-                )
+            if cmd_name == "claude":
+                env["ANTHROPIC_BASE_URL"] = proxy_url
+                shell_cmd = f"claude --model {model}" if model else "claude"
+            elif cmd_name == "opencode":
+                _write_opencode_config(model, proxy_url)
+                shell_cmd = f"opencode --model ollama/{model}" if model else "opencode"
             else:
-                work_dir = self.work_dir_var.get().strip() or None
-                model = self.model_var.get().strip()
-                proxy_url = f"http://localhost:{config.proxy_port}"
-                env = os.environ.copy()
-                if cmd_name == "claude":
-                    env["ANTHROPIC_BASE_URL"] = proxy_url
-                    shell_cmd = f"claude --model {model}" if model else "claude"
-                elif cmd_name == "opencode":
-                    _write_opencode_config(model, proxy_url)
-                    shell_cmd = f"opencode --model ollama/{model}" if model else "opencode"
-                else:
-                    shell_cmd = cmd_name
-                subprocess.Popen(
-                    ["cmd", "/c", "start", "cmd", "/k", shell_cmd],
-                    cwd=work_dir,
-                    env=env,
-                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-                )
+                shell_cmd = cmd_name
+            subprocess.Popen(
+                ["cmd", "/c", "start", "cmd", "/k", shell_cmd],
+                cwd=work_dir,
+                env=env,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+            )
         except FileNotFoundError:
             self.status_var.set(f"Error: '{cmd_name}' not found. Is the client installed?")
             return
@@ -450,6 +541,31 @@ class LauncherWindow:
 
         self.status_var.set(f"{name} launched.")
         self._start_btn.config(state="normal")
+
+    def _launch_python_app(self) -> None:
+        """Launch the configured Python app (called after proxy is ready)."""
+        config = get_config()
+        app_dir = self.app_path_var.get().strip() or None
+        command = self.app_command_var.get().strip() or "python main.py"
+        env_var = self.env_var_var.get().strip() or "OLLAMA_HOST"
+        use_venv = self.use_venv_var.get()
+        proxy_url = f"http://localhost:{config.proxy_port}"
+        if use_venv:
+            full_cmd = (
+                f'set {env_var}={proxy_url} && '
+                f'.venv\\Scripts\\activate && {command}'
+            )
+        else:
+            full_cmd = f'set {env_var}={proxy_url} && {command}'
+        try:
+            subprocess.Popen(
+                ["cmd", "/c", "start", "cmd", "/k", full_cmd],
+                cwd=app_dir,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+            )
+            self.status_var.set("Python app launched.")
+        except OSError as exc:
+            self.status_var.set(f"Error launching Python app: {exc}")
 
     # ── Step 3: Proxy ──
 
@@ -461,7 +577,11 @@ class LauncherWindow:
             config.default_model = model
         config.client_work_dir = self.work_dir_var.get().strip()
         config.python_app_path = self.app_path_var.get().strip()
+        config.python_app_command = self.app_command_var.get().strip() or "python main.py"
+        config.python_app_use_venv = self.use_venv_var.get()
         config.python_app_env_var = self.env_var_var.get().strip()
+        if hasattr(self, "_active_target"):
+            config.target = self._active_target
         try:
             save_config(config)
         except OSError as exc:
@@ -484,6 +604,9 @@ class LauncherWindow:
         self.root.after(2000, lambda: webbrowser.open(
             f"http://localhost:{dashboard_port}"
         ))
+
+        if self.client_var.get() == "Python App (Ollama)":
+            self.root.after(2500, self._launch_python_app)
 
         self.status_var.set("Proxy starting... Dashboard will open shortly.")
         self.root.after(2500, self.root.iconify)

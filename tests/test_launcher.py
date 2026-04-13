@@ -251,6 +251,8 @@ def test_on_launch_ollama_opens_process_and_thread(tmp_path, monkeypatch):
     monkeypatch.setattr("prompt_interceptor.launcher._fetch_ollama_models", lambda t: [])
 
     win, mock_root = _make_headless_win(cfg)
+    win.ollama_host_var = MagicMock()
+    win.ollama_host_var.get.return_value = "127.0.0.1"
     win.ctx_var = MagicMock()
     win.ctx_var.get.return_value = "8k  (8192)"
     win.status_var = MagicMock()
@@ -297,6 +299,8 @@ def test_check_or_launch_ollama_already_running(tmp_path, monkeypatch):
     monkeypatch.setattr("prompt_interceptor.launcher._fetch_ollama_models", lambda t: ["llama3"])
 
     win, mock_root = _make_headless_win(cfg)
+    win.ollama_host_var = MagicMock()
+    win.ollama_host_var.get.return_value = "127.0.0.1"
     win.status_var = MagicMock()
     win._launch_ollama_btn = MagicMock()
     mock_root.after.side_effect = lambda delay, fn, *args: fn(*args)
@@ -317,6 +321,8 @@ def test_on_launch_ollama_uses_selected_ctx(tmp_path, monkeypatch):
     monkeypatch.setattr("prompt_interceptor.launcher._fetch_ollama_models", lambda t: [])
 
     win, mock_root = _make_headless_win(cfg)
+    win.ollama_host_var = MagicMock()
+    win.ollama_host_var.get.return_value = "127.0.0.1"
     win.ctx_var = MagicMock()
     win.ctx_var.get.return_value = "32k (32768)"
     win.status_var = MagicMock()
@@ -374,7 +380,7 @@ def test_fetch_models_retries_when_empty(tmp_path, monkeypatch):
 
 
 def test_on_models_ready_populates_combobox(tmp_path, monkeypatch):
-    """_on_models_ready fills the model combobox and unlocks Step 2."""
+    """_on_models_ready fills the model combobox values and unlocks Step 2."""
     cfg = Config(log_dir=str(tmp_path / "logs"), default_model="")
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
 
@@ -386,13 +392,14 @@ def test_on_models_ready_populates_combobox(tmp_path, monkeypatch):
     with patch.object(win, "_set_step2_enabled") as mock_unlock:
         win._on_models_ready(["llama3", "mistral"])
 
-    win._model_cb.config.assert_called_with(state="readonly")
+    # values are set on the combobox
+    assert win._model_cb.__setitem__.call_args_list[0][0] == ("values", ["llama3", "mistral"])
     mock_unlock.assert_called_once_with(True)
     win.status_var.set.assert_called()
 
 
 def test_on_models_ready_no_models(tmp_path, monkeypatch):
-    """When no models are returned, combobox is set to normal and Step 2 still unlocks."""
+    """When no models are returned, Step 2 still unlocks."""
     cfg = Config(log_dir=str(tmp_path / "logs"))
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
 
@@ -404,7 +411,6 @@ def test_on_models_ready_no_models(tmp_path, monkeypatch):
     with patch.object(win, "_set_step2_enabled") as mock_unlock:
         win._on_models_ready([])
 
-    win._model_cb.config.assert_called_with(state="normal")
     mock_unlock.assert_called_once_with(True)
 
 
@@ -432,13 +438,11 @@ def test_set_step2_enabled_enables_widgets(tmp_path):
     cfg = Config(log_dir=str(tmp_path / "logs"))
     win, _ = _make_headless_win(cfg)
     win._client_cb = MagicMock()
-    win._launch_client_btn = MagicMock()
 
     with patch.object(win, "_refresh_client_rows"):
         win._set_step2_enabled(True)
 
     win._client_cb.config.assert_called_with(state="readonly")
-    win._launch_client_btn.config.assert_called_with(state="normal")
     assert win._step2_enabled is True
 
 
@@ -446,61 +450,80 @@ def test_set_step2_enabled_disables_widgets(tmp_path):
     cfg = Config(log_dir=str(tmp_path / "logs"))
     win, _ = _make_headless_win(cfg)
     win._client_cb = MagicMock()
-    win._launch_client_btn = MagicMock()
 
     with patch.object(win, "_refresh_client_rows"):
         win._set_step2_enabled(False)
 
     win._client_cb.config.assert_called_with(state="disabled")
-    win._launch_client_btn.config.assert_called_with(state="disabled")
     assert win._step2_enabled is False
 
 
 def test_refresh_client_rows_python_app_shows_app_fields(tmp_path):
-    """When Python App is selected, app/env rows are shown and workdir is hidden."""
+    """When Python App is selected, apppath/command/venv/env rows are shown; workdir+model hidden."""
     cfg = Config(log_dir=str(tmp_path / "logs"))
     win, _ = _make_headless_win(cfg)
     win.client_var = MagicMock()
     win.client_var.get.return_value = "Python App (Ollama)"
     win._step2_enabled = True
+    win._row_model = MagicMock()
     win._row_workdir = MagicMock()
     win._row_apppath = MagicMock()
+    win._row_command = MagicMock()
+    win._row_venv = MagicMock()
     win._row_envvar = MagicMock()
     win._app_path_entry = MagicMock()
     win._browse_app_btn = MagicMock()
+    win._command_entry = MagicMock()
+    win._venv_check = MagicMock()
     win._env_var_entry = MagicMock()
     win._work_dir_entry = MagicMock()
     win._browse_workdir_btn = MagicMock()
+    win._model_cb = MagicMock()
 
     win._refresh_client_rows()
 
+    win._row_model.pack_forget.assert_called()
     win._row_workdir.pack_forget.assert_called()
     win._row_apppath.pack.assert_called()
+    win._row_command.pack.assert_called()
+    win._row_venv.pack.assert_called()
     win._row_envvar.pack.assert_called()
     win._app_path_entry.config.assert_called_with(state="normal")
+    win._command_entry.config.assert_called_with(state="normal")
     win._env_var_entry.config.assert_called_with(state="normal")
 
 
 def test_refresh_client_rows_claude_shows_workdir(tmp_path):
-    """When Claude Code is selected, work-dir row is shown and app fields are hidden."""
+    """When Claude Code is selected, model+workdir rows are shown and python rows are hidden."""
     cfg = Config(log_dir=str(tmp_path / "logs"))
     win, _ = _make_headless_win(cfg)
     win.client_var = MagicMock()
     win.client_var.get.return_value = "Claude Code"
     win._step2_enabled = True
+    win._row_model = MagicMock()
     win._row_workdir = MagicMock()
     win._row_apppath = MagicMock()
+    win._row_command = MagicMock()
+    win._row_venv = MagicMock()
     win._row_envvar = MagicMock()
     win._work_dir_entry = MagicMock()
     win._browse_workdir_btn = MagicMock()
     win._app_path_entry = MagicMock()
     win._browse_app_btn = MagicMock()
+    win._command_entry = MagicMock()
+    win._venv_check = MagicMock()
     win._env_var_entry = MagicMock()
+    win._model_cb = MagicMock()
 
     win._refresh_client_rows()
 
     win._row_apppath.pack_forget.assert_called()
+    win._row_command.pack_forget.assert_called()
+    win._row_venv.pack_forget.assert_called()
     win._row_envvar.pack_forget.assert_called()
+    win._row_model.pack.assert_called()
+    win._row_workdir.pack.assert_called()
+    win._model_cb.config.assert_called_with(state="readonly")
     win._row_workdir.pack.assert_called()
     win._work_dir_entry.config.assert_called_with(state="normal")
 
@@ -539,16 +562,16 @@ def test_on_browse_app_sets_path(tmp_path):
     cfg = Config(log_dir=str(tmp_path / "logs"))
     win, _ = _make_headless_win(cfg)
     win.app_path_var = MagicMock()
-    with patch("prompt_interceptor.launcher.filedialog.askopenfilename", return_value="/app/main.py"):
+    with patch("prompt_interceptor.launcher.filedialog.askdirectory", return_value="/app/myproject"):
         win._on_browse_app()
-    win.app_path_var.set.assert_called_once_with("/app/main.py")
+    win.app_path_var.set.assert_called_once_with("/app/myproject")
 
 
 def test_on_browse_app_no_selection(tmp_path):
     cfg = Config(log_dir=str(tmp_path / "logs"))
     win, _ = _make_headless_win(cfg)
     win.app_path_var = MagicMock()
-    with patch("prompt_interceptor.launcher.filedialog.askopenfilename", return_value=""):
+    with patch("prompt_interceptor.launcher.filedialog.askdirectory", return_value=""):
         win._on_browse_app()
     win.app_path_var.set.assert_not_called()
 
@@ -622,57 +645,61 @@ def test_on_launch_client_open_code(tmp_path, monkeypatch):
 
 
 def test_on_launch_client_python_app(tmp_path, monkeypatch):
-    """Launching Python App sets the env var to the proxy URL and runs python."""
+    """_launch_python_app sets the env var to the proxy URL and runs the command."""
     cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
 
     win, _ = _make_headless_win(cfg)
-    win.client_var = MagicMock()
-    win.client_var.get.return_value = "Python App (Ollama)"
-    win._clients = _DEFAULT_CLIENTS
     win.app_path_var = MagicMock()
-    win.app_path_var.get.return_value = "/apps/myapp/main.py"
+    win.app_path_var.get.return_value = "/apps/myproject"
+    win.app_command_var = MagicMock()
+    win.app_command_var.get.return_value = "python app.py --port 8000"
+    win.use_venv_var = MagicMock()
+    win.use_venv_var.get.return_value = False
     win.env_var_var = MagicMock()
     win.env_var_var.get.return_value = "OLLAMA_HOST"
     win.status_var = MagicMock()
-    win._start_btn = MagicMock()
+
+    popen_calls = []
+    with patch("prompt_interceptor.launcher.subprocess.Popen",
+               side_effect=lambda *a, **kw: popen_calls.append((a[0], kw))):
+        win._launch_python_app()
+
+    assert len(popen_calls) == 1
+    args, kwargs = popen_calls[0]
+    cmd_str = " ".join(args)
+    assert "OLLAMA_HOST" in cmd_str
+    assert "http://localhost:8080" in cmd_str
+    assert "python app.py --port 8000" in cmd_str
+    assert kwargs.get("cwd") == "/apps/myproject"
+
+
+def test_on_launch_client_python_app_uses_venv(tmp_path, monkeypatch):
+    """_launch_python_app with venv activates .venv\\Scripts\\activate before the command."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _make_headless_win(cfg)
+    win.app_path_var = MagicMock()
+    win.app_path_var.get.return_value = ""
+    win.app_command_var = MagicMock()
+    win.app_command_var.get.return_value = "python main.py"
+    win.use_venv_var = MagicMock()
+    win.use_venv_var.get.return_value = True
+    win.env_var_var = MagicMock()
+    win.env_var_var.get.return_value = "OLLAMA_HOST"
+    win.status_var = MagicMock()
 
     popen_calls = []
     with patch("prompt_interceptor.launcher.subprocess.Popen",
                side_effect=lambda *a, **kw: popen_calls.append(a[0])):
-        win._on_launch_client()
+        win._launch_python_app()
 
     assert len(popen_calls) == 1
     cmd_str = " ".join(popen_calls[0])
-    assert "OLLAMA_HOST" in cmd_str
-    assert "http://localhost:8080" in cmd_str
-    assert "python" in cmd_str
-    assert "main.py" in cmd_str
-    win._start_btn.config.assert_called_with(state="normal")
-
-
-def test_on_launch_client_python_app_no_path(tmp_path, monkeypatch):
-    """Python App launch is blocked when App Path is empty."""
-    cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
-    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
-
-    win, _ = _make_headless_win(cfg)
-    win.client_var = MagicMock()
-    win.client_var.get.return_value = "Python App (Ollama)"
-    win._clients = _DEFAULT_CLIENTS
-    win.app_path_var = MagicMock()
-    win.app_path_var.get.return_value = "  "  # blank
-    win.env_var_var = MagicMock()
-    win.env_var_var.get.return_value = "OLLAMA_HOST"
-    win.status_var = MagicMock()
-    win._start_btn = MagicMock()
-
-    with patch("prompt_interceptor.launcher.subprocess.Popen") as mock_popen:
-        win._on_launch_client()
-
-    mock_popen.assert_not_called()
-    win._start_btn.config.assert_not_called()
-    win.status_var.set.assert_called()
+    assert ".venv" in cmd_str
+    assert "activate" in cmd_str
+    assert "python main.py" in cmd_str
 
 
 # ---------------------------------------------------------------------------
@@ -733,20 +760,20 @@ def test_on_launch_client_python_app_custom_env_var(tmp_path, monkeypatch):
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
 
     win, _ = _make_headless_win(cfg)
-    win.client_var = MagicMock()
-    win.client_var.get.return_value = "Python App (Ollama)"
-    win._clients = _DEFAULT_CLIENTS
     win.app_path_var = MagicMock()
-    win.app_path_var.get.return_value = "/app/main.py"
+    win.app_path_var.get.return_value = ""
+    win.app_command_var = MagicMock()
+    win.app_command_var.get.return_value = "python main.py"
+    win.use_venv_var = MagicMock()
+    win.use_venv_var.get.return_value = False
     win.env_var_var = MagicMock()
     win.env_var_var.get.return_value = "OPENAI_BASE_URL"
     win.status_var = MagicMock()
-    win._start_btn = MagicMock()
 
     popen_calls = []
     with patch("prompt_interceptor.launcher.subprocess.Popen",
                side_effect=lambda *a, **kw: popen_calls.append(a[0])):
-        win._on_launch_client()
+        win._launch_python_app()
 
     cmd_str = " ".join(popen_calls[0])
     assert "OPENAI_BASE_URL" in cmd_str
@@ -792,8 +819,10 @@ def test_on_start_saves_config_and_starts_proxy(tmp_path, monkeypatch):
     win.model_var.get.return_value = "llama3"
     win.work_dir_var = MagicMock()
     win.work_dir_var.get.return_value = "/my/repo"
-    win.app_path_var = MagicMock()
-    win.app_path_var.get.return_value = ""
+    win.app_command_var = MagicMock()
+    win.app_command_var.get.return_value = ""
+    win.use_venv_var = MagicMock()
+    win.use_venv_var.get.return_value = False
     win.env_var_var = MagicMock()
     win.env_var_var.get.return_value = "OLLAMA_HOST"
     win.status_var = MagicMock()
@@ -832,8 +861,10 @@ def test_on_start_saves_model_to_config(tmp_path, monkeypatch):
     win.model_var.get.return_value = "deepseek-coder"
     win.work_dir_var = MagicMock()
     win.work_dir_var.get.return_value = ""
-    win.app_path_var = MagicMock()
-    win.app_path_var.get.return_value = ""
+    win.app_command_var = MagicMock()
+    win.app_command_var.get.return_value = ""
+    win.use_venv_var = MagicMock()
+    win.use_venv_var.get.return_value = False
     win.env_var_var = MagicMock()
     win.env_var_var.get.return_value = ""
     win.status_var = MagicMock()
@@ -858,8 +889,10 @@ def test_on_start_schedules_reset_before_dashboard(tmp_path, monkeypatch):
     win.model_var.get.return_value = "llama3"
     win.work_dir_var = MagicMock()
     win.work_dir_var.get.return_value = ""
-    win.app_path_var = MagicMock()
-    win.app_path_var.get.return_value = ""
+    win.app_command_var = MagicMock()
+    win.app_command_var.get.return_value = ""
+    win.use_venv_var = MagicMock()
+    win.use_venv_var.get.return_value = False
     win.env_var_var = MagicMock()
     win.env_var_var.get.return_value = ""
     win.status_var = MagicMock()
@@ -895,8 +928,10 @@ def test_on_start_reset_calls_api_endpoint(tmp_path, monkeypatch):
     win.model_var.get.return_value = ""
     win.work_dir_var = MagicMock()
     win.work_dir_var.get.return_value = ""
-    win.app_path_var = MagicMock()
-    win.app_path_var.get.return_value = ""
+    win.app_command_var = MagicMock()
+    win.app_command_var.get.return_value = ""
+    win.use_venv_var = MagicMock()
+    win.use_venv_var.get.return_value = False
     win.env_var_var = MagicMock()
     win.env_var_var.get.return_value = ""
     win.status_var = MagicMock()
@@ -938,8 +973,10 @@ def test_on_start_reset_silences_connection_error(tmp_path, monkeypatch):
     win.model_var.get.return_value = ""
     win.work_dir_var = MagicMock()
     win.work_dir_var.get.return_value = ""
-    win.app_path_var = MagicMock()
-    win.app_path_var.get.return_value = ""
+    win.app_command_var = MagicMock()
+    win.app_command_var.get.return_value = ""
+    win.use_venv_var = MagicMock()
+    win.use_venv_var.get.return_value = False
     win.env_var_var = MagicMock()
     win.env_var_var.get.return_value = ""
     win.status_var = MagicMock()
@@ -1024,6 +1061,8 @@ def test_on_launch_ollama_file_not_found_shows_error(tmp_path, monkeypatch):
     monkeypatch.setattr("prompt_interceptor.launcher._fetch_ollama_models", lambda t: [])
 
     win, mock_root = _make_headless_win(cfg)
+    win.ollama_host_var = MagicMock()
+    win.ollama_host_var.get.return_value = "127.0.0.1"
     win.ctx_var = MagicMock()
     win.ctx_var.get.return_value = "4k  (4096)"
     win.status_var = MagicMock()
@@ -1051,6 +1090,8 @@ def test_on_launch_ollama_os_error_shows_error(tmp_path, monkeypatch):
     monkeypatch.setattr("prompt_interceptor.launcher._fetch_ollama_models", lambda t: [])
 
     win, mock_root = _make_headless_win(cfg)
+    win.ollama_host_var = MagicMock()
+    win.ollama_host_var.get.return_value = "127.0.0.1"
     win.ctx_var = MagicMock()
     win.ctx_var.get.return_value = "4k  (4096)"
     win.status_var = MagicMock()
@@ -1191,8 +1232,10 @@ def test_on_start_save_config_error_shows_warning(tmp_path, monkeypatch):
     win.model_var.get.return_value = ""
     win.work_dir_var = MagicMock()
     win.work_dir_var.get.return_value = ""
-    win.app_path_var = MagicMock()
-    win.app_path_var.get.return_value = ""
+    win.app_command_var = MagicMock()
+    win.app_command_var.get.return_value = ""
+    win.use_venv_var = MagicMock()
+    win.use_venv_var.get.return_value = False
     win.env_var_var = MagicMock()
     win.env_var_var.get.return_value = ""
     win.status_var = MagicMock()
@@ -1232,3 +1275,169 @@ def test_fetch_ollama_models_unexpected_error_returns_empty(monkeypatch):
     )
     from prompt_interceptor.launcher import _fetch_ollama_models
     assert _fetch_ollama_models("http://localhost:11434") == []
+
+
+# ---------------------------------------------------------------------------
+# Ollama host selection — new feature
+# ---------------------------------------------------------------------------
+
+def test_localhost_hosts_constant():
+    """_LOCALHOST_HOSTS contains both canonical localhost values."""
+    from prompt_interceptor.launcher import _LOCALHOST_HOSTS
+    assert "127.0.0.1" in _LOCALHOST_HOSTS
+    assert "localhost" in _LOCALHOST_HOSTS
+
+
+def test_check_or_launch_remote_host_reachable(tmp_path, monkeypatch):
+    """Remote host that responds with models: no local Ollama launched, target is stored."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), target="http://localhost:11434")
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    monkeypatch.setattr("prompt_interceptor.launcher._fetch_ollama_models", lambda t: ["llama3"])
+
+    win, mock_root = _make_headless_win(cfg)
+    win.ollama_host_var = MagicMock()
+    win.ollama_host_var.get.return_value = "192.168.1.100"
+    win.status_var = MagicMock()
+    mock_root.after.side_effect = lambda delay, fn, *args: fn(*args)
+
+    with patch.object(win, "_on_models_ready") as mock_ready, \
+         patch("prompt_interceptor.launcher.subprocess.Popen") as mock_popen:
+        win._check_or_launch_ollama()
+
+    mock_popen.assert_not_called()
+    mock_ready.assert_called_once_with(["llama3"])
+    assert win._active_target == "http://192.168.1.100:11434"
+
+
+def test_check_or_launch_remote_host_unreachable_schedules_dialog(tmp_path, monkeypatch):
+    """Remote host that does not respond: no Ollama launch, dialog is scheduled."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), target="http://localhost:11434")
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    monkeypatch.setattr("prompt_interceptor.launcher._fetch_ollama_models", lambda t: [])
+
+    win, mock_root = _make_headless_win(cfg)
+    win.ollama_host_var = MagicMock()
+    win.ollama_host_var.get.return_value = "192.168.1.100"
+    win.status_var = MagicMock()
+
+    after_calls = []
+    mock_root.after.side_effect = lambda delay, fn, *args: after_calls.append((fn, args))
+
+    with patch("prompt_interceptor.launcher.subprocess.Popen") as mock_popen:
+        win._check_or_launch_ollama()
+
+    mock_popen.assert_not_called()
+    assert any(fn == win._ask_on_remote_fail for fn, _ in after_calls)
+
+
+def test_on_start_saves_active_target_to_config(tmp_path, monkeypatch):
+    """When _active_target differs from default, _on_start persists it in config."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, dashboard_port=9090)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    saved = []
+    monkeypatch.setattr("prompt_interceptor.launcher.save_config", lambda c: saved.append(c))
+
+    win, _ = _make_headless_win(cfg)
+    win._active_target = "http://192.168.1.100:11434"
+    win.ctx_var = MagicMock()
+    win.ctx_var.get.return_value = "4k  (4096)"
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = ""
+    win.work_dir_var = MagicMock()
+    win.work_dir_var.get.return_value = ""
+    win.app_command_var = MagicMock()
+    win.app_command_var.get.return_value = ""
+    win.use_venv_var = MagicMock()
+    win.use_venv_var.get.return_value = False
+    win.env_var_var = MagicMock()
+    win.env_var_var.get.return_value = ""
+    win.status_var = MagicMock()
+
+    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+        mock_thread.return_value = MagicMock()
+        win._on_start()
+
+    assert saved[0].target == "http://192.168.1.100:11434"
+
+
+# ---------------------------------------------------------------------------
+# _ask_on_remote_fail dialog — button callbacks
+# ---------------------------------------------------------------------------
+
+def _capture_dialog_buttons(win, host, port):
+    """Invoke _ask_on_remote_fail with mocked tkinter and return captured button commands."""
+    mock_dialog = MagicMock()
+    captured_cmds = {}
+
+    def _btn(parent, text="", command=None, **kw):
+        btn = MagicMock()
+        if command:
+            captured_cmds[text] = command
+        return btn
+
+    with patch("prompt_interceptor.launcher.tk.Toplevel", return_value=mock_dialog), \
+         patch("prompt_interceptor.launcher.ttk.Label", return_value=MagicMock()), \
+         patch("prompt_interceptor.launcher.ttk.Frame", return_value=MagicMock()), \
+         patch("prompt_interceptor.launcher.ttk.Button", side_effect=_btn):
+        win._ask_on_remote_fail(host, port)
+
+    return captured_cmds, mock_dialog
+
+
+def test_ask_on_remote_fail_retry_reruns_check(tmp_path, monkeypatch):
+    """Retry button re-enables the check thread with the same host."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _make_headless_win(cfg)
+    win.ollama_host_var = MagicMock()
+    win.ollama_host_var.get.return_value = "10.0.0.1"
+    win.status_var = MagicMock()
+    win._launch_ollama_btn = MagicMock()
+
+    cmds, _ = _capture_dialog_buttons(win, "10.0.0.1", 11434)
+
+    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+        mock_thread.return_value = MagicMock()
+        cmds["Retry"]()
+
+    win._launch_ollama_btn.config.assert_called_with(state="disabled")
+    mock_thread.assert_called_once()
+
+
+def test_ask_on_remote_fail_use_localhost_switches_host(tmp_path, monkeypatch):
+    """Use Localhost button sets host to 127.0.0.1 and re-triggers check."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _make_headless_win(cfg)
+    win.ollama_host_var = MagicMock()
+    win.ollama_host_var.get.return_value = "10.0.0.1"
+    win.status_var = MagicMock()
+    win._launch_ollama_btn = MagicMock()
+
+    cmds, _ = _capture_dialog_buttons(win, "10.0.0.1", 11434)
+
+    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+        mock_thread.return_value = MagicMock()
+        cmds["Use Localhost"]()
+
+    win.ollama_host_var.set.assert_called_with("127.0.0.1")
+    mock_thread.assert_called_once()
+
+
+def test_ask_on_remote_fail_cancel_reenables_button(tmp_path, monkeypatch):
+    """Cancel button re-enables the launch button and sets a status message."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _make_headless_win(cfg)
+    win.status_var = MagicMock()
+    win._launch_ollama_btn = MagicMock()
+
+    cmds, _ = _capture_dialog_buttons(win, "10.0.0.1", 11434)
+    cmds["Cancel"]()
+
+    win._launch_ollama_btn.config.assert_called_with(state="normal")
+    win.status_var.set.assert_called()
