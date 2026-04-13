@@ -17,6 +17,7 @@ from .rules_engine import RuleEngine
 from .proxy import (
     handle_chat_request, handle_generate_request,
     handle_stream_chat, handle_stream_generate,
+    handle_v1_messages, handle_v1_chat_completions,
     handle_passthrough,
 )
 from .health import check_target_health, get_status as _get_status
@@ -91,6 +92,14 @@ def create_app() -> FastAPI:
     @app.post("/api/generate/stream")
     async def stream_generate_endpoint(request: Request):
         return await handle_stream_generate(request, rule_engine, logger)
+
+    @app.post("/v1/messages")
+    async def v1_messages_endpoint(request: Request):
+        return await handle_v1_messages(request, rule_engine, logger)
+
+    @app.post("/v1/chat/completions")
+    async def v1_chat_completions_endpoint(request: Request):
+        return await handle_v1_chat_completions(request, rule_engine, logger)
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
     async def passthrough_endpoint(request: Request):

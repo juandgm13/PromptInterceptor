@@ -244,6 +244,54 @@ def test_main_with_dashboard_disabled():
     assert threads_started == []
 
 
+async def test_v1_messages_endpoint_is_registered(proxy_app):
+    """/v1/messages has a dedicated handler (not passthrough)."""
+    from httpx import AsyncClient, ASGITransport
+    import prompt_interceptor.proxy as proxy_mod
+
+    response_bytes = json.dumps({"id": "msg_01", "type": "message"}).encode()
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(return_value=(200, {"content-type": "application/json"}, response_bytes)),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=proxy_app), base_url="http://test"
+        ) as c:
+            resp = await c.post(
+                "/v1/messages",
+                json={"model": "qwen3:9b", "max_tokens": 10, "messages": [{"role": "user", "content": "hi"}]},
+            )
+
+    assert resp.status_code == 200
+    assert resp.json()["id"] == "msg_01"
+
+
+async def test_v1_chat_completions_endpoint_is_registered(proxy_app):
+    """/v1/chat/completions has a dedicated handler (not passthrough)."""
+    from httpx import AsyncClient, ASGITransport
+
+    response_bytes = json.dumps({
+        "id": "chatcmpl-1", "object": "chat.completion",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+    }).encode()
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(return_value=(200, {"content-type": "application/json"}, response_bytes)),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=proxy_app), base_url="http://test"
+        ) as c:
+            resp = await c.post(
+                "/v1/chat/completions",
+                json={"model": "qwen3:9b", "messages": [{"role": "user", "content": "hi"}]},
+            )
+
+    assert resp.status_code == 200
+    assert resp.json()["id"] == "chatcmpl-1"
+
+
 async def test_passthrough_endpoint_is_registered(proxy_app):
     """The catch-all route forwards unknown paths through handle_passthrough."""
     from httpx import AsyncClient, ASGITransport
