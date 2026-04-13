@@ -60,9 +60,11 @@
     "mistral",
     "deepseek-coder"
   ],
-  "context_size": 4096,
-  "default_model": "",
-  "client_work_dir": "",
+  "context_size": 32768,
+  "default_model": "qwen2.5:7b",
+  "client_work_dir": "C:/Users/juand/Documents/Repositorios/QuiniAgent",
   "python_app_path": "",
+  "python_app_command": "python main.py",
+  "python_app_use_venv": false,
   "python_app_env_var": "OLLAMA_HOST"
 }
