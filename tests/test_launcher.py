@@ -33,16 +33,18 @@ def test_ctx_default_in_options():
 def test_detect_clients_no_system_clients(monkeypatch):
     """When neither claude nor opencode are found, Python App is still included."""
     monkeypatch.setattr(shutil, "which", lambda cmd: None)
-    from prompt_interceptor.launcher import _detect_clients
-    clients = _detect_clients()
+    from prompt_interceptor import launcher
+    monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
+    clients = launcher._detect_clients()
     assert len(clients) == 1
     assert clients[0] == ("Python App (Ollama)", "__python_app__")
 
 
 def test_detect_clients_claude_only(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/claude" if cmd == "claude" else None)
-    from prompt_interceptor.launcher import _detect_clients
-    clients = _detect_clients()
+    from prompt_interceptor import launcher
+    monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
+    clients = launcher._detect_clients()
     assert len(clients) == 2
     assert clients[0] == ("Claude Code", "claude")
     assert clients[-1] == ("Python App (Ollama)", "__python_app__")
@@ -50,28 +52,58 @@ def test_detect_clients_claude_only(monkeypatch):
 
 def test_detect_clients_opencode_only(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/opencode" if cmd == "opencode" else None)
-    from prompt_interceptor.launcher import _detect_clients
-    clients = _detect_clients()
+    from prompt_interceptor import launcher
+    monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
+    clients = launcher._detect_clients()
     assert len(clients) == 2
-    assert clients[0] == ("Open Code", "opencode")
+    assert clients[0] == ("Open Code (CLI)", "opencode")
     assert clients[-1] == ("Python App (Ollama)", "__python_app__")
 
 
 def test_detect_clients_both(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
-    from prompt_interceptor.launcher import _detect_clients
-    clients = _detect_clients()
+    from prompt_interceptor import launcher
+    monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
+    clients = launcher._detect_clients()
     names = [name for name, _ in clients]
     assert "Claude Code" in names
-    assert "Open Code" in names
+    assert "Open Code (CLI)" in names
     assert "Python App (Ollama)" in names
     assert len(clients) == 3
 
 
 def test_detect_clients_python_app_always_last(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
-    from prompt_interceptor.launcher import _detect_clients
-    clients = _detect_clients()
+    from prompt_interceptor import launcher
+    monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
+    clients = launcher._detect_clients()
+    assert clients[-1] == ("Python App (Ollama)", "__python_app__")
+
+
+def test_detect_clients_wsl_opencode(monkeypatch):
+    """When WSL has opencode, 'Open Code (WSL)' is added between CLI and Python App."""
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/opencode" if cmd == "opencode" else None)
+    from prompt_interceptor import launcher
+    monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: True)
+    clients = launcher._detect_clients()
+    names = [name for name, _ in clients]
+    assert "Open Code (CLI)" in names
+    assert "Open Code (WSL)" in names
+    assert clients[-1] == ("Python App (Ollama)", "__python_app__")
+    wsl_idx = names.index("Open Code (WSL)")
+    python_idx = names.index("Python App (Ollama)")
+    assert wsl_idx < python_idx
+
+
+def test_detect_clients_wsl_only_no_cli(monkeypatch):
+    """WSL opencode appears even if opencode is not installed on Windows."""
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+    from prompt_interceptor import launcher
+    monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: True)
+    clients = launcher._detect_clients()
+    names = [name for name, _ in clients]
+    assert "Open Code (CLI)" not in names
+    assert "Open Code (WSL)" in names
     assert clients[-1] == ("Python App (Ollama)", "__python_app__")
 
 
@@ -613,16 +645,16 @@ def test_on_launch_client_claude_code(tmp_path, monkeypatch):
     win._start_btn.config.assert_called_with(state="normal")
 
 
-def test_on_launch_client_open_code(tmp_path, monkeypatch):
-    """Launching Open Code passes --model, sets OPENAI_BASE_URL, and cwd."""
+def test_on_launch_client_open_code_cli(tmp_path, monkeypatch):
+    """Launching Open Code (CLI) passes --model, sets OPENAI_BASE_URL, and cwd."""
     cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
 
-    win, _ = _make_headless_win(cfg, clients=[("Open Code", "opencode"),
+    win, _ = _make_headless_win(cfg, clients=[("Open Code (CLI)", "opencode"),
                                                ("Python App (Ollama)", "__python_app__")])
     win.client_var = MagicMock()
-    win.client_var.get.return_value = "Open Code"
-    win._clients = [("Open Code", "opencode"), ("Python App (Ollama)", "__python_app__")]
+    win.client_var.get.return_value = "Open Code (CLI)"
+    win._clients = [("Open Code (CLI)", "opencode"), ("Python App (Ollama)", "__python_app__")]
     win.work_dir_var = MagicMock()
     win.work_dir_var.get.return_value = "/my/repo"
     win.model_var = MagicMock()
@@ -642,6 +674,73 @@ def test_on_launch_client_open_code(tmp_path, monkeypatch):
     assert "opencode" in cmd_str
     assert "--model" in cmd_str
     assert "ollama/mistral:latest" in cmd_str
+
+
+def test_on_launch_client_open_code_wsl(tmp_path, monkeypatch):
+    """Launching Open Code (WSL) writes WSL config and runs wsl -- bash -c '...'."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _make_headless_win(cfg, clients=[("Open Code (WSL)", "__opencode_wsl__"),
+                                               ("Python App (Ollama)", "__python_app__")])
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Open Code (WSL)"
+    win._clients = [("Open Code (WSL)", "__opencode_wsl__"), ("Python App (Ollama)", "__python_app__")]
+    win.work_dir_var = MagicMock()
+    win.work_dir_var.get.return_value = ""
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = "mistral:latest"
+    win.status_var = MagicMock()
+    win._start_btn = MagicMock()
+
+    popen_calls = []
+    with patch("prompt_interceptor.launcher.subprocess.Popen",
+               side_effect=lambda *a, **kw: popen_calls.append((a[0], kw))), \
+         patch("prompt_interceptor.launcher._get_wsl_host_ip", return_value="172.28.0.1"), \
+         patch("prompt_interceptor.launcher._write_opencode_config_wsl") as mock_wsl_cfg:
+        win._on_launch_client()
+
+    assert len(popen_calls) == 1
+    cmd_str = " ".join(popen_calls[0][0])
+    assert "wsl" in cmd_str
+    assert "opencode" in cmd_str
+    assert "ollama/mistral:latest" in cmd_str
+    mock_wsl_cfg.assert_called_once_with("mistral:latest", "http://172.28.0.1:8080")
+    win._start_btn.config.assert_called_with(state="normal")
+
+
+def test_on_launch_client_open_code_wsl_with_workdir(tmp_path, monkeypatch):
+    """WSL launch converts Windows work dir to WSL path using wslpath."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _make_headless_win(cfg, clients=[("Open Code (WSL)", "__opencode_wsl__"),
+                                               ("Python App (Ollama)", "__python_app__")])
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Open Code (WSL)"
+    win._clients = [("Open Code (WSL)", "__opencode_wsl__"), ("Python App (Ollama)", "__python_app__")]
+    win.work_dir_var = MagicMock()
+    win.work_dir_var.get.return_value = "C:\\Users\\user\\project"
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = "llama3"
+    win.status_var = MagicMock()
+    win._start_btn = MagicMock()
+
+    wsl_run_result = MagicMock()
+    wsl_run_result.stdout = "/mnt/c/Users/user/project\n"
+
+    popen_calls = []
+    with patch("prompt_interceptor.launcher.subprocess.Popen",
+               side_effect=lambda *a, **kw: popen_calls.append((a[0], kw))), \
+         patch("prompt_interceptor.launcher.subprocess.run", return_value=wsl_run_result), \
+         patch("prompt_interceptor.launcher._get_wsl_host_ip", return_value="172.28.0.1"), \
+         patch("prompt_interceptor.launcher._write_opencode_config_wsl"):
+        win._on_launch_client()
+
+    assert len(popen_calls) == 1
+    cmd_str = " ".join(popen_calls[0][0])
+    assert "/mnt/c/Users/user/project" in cmd_str
+    assert "opencode" in cmd_str
 
 
 def test_on_launch_client_python_app(tmp_path, monkeypatch):
@@ -700,6 +799,126 @@ def test_on_launch_client_python_app_uses_venv(tmp_path, monkeypatch):
     assert ".venv" in cmd_str
     assert "activate" in cmd_str
     assert "python main.py" in cmd_str
+
+
+# ---------------------------------------------------------------------------
+# WSL detection helpers
+# ---------------------------------------------------------------------------
+
+def test_is_wsl_available_true(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/wsl" if cmd == "wsl" else None)
+    from prompt_interceptor.launcher import _is_wsl_available
+    assert _is_wsl_available() is True
+
+
+def test_is_wsl_available_false(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+    from prompt_interceptor.launcher import _is_wsl_available
+    assert _is_wsl_available() is False
+
+
+def test_is_opencode_in_wsl_found(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/wsl" if cmd == "wsl" else None)
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = "/usr/local/bin/opencode\n"
+    with patch("prompt_interceptor.launcher.subprocess.run", return_value=mock_result):
+        from prompt_interceptor.launcher import _is_opencode_in_wsl
+        assert _is_opencode_in_wsl() is True
+
+
+def test_is_opencode_in_wsl_not_found(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/wsl" if cmd == "wsl" else None)
+    mock_result = MagicMock()
+    mock_result.returncode = 1
+    mock_result.stdout = ""
+    with patch("prompt_interceptor.launcher.subprocess.run", return_value=mock_result):
+        from prompt_interceptor.launcher import _is_opencode_in_wsl
+        assert _is_opencode_in_wsl() is False
+
+
+def test_is_opencode_in_wsl_no_wsl(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+    from prompt_interceptor.launcher import _is_opencode_in_wsl
+    assert _is_opencode_in_wsl() is False
+
+
+def test_is_opencode_in_wsl_exception():
+    with patch("prompt_interceptor.launcher._is_wsl_available", return_value=True), \
+         patch("prompt_interceptor.launcher.subprocess.run", side_effect=Exception("timeout")):
+        from prompt_interceptor.launcher import _is_opencode_in_wsl
+        assert _is_opencode_in_wsl() is False
+
+
+def test_get_wsl_host_ip_success():
+    mock_result = MagicMock()
+    mock_result.stdout = "172.28.0.1\n"
+    with patch("prompt_interceptor.launcher.subprocess.run", return_value=mock_result):
+        from prompt_interceptor.launcher import _get_wsl_host_ip
+        assert _get_wsl_host_ip() == "172.28.0.1"
+
+
+def test_get_wsl_host_ip_empty_falls_back_to_localhost():
+    mock_result = MagicMock()
+    mock_result.stdout = ""
+    with patch("prompt_interceptor.launcher.subprocess.run", return_value=mock_result):
+        from prompt_interceptor.launcher import _get_wsl_host_ip
+        assert _get_wsl_host_ip() == "localhost"
+
+
+def test_get_wsl_host_ip_exception_falls_back_to_localhost():
+    with patch("prompt_interceptor.launcher.subprocess.run", side_effect=Exception("error")):
+        from prompt_interceptor.launcher import _get_wsl_host_ip
+        assert _get_wsl_host_ip() == "localhost"
+
+
+def test_write_opencode_config_wsl_creates_config():
+    """Writes opencode.json inside WSL by piping JSON via stdin."""
+    read_result = MagicMock()
+    read_result.stdout = "{}"
+    write_result = MagicMock()
+
+    run_calls = []
+
+    def _fake_run(args, **kwargs):
+        run_calls.append((args, kwargs))
+        if "cat" in args[-1] and ">" not in args[-1]:
+            return read_result
+        return write_result
+
+    with patch("prompt_interceptor.launcher.subprocess.run", side_effect=_fake_run):
+        from prompt_interceptor.launcher import _write_opencode_config_wsl
+        _write_opencode_config_wsl("qwen2.5:7b", "http://172.28.0.1:8080")
+
+    # Two calls: read + write
+    assert len(run_calls) == 2
+    # The write call must pipe the JSON via stdin
+    write_call_kwargs = run_calls[1][1]
+    assert "input" in write_call_kwargs
+    written = json.loads(write_call_kwargs["input"])
+    assert written["provider"]["ollama"]["options"]["baseURL"] == "http://172.28.0.1:8080/v1"
+    assert "qwen2.5:7b" in written["provider"]["ollama"]["models"]
+
+
+def test_write_opencode_config_wsl_merges_existing():
+    """Merges into existing opencode.json without wiping other keys."""
+    existing = json.dumps({"theme": "dark", "$schema": "https://opencode.ai/config.json"})
+    read_result = MagicMock()
+    read_result.stdout = existing
+
+    run_calls = []
+
+    def _fake_run(args, **kwargs):
+        run_calls.append((args, kwargs))
+        return read_result
+
+    with patch("prompt_interceptor.launcher.subprocess.run", side_effect=_fake_run):
+        from prompt_interceptor.launcher import _write_opencode_config_wsl
+        _write_opencode_config_wsl("mistral:latest", "http://172.28.0.1:8080")
+
+    write_input = json.loads(run_calls[1][1]["input"])
+    assert write_input["theme"] == "dark"
+    assert "mistral:latest" in write_input["provider"]["ollama"]["models"]
 
 
 # ---------------------------------------------------------------------------
