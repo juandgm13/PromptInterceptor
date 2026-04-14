@@ -614,17 +614,15 @@ class LauncherWindow:
                 wsl_proxy_url = f"http://{wsl_host_ip}:{config.proxy_port}"
                 _write_opencode_config_wsl(model, wsl_proxy_url)
                 opencode_cmd = f"opencode --model ollama/{model}" if model else "opencode"
+                # Use "start wsl" so the system default terminal (WT/conhost) opens a WSL window.
+                # bash -ic loads .bashrc so user-installed tools (npm/cargo/etc.) are in PATH.
+                # wsl --cd accepts Windows paths directly.
+                wsl_args = ["wsl"]
                 if work_dir:
-                    wsl_path_result = subprocess.run(
-                        ["wsl", "--", "wslpath", work_dir.replace("\\", "/")],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    wsl_path = wsl_path_result.stdout.strip()
-                    bash_cmd = f"cd '{wsl_path}' && {opencode_cmd}" if wsl_path else opencode_cmd
-                else:
-                    bash_cmd = opencode_cmd
+                    wsl_args += ["--cd", work_dir]
+                wsl_args += ["--", "bash", "-ic", opencode_cmd]
                 subprocess.Popen(
-                    ["cmd", "/c", "start", "cmd", "/k", f'wsl -- bash -c "{bash_cmd}"'],
+                    ["cmd", "/c", "start", "OpenCode (WSL)"] + wsl_args,
                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                 )
             else:
