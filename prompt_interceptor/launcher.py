@@ -33,6 +33,77 @@ _CTX_OPTIONS = {
 _CTX_DEFAULT = "32k (32768)"
 
 
+def _is_wsl_available() -> bool:
+    """Return True if wsl.exe is in PATH."""
+    return shutil.which("wsl") is not None
+
+
+def _is_opencode_in_wsl() -> bool:
+    """Return True if opencode is installed inside WSL."""
+    if not _is_wsl_available():
+        return False
+    try:
+        result = subprocess.run(
+            ["wsl", "--", "which", "opencode"],
+            capture_output=True, text=True, timeout=5
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+    except Exception:
+        return False
+
+
+def _get_wsl_host_ip() -> str:
+    """Get the Windows host IP as seen from inside WSL (for proxy URL)."""
+    try:
+        result = subprocess.run(
+            ["wsl", "--", "bash", "-c",
+             "cat /etc/resolv.conf 2>/dev/null | grep -m1 nameserver | awk '{print $2}'"],
+            capture_output=True, text=True, timeout=5
+        )
+        ip = result.stdout.strip()
+        if ip:
+            return ip
+    except Exception:
+        pass
+    return "localhost"
+
+
+def _write_opencode_config_wsl(model: str, proxy_url: str) -> None:
+    """Write/update opencode.json inside WSL via stdin pipe."""
+    read_cmd = "cat ~/.config/opencode/opencode.json 2>/dev/null || echo '{}'"
+    try:
+        result = subprocess.run(
+            ["wsl", "--", "bash", "-c", read_cmd],
+            capture_output=True, text=True, timeout=5
+        )
+        try:
+            existing = json.loads(result.stdout)
+        except (json.JSONDecodeError, ValueError):
+            existing = {}
+    except Exception:
+        existing = {}
+
+    providers = existing.setdefault("provider", {})
+    ollama = providers.setdefault("ollama", {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "Ollama",
+    })
+    ollama.setdefault("options", {})["baseURL"] = f"{proxy_url}/v1"
+    ollama.setdefault("models", {})[model] = {"name": model}
+    existing.setdefault("$schema", "https://opencode.ai/config.json")
+
+    config_json = json.dumps(existing, indent=2)
+    write_cmd = "mkdir -p ~/.config/opencode && cat > ~/.config/opencode/opencode.json"
+    try:
+        subprocess.run(
+            ["wsl", "--", "bash", "-c", write_cmd],
+            input=config_json, text=True, timeout=5
+        )
+        print(f"[PromptInterceptor] opencode WSL config written")
+    except Exception as exc:
+        print(f"[PromptInterceptor] Failed to write opencode WSL config: {exc}")
+
+
 def _detect_clients() -> list:
     """Detect installed AI clients. Returns list of (display_name, command).
     Always includes 'Python App (Ollama)' as a custom option.
@@ -41,7 +112,9 @@ def _detect_clients() -> list:
     if shutil.which("claude"):
         clients.append(("Claude Code", "claude"))
     if shutil.which("opencode"):
-        clients.append(("Open Code", "opencode"))
+        clients.append(("Open Code (CLI)", "opencode"))
+    if _is_opencode_in_wsl():
+        clients.append(("Open Code (WSL)", "__opencode_wsl__"))
     clients.append(("Python App (Ollama)", "__python_app__"))
     return clients
 
@@ -521,17 +594,46 @@ class LauncherWindow:
             if cmd_name == "claude":
                 env["ANTHROPIC_BASE_URL"] = proxy_url
                 shell_cmd = f"claude --model {model}" if model else "claude"
+                subprocess.Popen(
+                    ["cmd", "/c", "start", "cmd", "/k", shell_cmd],
+                    cwd=work_dir,
+                    env=env,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                )
             elif cmd_name == "opencode":
                 _write_opencode_config(model, proxy_url)
                 shell_cmd = f"opencode --model ollama/{model}" if model else "opencode"
+                subprocess.Popen(
+                    ["cmd", "/c", "start", "cmd", "/k", shell_cmd],
+                    cwd=work_dir,
+                    env=env,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                )
+            elif cmd_name == "__opencode_wsl__":
+                wsl_host_ip = _get_wsl_host_ip()
+                wsl_proxy_url = f"http://{wsl_host_ip}:{config.proxy_port}"
+                _write_opencode_config_wsl(model, wsl_proxy_url)
+                opencode_cmd = f"opencode --model ollama/{model}" if model else "opencode"
+                if work_dir:
+                    wsl_path_result = subprocess.run(
+                        ["wsl", "--", "wslpath", work_dir.replace("\\", "/")],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    wsl_path = wsl_path_result.stdout.strip()
+                    bash_cmd = f"cd '{wsl_path}' && {opencode_cmd}" if wsl_path else opencode_cmd
+                else:
+                    bash_cmd = opencode_cmd
+                subprocess.Popen(
+                    ["cmd", "/c", "start", "cmd", "/k", f'wsl -- bash -c "{bash_cmd}"'],
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                )
             else:
-                shell_cmd = cmd_name
-            subprocess.Popen(
-                ["cmd", "/c", "start", "cmd", "/k", shell_cmd],
-                cwd=work_dir,
-                env=env,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-            )
+                subprocess.Popen(
+                    ["cmd", "/c", "start", "cmd", "/k", cmd_name],
+                    cwd=work_dir,
+                    env=env,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                )
         except FileNotFoundError:
             self.status_var.set(f"Error: '{cmd_name}' not found. Is the client installed?")
             return

@@ -80,12 +80,12 @@ The desktop launcher (`python -m prompt_interceptor`) uses a sequential 3-step w
 
 | Field / Button | Behaviour |
 |----------------|-----------|
-| **AI Client** | Detected via `shutil.which` (`claude`, `opencode`). Always includes *Python App (Ollama)* as a custom option. |
+| **AI Client** | Detected at startup. Always includes *Python App (Ollama)* as a custom option. Available clients: **Claude Code** (if `claude` is in PATH), **Open Code (CLI)** (if `opencode` is in PATH), **Open Code (WSL)** (if WSL is available *and* `opencode` is installed inside WSL). |
 | **Model** | Disabled until Ollama is ready. Populated from `GET /api/tags` (downloaded models only). |
-| **Work Dir** *(Claude Code / Open Code)* | Directory used as the working directory (`cwd`) when launching the client terminal. |
+| **Work Dir** *(Claude Code / Open Code CLI / Open Code WSL)* | Working directory for the client terminal. For WSL, the Windows path is converted to a WSL path via `wslpath`. |
 | **App Path** *(Python App)* | Path to the Python app's entry point (`.py` or executable). |
 | **Ollama Env Var** *(Python App)* | Name of the environment variable the app uses for the Ollama host (e.g. `OLLAMA_HOST`). Set to `http://localhost:<proxy_port>` at launch. |
-| **Launch Client** | Opens a CMD terminal with the correct command and environment. **Claude Code**: sets `ANTHROPIC_BASE_URL=http://localhost:<proxy_port>` and launches `claude --model <model>`. **Open Code**: sets `OPENAI_BASE_URL=http://localhost:<proxy_port>` and launches `opencode --model <model>`. **Python App**: sets the configured env var to the proxy URL. Unlocks Step 3. |
+| **Launch Client** | Opens a terminal with the correct command and environment. **Claude Code**: sets `ANTHROPIC_BASE_URL=http://localhost:<proxy_port>`, launches `claude --model <model>` in CMD. **Open Code (CLI)**: writes `~/.config/opencode/opencode.json` with the proxy URL, launches `opencode --model ollama/<model>` in CMD. **Open Code (WSL)**: writes `~/.config/opencode/opencode.json` inside WSL (using the Windows host IP detected from `/etc/resolv.conf`), launches `wsl -- bash -c "opencode --model ollama/<model>"` in CMD. **Python App**: sets the configured env var to the proxy URL. Unlocks Step 3. |
 
 ### Step 3 — Proxy
 
