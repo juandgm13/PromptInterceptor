@@ -1303,6 +1303,31 @@ def test_parse_sse_response_accepts_string_chunks():
     assert result["content"][0]["text"] == "x"
 
 
+def test_parse_sse_response_captures_thinking_delta():
+    """thinking_delta blocks (Claude Code extended thinking) are captured as thinking content block."""
+    chunks = [
+        b'data: {"type":"message_start","message":{"id":"msg_01","model":"claude","role":"assistant","content":[]}}\n',
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"reason A"}}\n',
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" reason B"}}\n',
+        b'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Answer"}}\n',
+    ]
+    result = _parse_sse_response(chunks)
+    assert result is not None
+    thinking_blocks = [b for b in result["content"] if b["type"] == "thinking"]
+    text_blocks = [b for b in result["content"] if b["type"] == "text"]
+    assert thinking_blocks[0]["thinking"] == "reason A reason B"
+    assert text_blocks[0]["text"] == "Answer"
+
+
+def test_parse_sse_response_no_thinking_has_no_thinking_block():
+    """When no thinking_delta present, content has only text blocks."""
+    chunks = [
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}\n',
+    ]
+    result = _parse_sse_response(chunks)
+    assert all(b["type"] != "thinking" for b in result.get("content", []))
+
+
 # ---------------------------------------------------------------------------
 # _parse_openai_sse_response
 # ---------------------------------------------------------------------------
@@ -1348,6 +1373,65 @@ def test_parse_openai_sse_response_ollama_usage_chunk_last():
     assert result is not None
     assert result["choices"][0]["message"]["content"] == "Hello world"
     assert result["usage"]["completion_tokens"] == 2
+
+
+def test_parse_openai_sse_response_captures_thinking():
+    """delta.thinking (Ollama 0.7+ via /v1/chat/completions) is captured separately."""
+    chunks = [
+        b'data: {"id":"x","choices":[{"index":0,"delta":{"thinking":"step 1"},"finish_reason":null}]}\n',
+        b'data: {"id":"x","choices":[{"index":0,"delta":{"thinking":" step 2","content":""},"finish_reason":null}]}\n',
+        b'data: {"id":"x","choices":[{"index":0,"delta":{"content":"The answer"},"finish_reason":"stop"}]}\n',
+        b'data: [DONE]\n',
+    ]
+    result = _parse_openai_sse_response(chunks)
+    assert result is not None
+    assert result["choices"][0]["message"]["thinking"] == "step 1 step 2"
+    assert result["choices"][0]["message"]["content"] == "The answer"
+
+
+def test_parse_openai_sse_response_captures_reasoning_field():
+    """delta.reasoning (Open Code / qwen3 via Ollama) is captured as thinking."""
+    chunks = [
+        b'data: {"id":"x","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"think A"},"finish_reason":null}]}\n',
+        b'data: {"id":"x","choices":[{"index":0,"delta":{"content":"","reasoning":" think B"},"finish_reason":null}]}\n',
+        b'data: {"id":"x","choices":[{"index":0,"delta":{"content":"Result"},"finish_reason":"stop"}]}\n',
+        b'data: [DONE]\n',
+    ]
+    result = _parse_openai_sse_response(chunks)
+    assert result is not None
+    assert result["choices"][0]["message"]["thinking"] == "think A think B"
+    assert result["choices"][0]["message"]["content"] == "Result"
+
+
+def test_parse_openai_sse_response_no_thinking_field_omitted():
+    """When no thinking in stream, message has no thinking key."""
+    chunks = [
+        b'data: {"id":"x","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":"stop"}]}\n',
+        b'data: [DONE]\n',
+    ]
+    result = _parse_openai_sse_response(chunks)
+    assert "thinking" not in result["choices"][0]["message"]
+
+
+def test_parse_stream_response_chat_captures_thinking():
+    """message.thinking (Ollama 0.7+ via /api/chat) is captured alongside content."""
+    chunks = [
+        b'{"message":{"role":"assistant","content":"","thinking":"reason 1"},"done":false}\n',
+        b'{"message":{"role":"assistant","content":"","thinking":" reason 2"},"done":false}\n',
+        b'{"message":{"role":"assistant","content":"Answer","thinking":""},"done":true}\n',
+    ]
+    result = _parse_stream_response(chunks)
+    assert result["message"]["content"] == "Answer"
+    assert result["message"]["thinking"] == "reason 1 reason 2"
+
+
+def test_parse_stream_response_chat_no_thinking_field_omitted():
+    """When no thinking in /api/chat stream, message has no thinking key."""
+    chunks = [
+        b'{"message":{"role":"assistant","content":"Hi"},"done":true}\n',
+    ]
+    result = _parse_stream_response(chunks)
+    assert "thinking" not in result["message"]
 
 
 # ---------------------------------------------------------------------------

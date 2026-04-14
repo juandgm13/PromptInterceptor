@@ -504,3 +504,121 @@ async def test_dashboard_html_has_response_column(client):
     assert resp.status_code == 200
     assert "<th>Response</th>" in resp.text
     assert "response_body" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Message detail modal — split layout
+# ---------------------------------------------------------------------------
+
+async def test_dashboard_html_modal_has_split_layout(client):
+    """Modal uses a two-column grid layout (modal-split class)."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "modal-split" in resp.text
+
+
+async def test_dashboard_html_modal_has_prompt_panel(client):
+    """Modal contains a Prompt panel with id=modal-prompt."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert 'id="modal-prompt"' in resp.text
+    assert "Prompt" in resp.text
+
+
+async def test_dashboard_html_modal_has_response_panel(client):
+    """Modal contains a Response panel with id=modal-response."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert 'id="modal-response"' in resp.text
+
+
+async def test_dashboard_html_modal_thinking_block_hidden_by_default(client):
+    """Thinking block starts hidden and is only shown when thinking content exists."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert 'id="modal-thinking-block"' in resp.text
+    assert 'id="modal-thinking"' in resp.text
+    # Must start hidden
+    assert 'id="modal-thinking-block" class="modal-thinking-block" style="display:none"' in resp.text
+
+
+async def test_dashboard_html_showraw_uses_textcontent(client):
+    """showRaw uses textContent so \\n in strings renders as real line breaks."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    # textContent assignment is used for prompt, thinking, and response
+    assert "modal-prompt').textContent" in html or ".textContent = " in html
+    # white-space:pre-wrap on pre elements renders newlines correctly
+    assert "white-space:pre-wrap" in html
+
+
+async def test_dashboard_html_showraw_extracts_all_message_roles(client):
+    """showRaw formats messages with role labels like [USER], [ASSISTANT]."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "role" in html
+    assert "toUpperCase()" in html
+
+
+async def test_dashboard_html_showraw_handles_ollama_response(client):
+    """showRaw handles Ollama /api/chat response format (rb.message.content)."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "rb.message?.content" in resp.text
+
+
+async def test_dashboard_html_showraw_handles_openai_response(client):
+    """showRaw handles OpenAI-compatible response format (choices[0].message.content)."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "rb.choices" in resp.text
+    assert "choices[0]?.message?.content" in resp.text
+
+
+async def test_dashboard_html_showraw_handles_anthropic_thinking(client):
+    """showRaw extracts thinking blocks from Anthropic-style content arrays."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "type === 'thinking'" in html
+    assert "modal-thinking-block" in html
+
+
+async def test_dashboard_html_showraw_handles_think_tags(client):
+    """showRaw parses <think>...</think> tags as fallback for inline thinking."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "thinkTagMatch" in html or "<think>" in html or "think>" in html
+
+
+async def test_dashboard_html_showraw_reads_message_thinking_field(client):
+    """showRaw reads rb.message.thinking (Ollama 0.7+ /api/chat)."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "rb.message.thinking" in resp.text or "message.thinking" in resp.text
+
+
+async def test_dashboard_html_showraw_reads_choices_thinking_field(client):
+    """showRaw reads choices[0].message.thinking (Ollama 0.7+ /v1/chat/completions)."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "msg.thinking" in resp.text or "message.thinking" in resp.text
+
+
+async def test_dashboard_html_showraw_handles_generate_prompt(client):
+    """showRaw falls back to l.body.prompt for /api/generate requests."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "l.body?.prompt" in resp.text
+
+
+async def test_dashboard_html_modal_wider_than_before(client):
+    """Modal box uses a wider max-width to accommodate split layout."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    # Previous max-width was 900px; new layout needs at least 1200px
+    html = resp.text
+    assert "1400px" in html or "1200px" in html

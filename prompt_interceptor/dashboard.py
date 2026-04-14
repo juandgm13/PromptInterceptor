@@ -105,14 +105,30 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     background:none;border:none;padding:0}
   .modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;
     background:rgba(0,0,0,.75);z-index:1000;overflow-y:auto}
-  .modal-box{background:#16213e;border-radius:8px;padding:24px;max-width:900px;
+  .modal-box{background:#16213e;border-radius:8px;padding:24px;max-width:1400px;
     margin:40px auto;position:relative;border:1px solid #2a2a4e}
   .modal-close{position:absolute;top:10px;right:14px;background:none;border:none;
     color:#888;font-size:1.3em;cursor:pointer}
   .modal-close:hover{color:#eee}
   .modal-pre{background:#0d0d1e;padding:14px;border-radius:6px;font-size:.78em;
-    overflow:auto;max-height:70vh;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+    overflow:auto;line-height:1.5;white-space:pre-wrap;word-break:break-word}
   .modal-title{color:#4fc3f7;margin-bottom:14px;padding-right:24px}
+  .modal-split{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .modal-panel{display:flex;flex-direction:column;gap:8px;min-width:0}
+  .modal-panel-title{color:#4fc3f7;font-size:.82em;font-weight:600;
+    text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px}
+  .modal-thinking-block{display:flex;flex-direction:column;gap:4px}
+  .modal-thinking-title{color:#f0a500;font-size:.78em;font-weight:600;
+    text-transform:uppercase;letter-spacing:.05em}
+  .modal-thinking-pre{background:#1a1200;border:1px solid #3a2800;padding:10px;
+    border-radius:6px;font-size:.75em;overflow:auto;max-height:200px;
+    line-height:1.5;white-space:pre-wrap;word-break:break-word;color:#f0c060}
+  .modal-resp-pre{background:#0d0d1e;padding:14px;border-radius:6px;font-size:.78em;
+    overflow:auto;flex:1;min-height:120px;max-height:calc(80vh - 80px);
+    line-height:1.5;white-space:pre-wrap;word-break:break-word}
+  .modal-prompt-pre{background:#0d0d1e;padding:14px;border-radius:6px;font-size:.78em;
+    overflow:auto;max-height:calc(80vh - 40px);line-height:1.5;
+    white-space:pre-wrap;word-break:break-word}
 </style>
 </head>
 <body>
@@ -223,8 +239,21 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 <div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal()">
   <div class="modal-box">
     <button class="modal-close" onclick="closeModal()">&#x2715;</button>
-    <h3 class="modal-title" id="modal-title">Raw Data</h3>
-    <pre class="modal-pre" id="modal-content"></pre>
+    <h3 class="modal-title" id="modal-title">Message Detail</h3>
+    <div class="modal-split">
+      <div class="modal-panel">
+        <div class="modal-panel-title">Prompt</div>
+        <pre class="modal-prompt-pre" id="modal-prompt"></pre>
+      </div>
+      <div class="modal-panel">
+        <div id="modal-thinking-block" class="modal-thinking-block" style="display:none">
+          <div class="modal-thinking-title">&#x1F9E0; Thinking</div>
+          <pre class="modal-thinking-pre" id="modal-thinking"></pre>
+        </div>
+        <div class="modal-panel-title">Response</div>
+        <pre class="modal-resp-pre" id="modal-response"></pre>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -245,7 +274,68 @@ function showRaw(id) {
   if (!l) return;
   document.getElementById('modal-title').textContent =
     (l.method || '') + ' ' + (l.path || '') + ' — ' + (l.timestamp || l.response_timestamp || '');
-  document.getElementById('modal-content').textContent = JSON.stringify(l, null, 2);
+
+  // --- Extract prompt ---
+  let promptText = '';
+  const msgs = l.body?.messages;
+  if (msgs && msgs.length) {
+    promptText = msgs.map(m => {
+      const role = (m.role || 'user').toUpperCase();
+      let content = '';
+      if (typeof m.content === 'string') {
+        content = m.content;
+      } else if (Array.isArray(m.content)) {
+        content = m.content
+          .filter(b => b.type === 'text')
+          .map(b => b.text || '')
+          .join('\\n');
+      }
+      return `[${role}]\\n${content}`;
+    }).join('\\n\\n---\\n\\n');
+  } else if (l.body?.prompt) {
+    promptText = String(l.body.prompt);
+  }
+  document.getElementById('modal-prompt').textContent = promptText || '(sin prompt)';
+
+  // --- Extract response and thinking ---
+  let thinkingText = '';
+  let respText = '';
+  const rb = l.response_body;
+  if (rb) {
+    if (rb.choices && rb.choices[0]?.message) {
+      const msg = rb.choices[0].message;
+      respText = msg.content || '';
+      thinkingText = msg.thinking || '';
+    } else if (rb.message) {
+      respText = rb.message.content || '';
+      thinkingText = rb.message.thinking || '';
+    } else if (typeof rb.response === 'string') {
+      respText = rb.response;
+    } else if (Array.isArray(rb.content)) {
+      // Anthropic-style: separate thinking and text blocks
+      thinkingText = rb.content.filter(b => b.type === 'thinking').map(b => b.thinking || '').join('\\n\\n');
+      respText = rb.content.filter(b => b.type === 'text').map(b => b.text || '').join('\\n');
+    }
+  }
+
+  // Fallback: <think>...</think> inline tags (older Ollama / deepseek-r1)
+  if (!thinkingText && respText) {
+    const thinkTagMatch = respText.match(/<think>([\s\S]*?)<\/think>([\s\S]*)/);
+    if (thinkTagMatch) {
+      thinkingText = thinkTagMatch[1].trim();
+      respText = thinkTagMatch[2].trim();
+    }
+  }
+
+  const thinkingBlock = document.getElementById('modal-thinking-block');
+  if (thinkingText) {
+    document.getElementById('modal-thinking').textContent = thinkingText;
+    thinkingBlock.style.display = '';
+  } else {
+    thinkingBlock.style.display = 'none';
+  }
+  document.getElementById('modal-response').textContent = respText || '(sin respuesta)';
+
   document.getElementById('modal-overlay').style.display = 'block';
 }
 
