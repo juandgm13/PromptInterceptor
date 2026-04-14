@@ -1,6 +1,7 @@
 """Tests for prompt_interceptor/launcher.py."""
 import json
 import shutil
+import subprocess
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
@@ -677,7 +678,7 @@ def test_on_launch_client_open_code_cli(tmp_path, monkeypatch):
 
 
 def test_on_launch_client_open_code_wsl(tmp_path, monkeypatch):
-    """Launching Open Code (WSL) writes WSL config and runs wsl -- bash -c '...'."""
+    """Launching Open Code (WSL) writes WSL config and opens a WSL terminal via shell=True."""
     cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
 
@@ -701,16 +702,21 @@ def test_on_launch_client_open_code_wsl(tmp_path, monkeypatch):
         win._on_launch_client()
 
     assert len(popen_calls) == 1
-    cmd_str = " ".join(popen_calls[0][0])
-    assert "wsl" in cmd_str
-    assert "opencode" in cmd_str
-    assert "ollama/mistral:latest" in cmd_str
+    cmd_list, kwargs = popen_calls[0]
+    assert isinstance(cmd_list, list)
+    # cmd /c start <title> wsl [--cd <dir>] -- bash -ic <opencode_cmd>
+    assert cmd_list[:3] == ["cmd", "/c", "start"]
+    assert "wsl" in cmd_list
+    assert "bash" in cmd_list
+    assert "-ic" in cmd_list
+    assert any("opencode" in a for a in cmd_list)
+    assert any("ollama/mistral:latest" in a for a in cmd_list)
     mock_wsl_cfg.assert_called_once_with("mistral:latest", "http://172.28.0.1:8080")
     win._start_btn.config.assert_called_with(state="normal")
 
 
 def test_on_launch_client_open_code_wsl_with_workdir(tmp_path, monkeypatch):
-    """WSL launch converts Windows work dir to WSL path using wslpath."""
+    """WSL launch passes Windows work dir directly via wsl --cd (no wslpath conversion)."""
     cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
 
@@ -726,21 +732,21 @@ def test_on_launch_client_open_code_wsl_with_workdir(tmp_path, monkeypatch):
     win.status_var = MagicMock()
     win._start_btn = MagicMock()
 
-    wsl_run_result = MagicMock()
-    wsl_run_result.stdout = "/mnt/c/Users/user/project\n"
-
     popen_calls = []
     with patch("prompt_interceptor.launcher.subprocess.Popen",
                side_effect=lambda *a, **kw: popen_calls.append((a[0], kw))), \
-         patch("prompt_interceptor.launcher.subprocess.run", return_value=wsl_run_result), \
          patch("prompt_interceptor.launcher._get_wsl_host_ip", return_value="172.28.0.1"), \
          patch("prompt_interceptor.launcher._write_opencode_config_wsl"):
         win._on_launch_client()
 
     assert len(popen_calls) == 1
-    cmd_str = " ".join(popen_calls[0][0])
-    assert "/mnt/c/Users/user/project" in cmd_str
-    assert "opencode" in cmd_str
+    cmd_list, kwargs = popen_calls[0]
+    assert isinstance(cmd_list, list)
+    assert cmd_list[:3] == ["cmd", "/c", "start"]
+    assert "wsl" in cmd_list
+    assert "--cd" in cmd_list
+    assert "C:\\Users\\user\\project" in cmd_list
+    assert any("opencode" in a for a in cmd_list)
 
 
 def test_on_launch_client_python_app(tmp_path, monkeypatch):
