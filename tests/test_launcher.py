@@ -863,6 +863,15 @@ def test_get_wsl_host_ip_success():
         assert _get_wsl_host_ip() == "172.28.0.1"
 
 
+def test_get_wsl_host_ip_nameserver_format():
+    """'nameserver X.X.X.X' format: returns the IP (parts[-1])."""
+    mock_result = MagicMock()
+    mock_result.stdout = "nameserver 10.255.255.254\n"
+    with patch("prompt_interceptor.launcher.subprocess.run", return_value=mock_result):
+        from prompt_interceptor.launcher import _get_wsl_host_ip
+        assert _get_wsl_host_ip() == "10.255.255.254"
+
+
 def test_get_wsl_host_ip_empty_falls_back_to_localhost():
     mock_result = MagicMock()
     mock_result.stdout = ""
@@ -875,6 +884,45 @@ def test_get_wsl_host_ip_exception_falls_back_to_localhost():
     with patch("prompt_interceptor.launcher.subprocess.run", side_effect=Exception("error")):
         from prompt_interceptor.launcher import _get_wsl_host_ip
         assert _get_wsl_host_ip() == "localhost"
+
+
+def test_wsl_can_reach_proxy_returns_true():
+    """_wsl_can_reach_proxy returns True when WSL echo prints 'ok'."""
+    mock_result = MagicMock()
+    mock_result.stdout = "ok\n"
+    with patch("prompt_interceptor.launcher.subprocess.run", return_value=mock_result):
+        from prompt_interceptor.launcher import _wsl_can_reach_proxy
+        assert _wsl_can_reach_proxy("172.28.0.1", 8080) is True
+
+
+def test_wsl_can_reach_proxy_returns_false_on_no_output():
+    """_wsl_can_reach_proxy returns False when stdout is not 'ok'."""
+    mock_result = MagicMock()
+    mock_result.stdout = ""
+    with patch("prompt_interceptor.launcher.subprocess.run", return_value=mock_result):
+        from prompt_interceptor.launcher import _wsl_can_reach_proxy
+        assert _wsl_can_reach_proxy("172.28.0.1", 8080) is False
+
+
+def test_wsl_can_reach_proxy_returns_false_on_exception():
+    """_wsl_can_reach_proxy returns False when subprocess.run raises."""
+    with patch("prompt_interceptor.launcher.subprocess.run", side_effect=Exception("timeout")):
+        from prompt_interceptor.launcher import _wsl_can_reach_proxy
+        assert _wsl_can_reach_proxy("172.28.0.1", 8080) is False
+
+
+def test_warn_wsl_firewall_calls_showwarning():
+    """_warn_wsl_firewall calls tkinter.messagebox.showwarning with host and port info."""
+    with patch("prompt_interceptor.launcher.tk") as mock_tk:
+        import tkinter.messagebox as mb
+        with patch.object(mb, "showwarning") as mock_warn:
+            from prompt_interceptor.launcher import _warn_wsl_firewall
+            _warn_wsl_firewall("172.28.0.1", 8080)
+
+    mock_warn.assert_called_once()
+    _, msg = mock_warn.call_args[0]
+    assert "172.28.0.1" in msg
+    assert "8080" in msg
 
 
 def test_write_opencode_config_wsl_creates_config():
@@ -924,6 +972,50 @@ def test_write_opencode_config_wsl_merges_existing():
     write_input = json.loads(run_calls[1][1]["input"])
     assert write_input["theme"] == "dark"
     assert "mistral:latest" in write_input["provider"]["ollama"]["models"]
+
+
+def test_write_opencode_config_wsl_invalid_json_read_falls_back_to_empty():
+    """When the read subprocess returns invalid JSON, an empty dict is used (line 116)."""
+    invalid_read = MagicMock()
+    invalid_read.stdout = "not valid json {{{"  # causes json.JSONDecodeError
+    write_result = MagicMock()
+
+    run_calls = []
+
+    def _fake_run(args, **kwargs):
+        run_calls.append((args, kwargs))
+        # First call is the read, second is the write
+        if len(run_calls) == 1:
+            return invalid_read
+        return write_result
+
+    with patch("prompt_interceptor.launcher.subprocess.run", side_effect=_fake_run):
+        from prompt_interceptor.launcher import _write_opencode_config_wsl
+        _write_opencode_config_wsl("llama3", "http://172.28.0.1:8080")
+
+    # Still writes valid JSON even though read was garbage
+    write_input = json.loads(run_calls[1][1]["input"])
+    assert "provider" in write_input
+
+
+def test_write_opencode_config_wsl_write_failure_is_silent():
+    """When the write subprocess.run raises, the function handles it gracefully."""
+    read_result = MagicMock()
+    read_result.stdout = "{}"
+    call_count = [0]
+
+    def _fake_run(args, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return read_result
+        raise Exception("disk full")
+
+    with patch("prompt_interceptor.launcher.subprocess.run", side_effect=_fake_run):
+        from prompt_interceptor.launcher import _write_opencode_config_wsl
+        # Must not raise even if write fails
+        _write_opencode_config_wsl("llama3", "http://172.28.0.1:8080")
+
+    assert call_count[0] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -977,6 +1069,23 @@ def test_write_opencode_config_idempotent(tmp_path):
     data = _json.loads(written.read_text())
     models = data["provider"]["ollama"]["models"]
     assert list(models.keys()).count("llama3:8b") == 1
+
+
+def test_write_opencode_config_invalid_json_file_falls_back_to_empty(tmp_path):
+    """When the existing opencode.json contains invalid JSON, an empty dict is used."""
+    import json as _json
+    from prompt_interceptor.launcher import _write_opencode_config
+
+    config_dir = tmp_path / ".config" / "opencode"
+    config_dir.mkdir(parents=True)
+    (config_dir / "opencode.json").write_text("not valid json {{}")
+
+    with patch("prompt_interceptor.launcher.Path.home", return_value=tmp_path):
+        _write_opencode_config("llama3", "http://localhost:8080")
+
+    data = _json.loads((config_dir / "opencode.json").read_text())
+    assert "provider" in data
+
 
 def test_on_launch_client_python_app_custom_env_var(tmp_path, monkeypatch):
     """Custom env var name is used instead of the default OLLAMA_HOST."""
@@ -1668,6 +1777,188 @@ def test_on_start_saves_active_target_to_config(tmp_path, monkeypatch):
         win._on_start()
 
     assert saved[0].target == "http://192.168.1.100:11434"
+
+
+# ---------------------------------------------------------------------------
+# _on_launch_client — WSL branch (lines 653-674 in launcher.py)
+# ---------------------------------------------------------------------------
+
+def _make_wsl_win(cfg, monkeypatch):
+    """Helper: LauncherWindow set up to launch Open Code (WSL)."""
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    clients = [("Open Code (WSL)", "__opencode_wsl__"), ("Python App (Ollama)", "__python_app__")]
+    win, _ = _make_headless_win(cfg, clients=clients)
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Open Code (WSL)"
+    win._clients = clients
+    win.work_dir_var = MagicMock()
+    win.work_dir_var.get.return_value = ""
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = "mistral:latest"
+    win.status_var = MagicMock()
+    win._start_btn = MagicMock()
+    return win
+
+
+def test_on_launch_client_wsl_firewall_warning_when_unreachable(tmp_path, monkeypatch):
+    """When WSL cannot reach the proxy, _warn_wsl_firewall is called and Popen is NOT called."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
+    win = _make_wsl_win(cfg, monkeypatch)
+
+    popen_calls = []
+    with patch("prompt_interceptor.launcher.subprocess.Popen",
+               side_effect=lambda *a, **kw: popen_calls.append(a[0])), \
+         patch("prompt_interceptor.launcher._get_wsl_host_ip", return_value="172.28.0.1"), \
+         patch("prompt_interceptor.launcher._write_opencode_config_wsl"), \
+         patch("prompt_interceptor.launcher._wsl_can_reach_proxy", return_value=False), \
+         patch("prompt_interceptor.launcher._warn_wsl_firewall") as mock_warn:
+        win._on_launch_client()
+
+    mock_warn.assert_called_once_with("172.28.0.1", 8080)
+    assert len(popen_calls) == 0
+
+
+def test_on_launch_client_wsl_opens_terminal_when_reachable(tmp_path, monkeypatch):
+    """When WSL can reach the proxy, Popen is called with wsl args."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
+    win = _make_wsl_win(cfg, monkeypatch)
+
+    popen_calls = []
+    with patch("prompt_interceptor.launcher.subprocess.Popen",
+               side_effect=lambda *a, **kw: popen_calls.append((a[0], kw))), \
+         patch("prompt_interceptor.launcher._get_wsl_host_ip", return_value="172.28.0.1"), \
+         patch("prompt_interceptor.launcher._write_opencode_config_wsl"), \
+         patch("prompt_interceptor.launcher._wsl_can_reach_proxy", return_value=True):
+        win._on_launch_client()
+
+    assert len(popen_calls) == 1
+    cmd_list, _ = popen_calls[0]
+    assert "wsl" in cmd_list
+
+
+def test_on_launch_client_wsl_with_workdir_passes_cd_flag(tmp_path, monkeypatch):
+    """When work_dir is set, --cd is included in the wsl args (line 667)."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    clients = [("Open Code (WSL)", "__opencode_wsl__"), ("Python App (Ollama)", "__python_app__")]
+    win, _ = _make_headless_win(cfg, clients=clients)
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Open Code (WSL)"
+    win._clients = clients
+    win.work_dir_var = MagicMock()
+    win.work_dir_var.get.return_value = "C:\\Users\\user\\project"
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = "llama3"
+    win.status_var = MagicMock()
+    win._start_btn = MagicMock()
+
+    popen_calls = []
+    with patch("prompt_interceptor.launcher.subprocess.Popen",
+               side_effect=lambda *a, **kw: popen_calls.append(a[0])), \
+         patch("prompt_interceptor.launcher._get_wsl_host_ip", return_value="172.28.0.1"), \
+         patch("prompt_interceptor.launcher._write_opencode_config_wsl"), \
+         patch("prompt_interceptor.launcher._wsl_can_reach_proxy", return_value=True):
+        win._on_launch_client()
+
+    assert len(popen_calls) == 1
+    assert "--cd" in popen_calls[0]
+    assert "C:\\Users\\user\\project" in popen_calls[0]
+
+
+def test_on_launch_client_generic_else_branch(tmp_path, monkeypatch):
+    """Unknown cmd_name falls through to the generic 'else' Popen branch."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    clients = [("Custom Tool", "customtool"), ("Python App (Ollama)", "__python_app__")]
+    win, _ = _make_headless_win(cfg, clients=clients)
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Custom Tool"
+    win._clients = clients
+    win.work_dir_var = MagicMock()
+    win.work_dir_var.get.return_value = ""
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = ""
+    win.status_var = MagicMock()
+    win._start_btn = MagicMock()
+
+    popen_calls = []
+    with patch("prompt_interceptor.launcher.subprocess.Popen",
+               side_effect=lambda *a, **kw: popen_calls.append(a[0])):
+        win._on_launch_client()
+
+    assert len(popen_calls) == 1
+    assert "customtool" in popen_calls[0]
+
+
+# ---------------------------------------------------------------------------
+# _launch_python_app — OSError branch (lines 712-713)
+# ---------------------------------------------------------------------------
+
+def test_launch_python_app_oserror_shows_error(tmp_path, monkeypatch):
+    """OSError from Popen in _launch_python_app is caught and shown in status."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _make_headless_win(cfg)
+    win.app_path_var = MagicMock()
+    win.app_path_var.get.return_value = ""
+    win.app_command_var = MagicMock()
+    win.app_command_var.get.return_value = "python main.py"
+    win.use_venv_var = MagicMock()
+    win.use_venv_var.get.return_value = False
+    win.env_var_var = MagicMock()
+    win.env_var_var.get.return_value = "OLLAMA_HOST"
+    win.status_var = MagicMock()
+
+    with patch("prompt_interceptor.launcher.subprocess.Popen",
+               side_effect=OSError("permission denied")):
+        win._launch_python_app()
+
+    win.status_var.set.assert_called()
+    msg = win.status_var.set.call_args[0][0]
+    assert "permission denied" in msg
+
+
+# ---------------------------------------------------------------------------
+# _on_start — Python App auto-launch branch (line 759)
+# ---------------------------------------------------------------------------
+
+def test_on_start_schedules_python_app_launch_when_client_is_python_app(tmp_path, monkeypatch):
+    """_on_start schedules _launch_python_app via root.after when client is Python App."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, dashboard_port=9090)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    monkeypatch.setattr("prompt_interceptor.launcher.save_config", lambda c: None)
+
+    win, mock_root = _make_headless_win(cfg)
+    win.ctx_var = MagicMock()
+    win.ctx_var.get.return_value = "4k  (4096)"
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = ""
+    win.work_dir_var = MagicMock()
+    win.work_dir_var.get.return_value = ""
+    win.app_command_var = MagicMock()
+    win.app_command_var.get.return_value = ""
+    win.use_venv_var = MagicMock()
+    win.use_venv_var.get.return_value = False
+    win.env_var_var = MagicMock()
+    win.env_var_var.get.return_value = ""
+    win.proxy_port_var = MagicMock()
+    win.proxy_port_var.get.return_value = "8080"
+    win.status_var = MagicMock()
+    # Simulate Python App being selected as the client
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Python App (Ollama)"
+
+    after_calls = []
+    mock_root.after.side_effect = lambda delay, fn, *args: after_calls.append((delay, fn))
+
+    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+        mock_thread.return_value = MagicMock()
+        win._on_start()
+
+    # The Python app launch must be scheduled via root.after(2500, ...)
+    scheduled_fns = [fn for delay, fn in after_calls if delay == 2500]
+    assert any(fn == win._launch_python_app for fn in scheduled_fns)
 
 
 # ---------------------------------------------------------------------------
