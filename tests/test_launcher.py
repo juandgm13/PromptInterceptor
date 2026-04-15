@@ -283,8 +283,6 @@ def test_on_launch_ollama_opens_process_and_thread(tmp_path, monkeypatch):
     win, mock_root = _make_headless_win(cfg)
     win.ollama_host_var = MagicMock()
     win.ollama_host_var.get.return_value = "127.0.0.1"
-    win.ctx_var = MagicMock()
-    win.ctx_var.get.return_value = "8k  (8192)"
     win.status_var = MagicMock()
     win._launch_ollama_btn = MagicMock()
     mock_root.after.side_effect = lambda delay, fn, *args: fn(*args)
@@ -297,29 +295,35 @@ def test_on_launch_ollama_opens_process_and_thread(tmp_path, monkeypatch):
         win._check_or_launch_ollama()
 
     assert len(popen_calls) == 1
-    cmd_args, kw = popen_calls[0]
-    cmd_str = " ".join(cmd_args)
-    assert "ollama serve" in cmd_str
-    assert kw.get("env", {}).get("OLLAMA_NUM_CTX") == "8192"
+    cmd_args, _ = popen_calls[0]
+    # context size is embedded in the command string, not in env
+    assert "ollama serve" in " ".join(cmd_args)
+    assert "OLLAMA_NUM_CTX=8192" in cmd_args[-1]
     mock_thread.assert_called_once()
 
 
 def test_on_launch_ollama_disables_button_and_starts_thread(tmp_path, monkeypatch):
-    """_on_launch_ollama disables the button and starts the check thread."""
+    """_on_launch_ollama disables the button, saves context_size, and starts the check thread."""
     cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
 
     win, _ = _make_headless_win(cfg)
+    win.ctx_var = MagicMock()
+    win.ctx_var.get.return_value = "4k  (4096)"
     win.status_var = MagicMock()
     win._launch_ollama_btn = MagicMock()
 
-    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+    saved = []
+    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread, \
+         patch("prompt_interceptor.launcher.save_config", side_effect=lambda c: saved.append(c)):
         mock_thread.return_value = MagicMock()
         win._on_launch_ollama()
 
     win._launch_ollama_btn.config.assert_called_with(state="disabled")
     win.status_var.set.assert_called_with("Checking Ollama...")
     mock_thread.assert_called_once()
+    # context_size persisted to config before the thread starts
+    assert saved and saved[0].context_size == 4096
 
 
 def test_check_or_launch_ollama_already_running(tmp_path, monkeypatch):
@@ -345,8 +349,8 @@ def test_check_or_launch_ollama_already_running(tmp_path, monkeypatch):
 
 
 def test_on_launch_ollama_uses_selected_ctx(tmp_path, monkeypatch):
-    """Context size from ctx_var is correctly passed to the Ollama command."""
-    cfg = Config(log_dir=str(tmp_path / "logs"))
+    """Context size selected in the UI reaches the Ollama command via the config."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), context_size=32768)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
     monkeypatch.setattr("prompt_interceptor.launcher._fetch_ollama_models", lambda t: [])
 
@@ -362,11 +366,13 @@ def test_on_launch_ollama_uses_selected_ctx(tmp_path, monkeypatch):
     popen_calls = []
     with patch("prompt_interceptor.launcher.subprocess.Popen",
                side_effect=lambda *a, **kw: popen_calls.append((a[0], kw))), \
-         patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+         patch("prompt_interceptor.launcher.threading.Thread") as mock_thread, \
+         patch("prompt_interceptor.launcher.save_config"):
         mock_thread.return_value = MagicMock()
+        # _check_or_launch_ollama reads context_size from config (saved by _on_launch_ollama)
         win._check_or_launch_ollama()
 
-    assert popen_calls[0][1].get("env", {}).get("OLLAMA_NUM_CTX") == "32768"
+    assert "OLLAMA_NUM_CTX=32768" in popen_calls[0][0][-1]
 
 
 # ---------------------------------------------------------------------------
@@ -1406,8 +1412,6 @@ def test_on_launch_ollama_file_not_found_shows_error(tmp_path, monkeypatch):
     win, mock_root = _make_headless_win(cfg)
     win.ollama_host_var = MagicMock()
     win.ollama_host_var.get.return_value = "127.0.0.1"
-    win.ctx_var = MagicMock()
-    win.ctx_var.get.return_value = "4k  (4096)"
     win.status_var = MagicMock()
     win._launch_ollama_btn = MagicMock()
     mock_root.after.side_effect = lambda delay, fn, *args: fn(*args)
@@ -1435,8 +1439,6 @@ def test_on_launch_ollama_os_error_shows_error(tmp_path, monkeypatch):
     win, mock_root = _make_headless_win(cfg)
     win.ollama_host_var = MagicMock()
     win.ollama_host_var.get.return_value = "127.0.0.1"
-    win.ctx_var = MagicMock()
-    win.ctx_var.get.return_value = "4k  (4096)"
     win.status_var = MagicMock()
     win._launch_ollama_btn = MagicMock()
     mock_root.after.side_effect = lambda delay, fn, *args: fn(*args)

@@ -445,6 +445,13 @@ class LauncherWindow:
     def _on_launch_ollama(self) -> None:
         self._launch_ollama_btn.config(state="disabled")
         self.status_var.set("Checking Ollama...")
+        ctx_value = _CTX_OPTIONS.get(self.ctx_var.get(), 32768)
+        config = get_config()
+        config.context_size = ctx_value
+        try:
+            save_config(config)
+        except OSError:
+            pass
         threading.Thread(target=self._check_or_launch_ollama, daemon=True).start()
 
     def _check_or_launch_ollama(self) -> None:
@@ -465,15 +472,13 @@ class LauncherWindow:
             self.root.after(0, self._ask_on_remote_fail, host, port)
             return
 
-        ctx_value = _CTX_OPTIONS.get(self.ctx_var.get(), 32768)
+        ctx_value = config.context_size or 32768
         self.root.after(0, lambda: self.status_var.set("Launching Ollama server..."))
         self._active_target = target
         try:
-            env = os.environ.copy()
-            env["OLLAMA_NUM_CTX"] = str(ctx_value)
             subprocess.Popen(
-                ["cmd", "/c", "start", "", "cmd", "/k", "ollama serve"],
-                env=env,
+                ["cmd", "/c", "start", "", "cmd", "/k",
+                 f"set OLLAMA_NUM_CTX={ctx_value} && ollama serve"],
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
             )
         except FileNotFoundError:

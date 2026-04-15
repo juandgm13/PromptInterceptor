@@ -98,14 +98,16 @@ def test_inject_num_ctx_adds_option(monkeypatch):
     assert "options" not in body
 
 
-def test_inject_num_ctx_does_not_overwrite_existing(monkeypatch):
+def test_inject_num_ctx_overwrites_existing(monkeypatch):
     cfg = Config(context_size=16384)
     import prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
     body = {"model": "llama3", "options": {"num_ctx": 4096, "temperature": 0.7}}
     result = _inject_num_ctx(body)
-    # existing num_ctx is preserved
-    assert result["options"]["num_ctx"] == 4096
+    # config value always wins so the launcher selection is respected
+    assert result["options"]["num_ctx"] == 16384
+    # other options are preserved
+    assert result["options"]["temperature"] == 0.7
 
 
 def test_inject_num_ctx_none_body(monkeypatch):

@@ -38,10 +38,8 @@ def _inject_num_ctx(body_json: Optional[Dict[str, Any]]) -> Optional[Dict[str, A
     if not config.context_size:
         return body_json
     options = dict(body_json.get("options") or {})
-    if "num_ctx" not in options:
-        options["num_ctx"] = config.context_size
-        return {**body_json, "options": options}
-    return body_json
+    options["num_ctx"] = config.context_size
+    return {**body_json, "options": options}
 
 
 def _parse_sse_response(chunks: list) -> Optional[Dict[str, Any]]:
