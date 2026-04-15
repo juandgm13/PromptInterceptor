@@ -173,9 +173,9 @@ def test_main_module_is_callable():
 # ---------------------------------------------------------------------------
 
 async def test_api_models_exception(client):
-    """/api/models returns {error: ...} when check_target_health raises."""
+    """/api/models returns {error: ...} when get_models raises."""
     with patch(
-        "prompt_interceptor.main.check_target_health",
+        "prompt_interceptor.main._get_models",
         new=AsyncMock(side_effect=RuntimeError("ollama down")),
     ):
         resp = await client.get("/api/models")
