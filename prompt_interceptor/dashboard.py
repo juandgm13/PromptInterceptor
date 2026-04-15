@@ -35,6 +35,7 @@ _rule_engine = RuleEngine(_logger)
 router = APIRouter(prefix="/api")
 
 _ICON_PATH = os.path.join(os.path.dirname(__file__), "..", "res", "PromptInterceptor_Icon.png")
+_LOGO_PATH = os.path.join(os.path.dirname(__file__), "..", "res", "PromptInterceptor_Logo.png")
 
 # ---------------------------------------------------------------------------
 # Dashboard HTML
@@ -135,14 +136,19 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 <div class="container">
 
   <div class="header-row">
-    <div>
-      <h1>PromptInterceptor Dashboard</h1>
-      <div class="subtitle">Ollama Traffic Interceptor for AI Clients</div>
+    <div style="display:flex;align-items:center;gap:14px">
+      <img src="/logo" alt="PromptInterceptor" id="dashboard-logo"
+           style="height:48px;width:auto" onerror="this.style.display='none'">
+      <div>
+        <h1>PromptInterceptor Dashboard</h1>
+        <div class="subtitle">Ollama Traffic Interceptor for AI Clients</div>
+      </div>
     </div>
     <div class="mode-controls">
       <span class="mode-label">Mode:</span>
       <button class="btn-mode" id="btn-passthrough" onclick="setMode('passthrough')">Passthrough</button>
       <button class="btn-mode" id="btn-intercept" onclick="setMode('intercept')">Intercept</button>
+      <button class="btn-mode" onclick="showProxyInfo()" style="margin-left:10px">&#x1F4CB; Proxy Info</button>
     </div>
   </div>
 
@@ -167,25 +173,8 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <div id="pending-list"></div>
   </div>
 
-  <!-- Live Prompts -->
-  <div class="section">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <h2 style="margin-bottom:0">Live Prompts</h2>
-      <div style="display:flex;gap:6px">
-        <button class="btn-add" onclick="saveLogs()" style="background:#1a4d1a;border-color:#2a6b2a;color:#5f5">&#8595; Guardar</button>
-        <button class="btn-add" onclick="clearLogs()" style="background:#4d1a1a;border-color:#6b2a2a;color:#f88">&#x2715; Limpiar</button>
-      </div>
-    </div>
-    <table>
-      <thead><tr>
-        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Prompt</th><th>Response</th><th>Status</th><th>Raw</th>
-      </tr></thead>
-      <tbody id="logs-body"><tr><td colspan="8" class="empty">Loading...</td></tr></tbody>
-    </table>
-  </div>
-
-  <!-- Modifiers -->
-  <div class="section">
+  <!-- Modifiers — only visible in intercept mode -->
+  <div class="section" id="modifiers-section" style="display:none">
     <h2>Modifiers</h2>
     <table>
       <thead><tr>
@@ -223,16 +212,36 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Proxy Status -->
+  <!-- Live Prompts -->
   <div class="section">
-    <h2>Proxy Status</h2>
-    <pre id="status-box">Loading...</pre>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <h2 style="margin-bottom:0">Live Prompts</h2>
+      <div style="display:flex;gap:6px">
+        <button class="btn-add" onclick="saveLogs()" style="background:#1a4d1a;border-color:#2a6b2a;color:#5f5">&#8595; Guardar</button>
+        <button class="btn-add" onclick="clearLogs()" style="background:#4d1a1a;border-color:#6b2a2a;color:#f88">&#x2715; Limpiar</button>
+      </div>
+    </div>
+    <table>
+      <thead><tr>
+        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Prompt</th><th>Response</th><th>Status</th><th>Raw</th>
+      </tr></thead>
+      <tbody id="logs-body"><tr><td colspan="8" class="empty">Loading...</td></tr></tbody>
+    </table>
   </div>
 
   <footer>
     PromptInterceptor Dashboard v0.1.0 &mdash;
     <a href="/docs">API Docs</a>
   </footer>
+</div>
+
+<!-- Proxy Info modal -->
+<div class="modal-overlay" id="proxy-modal-overlay" onclick="if(event.target===this)closeProxyModal()">
+  <div class="modal-box" style="max-width:700px">
+    <button class="modal-close" onclick="closeProxyModal()">&#x2715;</button>
+    <h3 class="modal-title">Proxy Status</h3>
+    <pre class="modal-pre" id="proxy-status-content">Loading...</pre>
+  </div>
 </div>
 
 <!-- Raw data modal -->
@@ -259,6 +268,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 
 <script>
 const _logsCache = {};
+let _proxyStatusData = null;
 
 function esc(s) {
   return String(s)
@@ -320,7 +330,7 @@ function showRaw(id) {
 
   // Fallback: <think>...</think> inline tags (older Ollama / deepseek-r1)
   if (!thinkingText && respText) {
-    const thinkTagMatch = respText.match(/<think>([\s\S]*?)<\/think>([\s\S]*)/);
+    const thinkTagMatch = respText.match(/<think>([\\s\\S]*?)<\/think>([\\s\\S]*)/);
     if (thinkTagMatch) {
       thinkingText = thinkTagMatch[1].trim();
       respText = thinkTagMatch[2].trim();
@@ -351,15 +361,29 @@ async function fetchJSON(url, opts) {
 async function loadStatus() {
   try {
     const data = await fetchJSON('/api/status');
-    document.getElementById('status-box').textContent = JSON.stringify(data, null, 2);
+    _proxyStatusData = data;
     const mode = data.proxy?.mode ?? '-';
     document.getElementById('stat-mode').textContent = mode;
     document.getElementById('stat-modifiers').textContent = data.rules?.enabled_count ?? '-';
     document.getElementById('btn-passthrough').classList.toggle('active', mode === 'passthrough');
     document.getElementById('btn-intercept').classList.toggle('active', mode === 'intercept');
-  } catch(e) {
-    document.getElementById('status-box').textContent = 'Error: ' + e.message;
-  }
+    document.getElementById('modifiers-section').style.display = mode === 'intercept' ? '' : 'none';
+    // keep proxy modal in sync if it's open
+    const overlay = document.getElementById('proxy-modal-overlay');
+    if (overlay.style.display === 'block') {
+      document.getElementById('proxy-status-content').textContent = JSON.stringify(data, null, 2);
+    }
+  } catch(e) { /* silent */ }
+}
+
+function showProxyInfo() {
+  document.getElementById('proxy-status-content').textContent =
+    _proxyStatusData ? JSON.stringify(_proxyStatusData, null, 2) : 'Loading...';
+  document.getElementById('proxy-modal-overlay').style.display = 'block';
+}
+
+function closeProxyModal() {
+  document.getElementById('proxy-modal-overlay').style.display = 'none';
 }
 
 async function loadLogs() {
@@ -610,6 +634,13 @@ setInterval(refreshPending, 3000);
 async def favicon():
     if os.path.exists(_ICON_PATH):
         return FileResponse(_ICON_PATH, media_type="image/png")
+    return Response(status_code=404)
+
+
+@app.get("/logo", include_in_schema=False)
+async def logo():
+    if os.path.exists(_LOGO_PATH):
+        return FileResponse(_LOGO_PATH, media_type="image/png")
     return Response(status_code=404)
 
 

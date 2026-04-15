@@ -622,3 +622,105 @@ async def test_dashboard_html_modal_wider_than_before(client):
     # Previous max-width was 900px; new layout needs at least 1200px
     html = resp.text
     assert "1400px" in html or "1200px" in html
+
+
+# ---------------------------------------------------------------------------
+# Dashboard reorganisation — modifiers section, proxy info modal, logo
+# ---------------------------------------------------------------------------
+
+async def test_dashboard_html_modifiers_section_id(client):
+    """Modifiers section has id='modifiers-section'."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert 'id="modifiers-section"' in resp.text
+
+
+async def test_dashboard_html_modifiers_section_starts_hidden(client):
+    """Modifiers section starts hidden (display:none) and is shown by JS."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert 'id="modifiers-section" style="display:none"' in resp.text
+
+
+async def test_dashboard_html_modifiers_before_live_prompts(client):
+    """Modifiers section appears before Live Prompts in the HTML."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    mod_pos = html.find('id="modifiers-section"')
+    live_pos = html.find("Live Prompts")
+    assert mod_pos != -1 and live_pos != -1
+    assert mod_pos < live_pos
+
+
+async def test_dashboard_html_modifiers_shown_in_intercept_mode(client):
+    """JS toggles modifiers-section visibility based on mode === 'intercept'."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "modifiers-section" in html
+    assert "mode === 'intercept'" in html
+
+
+async def test_dashboard_html_no_status_box(client):
+    """Static proxy status <pre> (status-box) has been removed from the HTML."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert 'id="status-box"' not in resp.text
+
+
+async def test_dashboard_html_has_proxy_info_button(client):
+    """Header contains a Proxy Info button that calls showProxyInfo()."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "showProxyInfo()" in resp.text
+    assert "Proxy Info" in resp.text
+
+
+async def test_dashboard_html_proxy_info_modal_present(client):
+    """Proxy info modal overlay is present in the HTML."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert 'id="proxy-modal-overlay"' in resp.text
+    assert 'id="proxy-status-content"' in resp.text
+
+
+async def test_dashboard_html_proxy_modal_functions(client):
+    """showProxyInfo and closeProxyModal JS functions are defined."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "function showProxyInfo()" in html
+    assert "function closeProxyModal()" in html
+
+
+async def test_dashboard_html_logo_img_tag(client):
+    """Dashboard title area contains an <img> pointing to /logo."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert 'src="/logo"' in resp.text
+    assert 'id="dashboard-logo"' in resp.text
+
+
+async def test_logo_returns_file_when_exists(plain_client):
+    """GET /logo returns 200 with image/png when logo file exists."""
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        tmp.write(b'\x89PNG\r\n\x1a\n')
+        tmp_path = tmp.name
+
+    try:
+        import prompt_interceptor.dashboard as dash_mod
+        with patch.object(dash_mod.os.path, "exists", return_value=True), \
+             patch("prompt_interceptor.dashboard._LOGO_PATH", tmp_path):
+            resp = await plain_client.get("/logo")
+        assert resp.status_code == 200
+    finally:
+        os.unlink(tmp_path)
+
+
+async def test_logo_returns_404_when_missing(plain_client):
+    """GET /logo returns 404 when logo file is absent."""
+    import prompt_interceptor.dashboard as dash_mod
+    with patch.object(dash_mod.os.path, "exists", return_value=False):
+        resp = await plain_client.get("/logo")
+    assert resp.status_code == 404

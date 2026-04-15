@@ -297,10 +297,17 @@ class LauncherWindow:
         # ── Header ──
         ttk.Label(self.root, text="PromptInterceptor", style="Header.TLabel").pack(pady=(20, 2))
         ttk.Label(self.root, text="Ollama Traffic Interceptor for AI Clients",
-                  font=("Segoe UI", 9)).pack(pady=(0, 10))
+                  font=("Segoe UI", 9)).pack(pady=(0, 6))
+
+        # Proxy Port (global proxy setting, not Ollama-specific)
+        row_port = ttk.Frame(self.root)
+        row_port.pack(fill="x", **pad)
+        ttk.Label(row_port, text="Proxy Port:", width=14, anchor="w").pack(side="left")
+        self.proxy_port_var = tk.StringVar(value=str(config.proxy_port))
+        ttk.Entry(row_port, textvariable=self.proxy_port_var, width=8).pack(side="left")
 
         # ── Step 1: Ollama Server ──
-        ttk.Label(self.root, text="── Step 1: Ollama Server ──", style="Section.TLabel").pack()
+        ttk.Label(self.root, text="── Step 1: Ollama Server ──", style="Section.TLabel").pack(pady=(6, 0))
 
         # Ollama Host row
         parsed_target = urllib.parse.urlparse(config.target)
@@ -323,12 +330,6 @@ class LauncherWindow:
         ttk.Combobox(row1, textvariable=self.ctx_var,
                      values=list(_CTX_OPTIONS.keys()),
                      state="readonly", width=22).pack(side="left")
-
-        row_port = ttk.Frame(self.root)
-        row_port.pack(fill="x", **pad)
-        ttk.Label(row_port, text="Proxy Port:", width=14, anchor="w").pack(side="left")
-        self.proxy_port_var = tk.StringVar(value=str(config.proxy_port))
-        ttk.Entry(row_port, textvariable=self.proxy_port_var, width=8).pack(side="left")
 
         row1c = ttk.Frame(self.root)
         row1c.pack(fill="x", padx=20, pady=(2, 10))
