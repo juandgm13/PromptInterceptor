@@ -16,7 +16,7 @@ from .config import get_config, save_config
 from .interceptor import interceptor
 from .logger import TrafficLogger
 from .rules_engine import RuleEngine
-from .health import check_proxy_health, check_target_health, get_status
+from .health import check_proxy_health, check_target_health, get_models, get_status
 
 # ---------------------------------------------------------------------------
 # App & shared singletons
@@ -368,18 +368,23 @@ async function loadStatus() {
     document.getElementById('btn-passthrough').classList.toggle('active', mode === 'passthrough');
     document.getElementById('btn-intercept').classList.toggle('active', mode === 'intercept');
     document.getElementById('modifiers-section').style.display = mode === 'intercept' ? '' : 'none';
-    // keep proxy modal in sync if it's open
-    const overlay = document.getElementById('proxy-modal-overlay');
-    if (overlay.style.display === 'block') {
-      document.getElementById('proxy-status-content').textContent = JSON.stringify(data, null, 2);
-    }
   } catch(e) { /* silent */ }
 }
 
-function showProxyInfo() {
-  document.getElementById('proxy-status-content').textContent =
-    _proxyStatusData ? JSON.stringify(_proxyStatusData, null, 2) : 'Loading...';
+async function showProxyInfo() {
+  const el = document.getElementById('proxy-status-content');
   document.getElementById('proxy-modal-overlay').style.display = 'block';
+  el.textContent = 'Loading...';
+  try {
+    const [status, modelsData] = await Promise.all([
+      fetchJSON('/api/status'),
+      fetchJSON('/api/models'),
+    ]);
+    const combined = Object.assign({}, status, { models: modelsData.models ?? [] });
+    el.textContent = JSON.stringify(combined, null, 2);
+  } catch(e) {
+    el.textContent = _proxyStatusData ? JSON.stringify(_proxyStatusData, null, 2) : 'Error loading status';
+  }
 }
 
 function closeProxyModal() {
@@ -667,6 +672,11 @@ async def health():
 @router.get("/target-health")
 async def target_health():
     return await check_target_health()
+
+
+@router.get("/models")
+async def models():
+    return await get_models()
 
 
 @router.get("/stats")

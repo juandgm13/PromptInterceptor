@@ -30,24 +30,19 @@ async def check_proxy_health() -> JSONResponse:
 
 
 async def check_target_health() -> JSONResponse:
-    """Check target Ollama server health."""
+    """Check target Ollama server health (lightweight liveness via GET /)."""
     config = get_config()
 
     try:
         async with httpx.AsyncClient(timeout=config.health_timeout) as client:
-            response = await client.get(config.target + "/api/tags")
+            response = await client.get(config.target + "/")
             if response.status_code == 200:
-                try:
-                    models = response.json().get("models", [])
-                except Exception:
-                    models = []
                 return JSONResponse(
                     status_code=200,
                     content={
                         "proxy": "healthy",
                         "target": "healthy",
                         "message": f"Connected to {config.target}",
-                        "models": models,
                     },
                 )
             else:
@@ -64,6 +59,39 @@ async def check_target_health() -> JSONResponse:
         return JSONResponse(
             status_code=503,
             content={"target": "unhealthy", "error": str(e)},
+        )
+
+
+async def get_models() -> JSONResponse:
+    """Get list of available models from Ollama (on-demand, calls /api/tags)."""
+    config = get_config()
+
+    try:
+        async with httpx.AsyncClient(timeout=config.health_timeout) as client:
+            response = await client.get(config.target + "/api/tags")
+            if response.status_code == 200:
+                try:
+                    models = response.json().get("models", [])
+                except Exception:
+                    models = []
+                return JSONResponse(
+                    status_code=200,
+                    content={"models": models},
+                )
+            else:
+                return JSONResponse(
+                    status_code=response.status_code,
+                    content={"models": [], "error": response.text},
+                )
+    except httpx.TimeoutException:
+        return JSONResponse(
+            status_code=504,
+            content={"models": [], "error": "timeout"},
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=503,
+            content={"models": [], "error": str(e)},
         )
 
 

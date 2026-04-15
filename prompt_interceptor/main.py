@@ -20,7 +20,7 @@ from .proxy import (
     handle_v1_messages, handle_v1_chat_completions,
     handle_passthrough,
 )
-from .health import check_target_health, get_status as _get_status
+from .health import get_models as _get_models, get_status as _get_status
 from .cors_middleware import add_cors_middleware
 
 
@@ -71,7 +71,7 @@ def create_app() -> FastAPI:
     @app.get("/api/models")
     async def list_models():
         try:
-            response = await check_target_health()
+            response = await _get_models()
             import json
             return json.loads(response.body)
         except Exception as e:

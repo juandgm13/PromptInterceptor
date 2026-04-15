@@ -11,6 +11,7 @@ from prompt_interceptor.health import (
     check_proxy_health,
     check_target_health,
     check_dashboard_health,
+    get_models,
     get_status,
 )
 
@@ -71,13 +72,13 @@ def _make_mock_client(status=200, json_data=None, raise_exc=None):
 
 
 async def test_check_target_health_success():
-    mock_client = _make_mock_client(200, {"models": [{"name": "llama3"}]})
+    mock_client = _make_mock_client(200)
     with patch("prompt_interceptor.health.httpx.AsyncClient", return_value=mock_client):
         resp = await check_target_health()
     assert resp.status_code == 200
     data = json.loads(resp.body)
     assert data["target"] == "healthy"
-    assert len(data["models"]) == 1
+    assert "models" not in data
 
 
 async def test_check_target_health_non_200():
@@ -134,11 +135,51 @@ async def test_get_status_includes_rule_count():
 
 
 # ---------------------------------------------------------------------------
-# check_target_health — response.json() decode failure
+# get_models
 # ---------------------------------------------------------------------------
 
-async def test_check_target_health_json_decode_error_returns_healthy_empty_models():
-    """When response.json() raises (malformed body), models defaults to [] but stays healthy."""
+async def test_get_models_success():
+    mock_client = _make_mock_client(200, {"models": [{"name": "llama3"}]})
+    with patch("prompt_interceptor.health.httpx.AsyncClient", return_value=mock_client):
+        resp = await get_models()
+    assert resp.status_code == 200
+    data = json.loads(resp.body)
+    assert len(data["models"]) == 1
+    assert data["models"][0]["name"] == "llama3"
+
+
+async def test_get_models_non_200():
+    mock_client = _make_mock_client(503)
+    with patch("prompt_interceptor.health.httpx.AsyncClient", return_value=mock_client):
+        resp = await get_models()
+    assert resp.status_code == 503
+    data = json.loads(resp.body)
+    assert data["models"] == []
+    assert "error" in data
+
+
+async def test_get_models_timeout():
+    mock_client = _make_mock_client(raise_exc=httpx.TimeoutException("t"))
+    with patch("prompt_interceptor.health.httpx.AsyncClient", return_value=mock_client):
+        resp = await get_models()
+    assert resp.status_code == 504
+    data = json.loads(resp.body)
+    assert data["models"] == []
+    assert data["error"] == "timeout"
+
+
+async def test_get_models_connect_error():
+    mock_client = _make_mock_client(raise_exc=httpx.ConnectError("refused"))
+    with patch("prompt_interceptor.health.httpx.AsyncClient", return_value=mock_client):
+        resp = await get_models()
+    assert resp.status_code == 503
+    data = json.loads(resp.body)
+    assert data["models"] == []
+    assert "error" in data
+
+
+async def test_get_models_json_decode_error_returns_empty_models():
+    """When response.json() raises (malformed body), models defaults to []."""
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.side_effect = Exception("invalid JSON")
@@ -149,11 +190,10 @@ async def test_check_target_health_json_decode_error_returns_healthy_empty_model
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
     with patch("prompt_interceptor.health.httpx.AsyncClient", return_value=mock_client):
-        resp = await check_target_health()
+        resp = await get_models()
 
     assert resp.status_code == 200
     data = json.loads(resp.body)
-    assert data["target"] == "healthy"
     assert data["models"] == []
 
 
