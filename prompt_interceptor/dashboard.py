@@ -330,7 +330,7 @@ function showRaw(id) {
 
   // Fallback: <think>...</think> inline tags (older Ollama / deepseek-r1)
   if (!thinkingText && respText) {
-    const thinkTagMatch = respText.match(/<think>([\\s\\S]*?)<\/think>([\\s\\S]*)/);
+    const thinkTagMatch = respText.match(/<think>([\\s\\S]*?)<\\/think>([\\s\\S]*)/);
     if (thinkTagMatch) {
       thinkingText = thinkTagMatch[1].trim();
       respText = thinkTagMatch[2].trim();
