@@ -5,7 +5,7 @@
   "debug": false,
   "proxy_port": 8080,
   "proxy_host": "0.0.0.0",
-  "target": "http://localhost:11434",
+  "target": "http://127.0.0.1:11434",
   "target_port": 11434,
   "mode": "passthrough",
   "timeout": 120,
@@ -61,7 +61,7 @@
     "deepseek-coder"
   ],
   "context_size": 32768,
-  "default_model": "qwen2.5:7b",
+  "default_model": "qwen3.5:9b",
   "client_work_dir": "C:/Users/juand/Documents/Repositorios/QuiniAgent",
   "python_app_path": "",
   "python_app_command": "python main.py",
