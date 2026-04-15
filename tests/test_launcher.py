@@ -82,29 +82,26 @@ def test_detect_clients_python_app_always_last(monkeypatch):
 
 
 def test_detect_clients_wsl_opencode(monkeypatch):
-    """When WSL has opencode, 'Open Code (WSL)' is added between CLI and Python App."""
+    """Open Code (WSL) is disabled in the UI for now; it never appears in the client list."""
     monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/opencode" if cmd == "opencode" else None)
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: True)
     clients = launcher._detect_clients()
     names = [name for name, _ in clients]
     assert "Open Code (CLI)" in names
-    assert "Open Code (WSL)" in names
+    assert "Open Code (WSL)" not in names
     assert clients[-1] == ("Python App (Ollama)", "__python_app__")
-    wsl_idx = names.index("Open Code (WSL)")
-    python_idx = names.index("Python App (Ollama)")
-    assert wsl_idx < python_idx
 
 
 def test_detect_clients_wsl_only_no_cli(monkeypatch):
-    """WSL opencode appears even if opencode is not installed on Windows."""
+    """Open Code (WSL) is disabled in the UI; it does not appear even when WSL has opencode."""
     monkeypatch.setattr(shutil, "which", lambda cmd: None)
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: True)
     clients = launcher._detect_clients()
     names = [name for name, _ in clients]
     assert "Open Code (CLI)" not in names
-    assert "Open Code (WSL)" in names
+    assert "Open Code (WSL)" not in names
     assert clients[-1] == ("Python App (Ollama)", "__python_app__")
 
 
@@ -677,6 +674,7 @@ def test_on_launch_client_open_code_cli(tmp_path, monkeypatch):
     assert "ollama/mistral:latest" in cmd_str
 
 
+@pytest.mark.skip(reason="Open Code (WSL) is disabled in the UI; re-enable when reactivated")
 def test_on_launch_client_open_code_wsl(tmp_path, monkeypatch):
     """Launching Open Code (WSL) writes WSL config and opens a WSL terminal via shell=True."""
     cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
@@ -715,6 +713,7 @@ def test_on_launch_client_open_code_wsl(tmp_path, monkeypatch):
     win._start_btn.config.assert_called_with(state="normal")
 
 
+@pytest.mark.skip(reason="Open Code (WSL) is disabled in the UI; re-enable when reactivated")
 def test_on_launch_client_open_code_wsl_with_workdir(tmp_path, monkeypatch):
     """WSL launch passes Windows work dir directly via wsl --cd (no wslpath conversion)."""
     cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)

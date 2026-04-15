@@ -57,15 +57,49 @@ def _get_wsl_host_ip() -> str:
     try:
         result = subprocess.run(
             ["wsl", "--", "bash", "-c",
-             "cat /etc/resolv.conf 2>/dev/null | grep -m1 nameserver | awk '{print $2}'"],
+             "grep -m1 nameserver /etc/resolv.conf 2>/dev/null"],
             capture_output=True, text=True, timeout=5
         )
-        ip = result.stdout.strip()
-        if ip:
-            return ip
+        line = result.stdout.strip()
+        # "nameserver 10.255.255.254" -> "10.255.255.254"
+        parts = line.split()
+        if len(parts) >= 2:
+            return parts[-1]
+        if parts:
+            return parts[0]
     except Exception:
         pass
     return "localhost"
+
+
+def _wsl_can_reach_proxy(host_ip: str, port: int) -> bool:
+    """Return True if WSL can TCP-connect to host_ip:port."""
+    try:
+        result = subprocess.run(
+            ["wsl", "--", "bash", "-c",
+             f"timeout 2 bash -c 'echo >/dev/tcp/{host_ip}/{port}' 2>/dev/null && echo ok"],
+            capture_output=True, text=True, timeout=6
+        )
+        return result.stdout.strip() == "ok"
+    except Exception:
+        return False
+
+
+def _warn_wsl_firewall(host_ip: str, port: int) -> None:
+    """Show a dialog explaining the firewall issue and the fix command."""
+    import tkinter.messagebox as mb
+    rule_cmd = (
+        f'netsh advfirewall firewall add rule name="PromptInterceptor" '
+        f'protocol=TCP dir=in localport={port} action=allow'
+    )
+    mb.showwarning(
+        "WSL no puede alcanzar el proxy",
+        f"WSL no puede conectarse a {host_ip}:{port}.\n\n"
+        f"Causa habitual: Windows Firewall bloquea el puerto {port} desde WSL2.\n\n"
+        f"Solución — ejecuta esto en PowerShell como Administrador:\n\n"
+        f"{rule_cmd}\n\n"
+        f"Después vuelve a lanzar Open Code (WSL)."
+    )
 
 
 def _write_opencode_config_wsl(model: str, proxy_url: str) -> None:
@@ -113,8 +147,8 @@ def _detect_clients() -> list:
         clients.append(("Claude Code", "claude"))
     if shutil.which("opencode"):
         clients.append(("Open Code (CLI)", "opencode"))
-    if _is_opencode_in_wsl():
-        clients.append(("Open Code (WSL)", "__opencode_wsl__"))
+    # Open Code (WSL) support is implemented but disabled in the UI for now.
+    # clients.append(("Open Code (WSL)", "__opencode_wsl__"))
     clients.append(("Python App (Ollama)", "__python_app__"))
     return clients
 
@@ -613,6 +647,10 @@ class LauncherWindow:
                 wsl_host_ip = _get_wsl_host_ip()
                 wsl_proxy_url = f"http://{wsl_host_ip}:{config.proxy_port}"
                 _write_opencode_config_wsl(model, wsl_proxy_url)
+                # Verify WSL can reach the proxy before opening the terminal.
+                if not _wsl_can_reach_proxy(wsl_host_ip, config.proxy_port):
+                    _warn_wsl_firewall(wsl_host_ip, config.proxy_port)
+                    return
                 opencode_cmd = f"opencode --model ollama/{model}" if model else "opencode"
                 # Use "start wsl" so the system default terminal (WT/conhost) opens a WSL window.
                 # bash -ic loads .bashrc so user-installed tools (npm/cargo/etc.) are in PATH.
