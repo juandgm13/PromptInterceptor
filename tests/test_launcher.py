@@ -1049,6 +1049,8 @@ def test_on_start_saves_config_and_starts_proxy(tmp_path, monkeypatch):
     win.use_venv_var.get.return_value = False
     win.env_var_var = MagicMock()
     win.env_var_var.get.return_value = "OLLAMA_HOST"
+    win.proxy_port_var = MagicMock()
+    win.proxy_port_var.get.return_value = "8080"
     win.status_var = MagicMock()
 
     with patch("prompt_interceptor.launcher.subprocess.Popen") as mock_popen, \
@@ -1091,6 +1093,8 @@ def test_on_start_saves_model_to_config(tmp_path, monkeypatch):
     win.use_venv_var.get.return_value = False
     win.env_var_var = MagicMock()
     win.env_var_var.get.return_value = ""
+    win.proxy_port_var = MagicMock()
+    win.proxy_port_var.get.return_value = "8080"
     win.status_var = MagicMock()
 
     with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
@@ -1119,6 +1123,8 @@ def test_on_start_schedules_reset_before_dashboard(tmp_path, monkeypatch):
     win.use_venv_var.get.return_value = False
     win.env_var_var = MagicMock()
     win.env_var_var.get.return_value = ""
+    win.proxy_port_var = MagicMock()
+    win.proxy_port_var.get.return_value = "8080"
     win.status_var = MagicMock()
 
     after_calls = []
@@ -1158,6 +1164,8 @@ def test_on_start_reset_calls_api_endpoint(tmp_path, monkeypatch):
     win.use_venv_var.get.return_value = False
     win.env_var_var = MagicMock()
     win.env_var_var.get.return_value = ""
+    win.proxy_port_var = MagicMock()
+    win.proxy_port_var.get.return_value = "8080"
     win.status_var = MagicMock()
 
     after_calls = []
@@ -1203,6 +1211,8 @@ def test_on_start_reset_silences_connection_error(tmp_path, monkeypatch):
     win.use_venv_var.get.return_value = False
     win.env_var_var = MagicMock()
     win.env_var_var.get.return_value = ""
+    win.proxy_port_var = MagicMock()
+    win.proxy_port_var.get.return_value = "8080"
     win.status_var = MagicMock()
 
     after_calls = []
@@ -1439,6 +1449,77 @@ def test_start_proxy_thread_generic_error(tmp_path, monkeypatch, capsys):
 
 
 # ---------------------------------------------------------------------------
+# Step 3: _on_start — proxy port field
+# ---------------------------------------------------------------------------
+
+def test_on_start_saves_proxy_port_to_config(tmp_path, monkeypatch):
+    """_on_start reads proxy_port_var and persists it to config."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, dashboard_port=9090,
+                 proxy_port=8080)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    saved = []
+    monkeypatch.setattr("prompt_interceptor.launcher.save_config", lambda c: saved.append(c))
+
+    win, _ = _make_headless_win(cfg)
+    win.ctx_var = MagicMock()
+    win.ctx_var.get.return_value = "4k  (4096)"
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = ""
+    win.work_dir_var = MagicMock()
+    win.work_dir_var.get.return_value = ""
+    win.app_command_var = MagicMock()
+    win.app_command_var.get.return_value = ""
+    win.use_venv_var = MagicMock()
+    win.use_venv_var.get.return_value = False
+    win.env_var_var = MagicMock()
+    win.env_var_var.get.return_value = ""
+    win.proxy_port_var = MagicMock()
+    win.proxy_port_var.get.return_value = "9999"
+    win.status_var = MagicMock()
+
+    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+        mock_thread.return_value = MagicMock()
+        win._on_start()
+
+    assert saved[0].proxy_port == 9999
+
+
+def test_on_start_invalid_proxy_port_shows_error(tmp_path, monkeypatch):
+    """_on_start shows an error and does not start the proxy if the port is not numeric."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, dashboard_port=9090)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    monkeypatch.setattr("prompt_interceptor.launcher.save_config", lambda c: None)
+
+    win, _ = _make_headless_win(cfg)
+    win.ctx_var = MagicMock()
+    win.ctx_var.get.return_value = "4k  (4096)"
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = ""
+    win.work_dir_var = MagicMock()
+    win.work_dir_var.get.return_value = ""
+    win.app_command_var = MagicMock()
+    win.app_command_var.get.return_value = ""
+    win.use_venv_var = MagicMock()
+    win.use_venv_var.get.return_value = False
+    win.env_var_var = MagicMock()
+    win.env_var_var.get.return_value = ""
+    win.proxy_port_var = MagicMock()
+    win.proxy_port_var.get.return_value = "not-a-port"
+    win.status_var = MagicMock()
+
+    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+        mock_thread.return_value = MagicMock()
+        win._on_start()
+
+    # Thread must NOT be started when port is invalid
+    mock_thread.assert_not_called()
+    # Status must report the error
+    msgs = [c[0][0] for c in win.status_var.set.call_args_list]
+    assert any("Port" in m or "port" in m or "number" in m.lower() for m in msgs)
+
+
+# ---------------------------------------------------------------------------
 # Error handling: _on_start — save_config failure
 # ---------------------------------------------------------------------------
 
@@ -1462,6 +1543,8 @@ def test_on_start_save_config_error_shows_warning(tmp_path, monkeypatch):
     win.use_venv_var.get.return_value = False
     win.env_var_var = MagicMock()
     win.env_var_var.get.return_value = ""
+    win.proxy_port_var = MagicMock()
+    win.proxy_port_var.get.return_value = "8080"
     win.status_var = MagicMock()
 
     with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
@@ -1576,6 +1659,8 @@ def test_on_start_saves_active_target_to_config(tmp_path, monkeypatch):
     win.use_venv_var.get.return_value = False
     win.env_var_var = MagicMock()
     win.env_var_var.get.return_value = ""
+    win.proxy_port_var = MagicMock()
+    win.proxy_port_var.get.return_value = "8080"
     win.status_var = MagicMock()
 
     with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:

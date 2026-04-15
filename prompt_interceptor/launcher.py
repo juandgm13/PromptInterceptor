@@ -324,6 +324,12 @@ class LauncherWindow:
                      values=list(_CTX_OPTIONS.keys()),
                      state="readonly", width=22).pack(side="left")
 
+        row_port = ttk.Frame(self.root)
+        row_port.pack(fill="x", **pad)
+        ttk.Label(row_port, text="Proxy Port:", width=14, anchor="w").pack(side="left")
+        self.proxy_port_var = tk.StringVar(value=str(config.proxy_port))
+        ttk.Entry(row_port, textvariable=self.proxy_port_var, width=8).pack(side="left")
+
         row1c = ttk.Frame(self.root)
         row1c.pack(fill="x", padx=20, pady=(2, 10))
         ttk.Label(row1c, text="", width=14).pack(side="left")
@@ -709,6 +715,11 @@ class LauncherWindow:
 
     def _on_start(self) -> None:
         config = get_config()
+        try:
+            config.proxy_port = int(self.proxy_port_var.get().strip())
+        except ValueError:
+            self.status_var.set("Error: Proxy Port must be a number.")
+            return
         config.context_size = _CTX_OPTIONS.get(self.ctx_var.get(), 4096)
         model = self.model_var.get().strip()
         if model:
