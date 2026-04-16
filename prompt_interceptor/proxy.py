@@ -87,6 +87,7 @@ def _parse_openai_sse_response(chunks: list) -> Optional[Dict[str, Any]]:
     """Parse OpenAI-compatible SSE streaming chunks (/v1/chat/completions) into a loggable response body."""
     full_content = ""
     full_thinking = ""
+    tool_calls_by_index: Dict[int, Dict] = {}
     final_obj: Dict[str, Any] = {}
     for chunk in chunks:
         text = chunk.decode("utf-8", errors="replace") if isinstance(chunk, bytes) else chunk
@@ -104,18 +105,36 @@ def _parse_openai_sse_response(chunks: list) -> Optional[Dict[str, Any]]:
                     full_content += delta.get("content", "") or ""
                     # Ollama: 'reasoning' (Open Code / qwen3), 'thinking' (0.7+), 'reasoning_content' (DeepSeek)
                     full_thinking += delta.get("reasoning", "") or delta.get("thinking", "") or delta.get("reasoning_content", "") or ""
+                    # Accumulate tool_calls deltas (OpenAI streaming format)
+                    for tc in delta.get("tool_calls", []) or []:
+                        idx = tc.get("index", 0)
+                        if idx not in tool_calls_by_index:
+                            tool_calls_by_index[idx] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                        entry = tool_calls_by_index[idx]
+                        if tc.get("id"):
+                            entry["id"] = tc["id"]
+                        if tc.get("type"):
+                            entry["type"] = tc["type"]
+                        fn = tc.get("function", {})
+                        if fn.get("name"):
+                            entry["function"]["name"] += fn["name"]
+                        if fn.get("arguments"):
+                            entry["function"]["arguments"] += fn["arguments"]
                 final_obj = obj
             except (json.JSONDecodeError, AttributeError):
                 pass
 
-    if not full_content and not full_thinking and not final_obj:
+    full_tool_calls = [tool_calls_by_index[i] for i in sorted(tool_calls_by_index)] if tool_calls_by_index else []
+    if not full_content and not full_thinking and not full_tool_calls and not final_obj:
         return None
     result = dict(final_obj)
-    if full_content or full_thinking:
+    if full_content or full_thinking or full_tool_calls:
         base_choice = result["choices"][0] if result.get("choices") else {}
         msg: Dict[str, Any] = {"role": "assistant", "content": full_content}
         if full_thinking:
             msg["thinking"] = full_thinking
+        if full_tool_calls:
+            msg["tool_calls"] = full_tool_calls
         result["choices"] = [{**base_choice, "message": msg}]
     return result
 
@@ -124,6 +143,7 @@ def _parse_stream_response(chunks: list) -> Optional[Dict[str, Any]]:
     """Assemble accumulated NDJSON streaming chunks into a loggable response body."""
     full_content = ""
     full_thinking = ""
+    full_tool_calls: list = []
     final_obj: Dict[str, Any] = {}
     for chunk in chunks:
         for line in chunk.split(b"\n"):
@@ -134,10 +154,13 @@ def _parse_stream_response(chunks: list) -> Optional[Dict[str, Any]]:
                 obj = json.loads(line)
                 # /api/chat streaming: each chunk carries message.content and optionally message.thinking
                 if "message" in obj:
-                    full_content += obj.get("message", {}).get("content", "")
-                    # Ollama 0.7+: thinking field; also check reasoning_content as fallback
                     msg_chunk = obj.get("message", {})
+                    full_content += msg_chunk.get("content", "")
+                    # Ollama 0.7+: thinking field; also check reasoning_content as fallback
                     full_thinking += msg_chunk.get("thinking", "") or msg_chunk.get("reasoning_content", "") or ""
+                    # Ollama tool_calls: present in final chunk
+                    if msg_chunk.get("tool_calls"):
+                        full_tool_calls = msg_chunk["tool_calls"]
                 # /api/generate streaming: each chunk carries response
                 elif "response" in obj:
                     full_content += obj.get("response", "")
@@ -145,14 +168,16 @@ def _parse_stream_response(chunks: list) -> Optional[Dict[str, Any]]:
                     final_obj = obj
             except (json.JSONDecodeError, AttributeError):
                 pass
-    if not full_content and not full_thinking and not final_obj:
+    if not full_content and not full_thinking and not full_tool_calls and not final_obj:
         return None
     result = dict(final_obj)
-    if full_content or full_thinking:
+    if full_content or full_thinking or full_tool_calls:
         if "message" in final_obj:
             msg = {**final_obj.get("message", {}), "content": full_content}
             if full_thinking:
                 msg["thinking"] = full_thinking
+            if full_tool_calls:
+                msg["tool_calls"] = full_tool_calls
             result["message"] = msg
         else:
             result["response"] = full_content

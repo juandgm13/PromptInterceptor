@@ -778,10 +778,10 @@ def test_on_launch_client_python_app(tmp_path, monkeypatch):
     assert len(popen_calls) == 1
     args, kwargs = popen_calls[0]
     cmd_str = " ".join(args)
-    assert "OLLAMA_HOST" in cmd_str
-    assert "http://localhost:8080" in cmd_str
     assert "python app.py --port 8000" in cmd_str
     assert kwargs.get("cwd") == "/apps/myproject"
+    # env var is injected via process environment, not the command string
+    assert kwargs["env"]["OLLAMA_HOST"] == "http://localhost:8080"
 
 
 def test_on_launch_client_python_app_uses_venv(tmp_path, monkeypatch):
@@ -1111,11 +1111,13 @@ def test_on_launch_client_python_app_custom_env_var(tmp_path, monkeypatch):
 
     popen_calls = []
     with patch("prompt_interceptor.launcher.subprocess.Popen",
-               side_effect=lambda *a, **kw: popen_calls.append(a[0])):
+               side_effect=lambda *a, **kw: popen_calls.append((a[0], kw))):
         win._launch_python_app()
 
-    cmd_str = " ".join(popen_calls[0])
-    assert "OPENAI_BASE_URL" in cmd_str
+    _, kwargs = popen_calls[0]
+    # env var is injected via process environment, not the command string
+    assert "OPENAI_BASE_URL" in kwargs["env"]
+    assert kwargs["env"]["OPENAI_BASE_URL"] == "http://localhost:8080"
 
 
 def test_on_launch_client_unlocks_start_btn(tmp_path, monkeypatch):

@@ -1436,6 +1436,96 @@ def test_parse_stream_response_chat_no_thinking_field_omitted():
     assert "thinking" not in result["message"]
 
 
+def test_parse_openai_sse_response_captures_tool_calls():
+    """tool_calls deltas (OpenAI streaming) are accumulated into message.tool_calls."""
+    chunks = [
+        b'data: {"id":"x","choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}\n',
+        b'data: {"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"city\\":"}}]},"finish_reason":null}]}\n',
+        b'data: {"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"Paris\\"}"}}]},"finish_reason":"tool_calls"}]}\n',
+        b'data: [DONE]\n',
+    ]
+    result = _parse_openai_sse_response(chunks)
+    assert result is not None
+    tool_calls = result["choices"][0]["message"]["tool_calls"]
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["function"]["name"] == "get_weather"
+    assert tool_calls[0]["id"] == "call_abc"
+    assert '"city"' in tool_calls[0]["function"]["arguments"]
+
+
+def test_parse_openai_sse_response_multiple_tool_calls():
+    """Multiple tool_call indexes are each accumulated separately."""
+    chunks = [
+        b'data: {"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"id0","type":"function","function":{"name":"tool_a","arguments":""}}]},"finish_reason":null}]}\n',
+        b'data: {"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"id1","type":"function","function":{"name":"tool_b","arguments":""}}]},"finish_reason":null}]}\n',
+        b'data: {"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"x\\":1}"}}]},"finish_reason":null}]}\n',
+        b'data: {"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\\"y\\":2}"}}]},"finish_reason":"tool_calls"}]}\n',
+        b'data: [DONE]\n',
+    ]
+    result = _parse_openai_sse_response(chunks)
+    assert result is not None
+    tool_calls = result["choices"][0]["message"]["tool_calls"]
+    assert len(tool_calls) == 2
+    assert tool_calls[0]["function"]["name"] == "tool_a"
+    assert tool_calls[1]["function"]["name"] == "tool_b"
+
+
+def test_parse_openai_sse_response_no_tool_calls_field_omitted():
+    """When no tool_calls in stream, message has no tool_calls key."""
+    chunks = [
+        b'data: {"id":"x","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":"stop"}]}\n',
+        b'data: [DONE]\n',
+    ]
+    result = _parse_openai_sse_response(chunks)
+    assert "tool_calls" not in result["choices"][0]["message"]
+
+
+def test_parse_openai_sse_response_tool_calls_only_no_content():
+    """Response with only tool_calls (no text content) is still returned, not None."""
+    chunks = [
+        b'data: {"id":"x","choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search","arguments":"{\\"q\\":\\"test\\"}"}}]},"finish_reason":"tool_calls"}]}\n',
+        b'data: [DONE]\n',
+    ]
+    result = _parse_openai_sse_response(chunks)
+    assert result is not None
+    assert result["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "search"
+    assert result["choices"][0]["message"]["content"] == ""
+
+
+def test_parse_stream_response_chat_captures_tool_calls():
+    """message.tool_calls (Ollama native /api/chat) is captured from the final chunk."""
+    tool_calls = [{"function": {"name": "get_time", "arguments": {}}}]
+    import json
+    final_chunk = json.dumps({
+        "message": {"role": "assistant", "content": "", "tool_calls": tool_calls},
+        "done": True,
+    }).encode()
+    result = _parse_stream_response([final_chunk])
+    assert result is not None
+    assert result["message"]["tool_calls"] == tool_calls
+
+
+def test_parse_stream_response_chat_no_tool_calls_field_omitted():
+    """When no tool_calls in /api/chat stream, message has no tool_calls key."""
+    chunks = [
+        b'{"message":{"role":"assistant","content":"Hi"},"done":true}\n',
+    ]
+    result = _parse_stream_response(chunks)
+    assert "tool_calls" not in result["message"]
+
+
+def test_parse_stream_response_tool_calls_only_not_none():
+    """Response with tool_calls but empty content is returned, not None."""
+    import json
+    chunk = json.dumps({
+        "message": {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "fn", "arguments": {}}}]},
+        "done": True,
+    }).encode()
+    result = _parse_stream_response([chunk])
+    assert result is not None
+    assert len(result["message"]["tool_calls"]) == 1
+
+
 # ---------------------------------------------------------------------------
 # Helpers for v1 handler tests
 # ---------------------------------------------------------------------------
