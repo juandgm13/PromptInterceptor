@@ -401,7 +401,7 @@ class LauncherWindow:
         self._row_venv = ttk.Frame(self._client_details)
         ttk.Label(self._row_venv, text="", width=14).pack(side="left")
         self.use_venv_var = tk.BooleanVar(value=config.python_app_use_venv)
-        self._venv_check = ttk.Checkbutton(self._row_venv, text="Use venv (.venv)",
+        self._venv_check = ttk.Checkbutton(self._row_venv, text="Use venv (auto: .venv / venv)",
                                             variable=self.use_venv_var, state="disabled")
         self._venv_check.pack(side="left")
 
@@ -701,16 +701,25 @@ class LauncherWindow:
         use_venv = self.use_venv_var.get()
         proxy_url = f"http://localhost:{config.proxy_port}"
         if use_venv:
-            full_cmd = (
-                f'set {env_var}={proxy_url} && '
-                f'.venv\\Scripts\\activate && {command}'
-            )
+            # Auto-detect venv name: try .venv first, then venv
+            venv_activate = ".venv\\Scripts\\activate"
+            if app_dir:
+                for candidate in (".venv", "venv"):
+                    if Path(app_dir, candidate, "Scripts", "activate.bat").exists():
+                        venv_activate = f"{candidate}\\Scripts\\activate"
+                        break
+            full_cmd = f'call {venv_activate} && {command}'
         else:
-            full_cmd = f'set {env_var}={proxy_url} && {command}'
+            full_cmd = command
+        # Inject the env var through the process environment to avoid cmd.exe
+        # quoting issues that arise when embedding `set "VAR=val"` in the command.
+        child_env = os.environ.copy()
+        child_env[env_var] = proxy_url
         try:
             subprocess.Popen(
                 ["cmd", "/c", "start", "cmd", "/k", full_cmd],
                 cwd=app_dir,
+                env=child_env,
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
             )
             self.status_var.set("Python app launched.")
