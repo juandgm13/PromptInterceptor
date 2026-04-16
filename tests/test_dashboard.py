@@ -724,3 +724,65 @@ async def test_logo_returns_404_when_missing(plain_client):
     with patch.object(dash_mod.os.path, "exists", return_value=False):
         resp = await plain_client.get("/logo")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Tools block in modal
+# ---------------------------------------------------------------------------
+
+async def test_dashboard_html_modal_tools_block_present(client):
+    """Modal contains a tools block with id=modal-tools-block."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert 'id="modal-tools-block"' in resp.text
+    assert 'id="modal-tools"' in resp.text
+
+
+async def test_dashboard_html_modal_tools_block_hidden_by_default(client):
+    """Tools block starts hidden (display:none) like the thinking block."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert 'id="modal-tools-block" class="modal-tools-block" style="display:none"' in resp.text
+
+
+async def test_dashboard_html_modal_tools_block_has_css(client):
+    """Dashboard CSS defines modal-tools-block and modal-tools-pre styles."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "modal-tools-block" in html
+    assert "modal-tools-pre" in html
+    assert "modal-tools-title" in html
+
+
+async def test_dashboard_html_showraw_extracts_choices_tool_calls(client):
+    """showRaw reads tool_calls from choices[0].message.tool_calls (OpenAI format)."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "tool_calls" in html
+    assert "choices[0]" in html or "choices?.[0]" in html
+
+
+async def test_dashboard_html_showraw_extracts_message_tool_calls(client):
+    """showRaw reads tool_calls from rb.message.tool_calls (Ollama native format)."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "rb.message?.tool_calls" in resp.text or "message.tool_calls" in resp.text
+
+
+async def test_dashboard_html_table_shows_tool_names_instead_of_dash(client):
+    """Table preview JS shows [tools: name] when tool_calls present and content is empty."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "tools:" in html
+    assert "tool_calls" in html
+
+
+async def test_dashboard_html_modal_tools_label(client):
+    """Modal tools block has a visible label containing 'Tools'."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "Tools" in resp.text
+    assert "modal-tools-title" in resp.text

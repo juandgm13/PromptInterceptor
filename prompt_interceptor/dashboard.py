@@ -124,6 +124,12 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .modal-thinking-pre{background:#1a1200;border:1px solid #3a2800;padding:10px;
     border-radius:6px;font-size:.75em;overflow:auto;max-height:200px;
     line-height:1.5;white-space:pre-wrap;word-break:break-word;color:#f0c060}
+  .modal-tools-block{display:flex;flex-direction:column;gap:4px}
+  .modal-tools-title{color:#4caf88;font-size:.78em;font-weight:600;
+    text-transform:uppercase;letter-spacing:.05em}
+  .modal-tools-pre{background:#0a1a14;border:1px solid #1a3a28;padding:10px;
+    border-radius:6px;font-size:.75em;overflow:auto;max-height:200px;
+    line-height:1.5;white-space:pre-wrap;word-break:break-word;color:#7dcc9a}
   .modal-resp-pre{background:#0d0d1e;padding:14px;border-radius:6px;font-size:.78em;
     overflow:auto;flex:1;min-height:120px;max-height:calc(80vh - 80px);
     line-height:1.5;white-space:pre-wrap;word-break:break-word}
@@ -259,6 +265,10 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
           <div class="modal-thinking-title">&#x1F9E0; Thinking</div>
           <pre class="modal-thinking-pre" id="modal-thinking"></pre>
         </div>
+        <div id="modal-tools-block" class="modal-tools-block" style="display:none">
+          <div class="modal-tools-title">&#x1F527; Tools</div>
+          <pre class="modal-tools-pre" id="modal-tools"></pre>
+        </div>
         <div class="modal-panel-title">Response</div>
         <pre class="modal-resp-pre" id="modal-response"></pre>
       </div>
@@ -344,6 +354,37 @@ function showRaw(id) {
   } else {
     thinkingBlock.style.display = 'none';
   }
+
+  // --- Extract tool_calls ---
+  let toolsText = '';
+  if (rb) {
+    let toolCalls = null;
+    if (rb.choices && rb.choices[0]?.message?.tool_calls) {
+      toolCalls = rb.choices[0].message.tool_calls;
+    } else if (rb.message?.tool_calls) {
+      toolCalls = rb.message.tool_calls;
+    }
+    if (toolCalls && toolCalls.length) {
+      toolsText = toolCalls.map((tc, i) => {
+        const fn = tc.function || {};
+        let args = fn.arguments !== undefined ? fn.arguments : (tc.arguments || '');
+        try {
+          if (typeof args === 'string' && args) args = JSON.stringify(JSON.parse(args), null, 2);
+          else if (typeof args === 'object') args = JSON.stringify(args, null, 2);
+        } catch (_) {}
+        const id = tc.id ? ` (${tc.id})` : '';
+        return `[${i + 1}]${id} ${fn.name || tc.type || 'tool'}(\n${args}\n)`;
+      }).join('\\n\\n');
+    }
+  }
+  const toolsBlock = document.getElementById('modal-tools-block');
+  if (toolsText) {
+    document.getElementById('modal-tools').textContent = toolsText;
+    toolsBlock.style.display = '';
+  } else {
+    toolsBlock.style.display = 'none';
+  }
+
   document.getElementById('modal-response').textContent = respText || '(sin respuesta)';
 
   document.getElementById('modal-overlay').style.display = 'block';
@@ -441,6 +482,14 @@ async function loadLogs() {
         // /v1/messages (Anthropic-compatible)
         } else if (rb.content && rb.content[0]?.text) {
           respText = rb.content[0].text;
+        }
+        // Fallback: tool_calls without text content
+        if (!respText) {
+          let toolCalls = rb.choices?.[0]?.message?.tool_calls || rb.message?.tool_calls || null;
+          if (toolCalls && toolCalls.length) {
+            const names = toolCalls.map(tc => tc.function?.name || 'tool').join(', ');
+            respText = `[tools: ${names}]`;
+          }
         }
       }
       const respPreview = respText ? esc(respText.slice(0, 100)) + (respText.length > 100 ? '…' : '') : '<span class="empty">-</span>';
