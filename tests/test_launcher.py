@@ -812,6 +812,38 @@ def test_on_launch_client_python_app_uses_venv(tmp_path, monkeypatch):
     assert "python main.py" in cmd_str
 
 
+def test_launch_python_app_venv_candidate_detected(tmp_path, monkeypatch):
+    """When app_dir is set and .venv/Scripts/activate.bat exists, that candidate is selected."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    # Create the activate.bat so Path.exists() returns True for .venv
+    activate_bat = tmp_path / ".venv" / "Scripts" / "activate.bat"
+    activate_bat.parent.mkdir(parents=True)
+    activate_bat.write_text("@echo off")
+
+    win, _ = _make_headless_win(cfg)
+    win.app_path_var = MagicMock()
+    win.app_path_var.get.return_value = str(tmp_path)
+    win.app_command_var = MagicMock()
+    win.app_command_var.get.return_value = "python main.py"
+    win.use_venv_var = MagicMock()
+    win.use_venv_var.get.return_value = True
+    win.env_var_var = MagicMock()
+    win.env_var_var.get.return_value = "OLLAMA_HOST"
+    win.status_var = MagicMock()
+
+    popen_calls = []
+    with patch("prompt_interceptor.launcher.subprocess.Popen",
+               side_effect=lambda *a, **kw: popen_calls.append(a[0])):
+        win._launch_python_app()
+
+    assert len(popen_calls) == 1
+    cmd_str = " ".join(popen_calls[0])
+    assert ".venv\\Scripts\\activate" in cmd_str
+    assert "python main.py" in cmd_str
+
+
 # ---------------------------------------------------------------------------
 # WSL detection helpers
 # ---------------------------------------------------------------------------
@@ -1637,7 +1669,7 @@ def test_on_start_invalid_proxy_port_shows_error(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_on_start_save_config_error_shows_warning(tmp_path, monkeypatch):
-    """When save_config raises OSError, status shows a warning instead of crashing."""
+    """When save_config raises OSError, _on_start sets a warning status message."""
     cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, dashboard_port=9090)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
     monkeypatch.setattr("prompt_interceptor.launcher.save_config",
@@ -1667,6 +1699,26 @@ def test_on_start_save_config_error_shows_warning(tmp_path, monkeypatch):
     # At least one status_var.set call must mention the save error
     all_msgs = [c[0][0] for c in win.status_var.set.call_args_list]
     assert any("disk full" in m or "config" in m.lower() for m in all_msgs)
+
+
+def test_on_launch_ollama_save_config_oserror_is_silently_ignored(tmp_path, monkeypatch):
+    """save_config OSError in _on_launch_ollama is caught with pass — no crash, thread still starts."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, dashboard_port=9090)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _make_headless_win(cfg)
+    win._launch_ollama_btn = MagicMock()
+    win.ctx_var = MagicMock()
+    win.ctx_var.get.return_value = "4k  (4096)"
+    win.status_var = MagicMock()
+
+    with patch("prompt_interceptor.launcher.save_config", side_effect=OSError("disk full")), \
+         patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+        mock_thread.return_value = MagicMock()
+        win._on_launch_ollama()  # must not raise
+
+    # OSError is silently ignored; thread is still started
+    mock_thread.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

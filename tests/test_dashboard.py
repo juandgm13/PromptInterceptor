@@ -60,6 +60,16 @@ async def test_api_health(client):
 
 
 # ---------------------------------------------------------------------------
+# /api/models
+# ---------------------------------------------------------------------------
+
+async def test_api_models(client):
+    # Ollama is mocked as unavailable — endpoint still executes get_models()
+    resp = await client.get("/api/models")
+    assert resp.status_code in (200, 503, 504)
+
+
+# ---------------------------------------------------------------------------
 # /api/target-health
 # ---------------------------------------------------------------------------
 
