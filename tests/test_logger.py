@@ -74,6 +74,17 @@ def test_log_response_no_body(tl):
     tl.log_response(rid, 204, {}, None)  # should not raise
 
 
+def test_log_response_corrupt_existing_file(tl, cfg):
+    """log_response silently recovers when the existing log file has corrupt JSON."""
+    rid = tl.log_request("POST", "/api/chat", {}, {"model": "x"})
+    date_dir = tl._get_date_dir()
+    filepath = date_dir / f"req_{rid}.json"
+    filepath.write_text("{{not valid json", encoding="utf-8")
+    tl.log_response(rid, 200, {}, {"done": True})  # must not raise
+    data = json.loads(filepath.read_text(encoding="utf-8"))
+    assert data["status_code"] == 200
+
+
 # ---------------------------------------------------------------------------
 # _truncate_body
 # ---------------------------------------------------------------------------
@@ -352,3 +363,29 @@ def test_clear_logs_then_get_logs_is_empty(tl):
     tl.log_request("POST", "/api/chat", {}, {"model": "llama3"})
     tl.clear_logs()
     assert tl.get_logs() == []
+
+
+def test_clear_logs_oserror_on_unlink_is_ignored(tl):
+    """clear_logs silently skips files that raise OSError on unlink."""
+    for i in range(2):
+        tl.log_request("GET", f"/path/{i}", {}, None)
+        time.sleep(0.01)
+
+    date_dir = tl._get_date_dir()
+    files = list(date_dir.glob("req_*.json"))
+    assert len(files) == 2
+
+    original_unlink = Path.unlink
+    call_count = [0]
+
+    def flaky_unlink(self, missing_ok=False):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            raise OSError("locked")
+        original_unlink(self, missing_ok=missing_ok)
+
+    with patch.object(Path, "unlink", flaky_unlink):
+        deleted = tl.clear_logs()  # must not raise
+
+    # One file raises OSError (skipped), one is deleted → reported count = 2
+    assert deleted == 2

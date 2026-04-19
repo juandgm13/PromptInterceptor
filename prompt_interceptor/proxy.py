@@ -270,10 +270,7 @@ async def handle_passthrough(request: Request, logger: Optional[TrafficLogger] =
     if query:
         url += f"?{query}"
 
-    try:
-        is_stream = body_json.get("stream", False) if body_json else False
-    except AttributeError:
-        is_stream = False
+    is_stream = body_json.get("stream", False) if body_json else False
 
     if is_stream:
         media = "text/event-stream" if path.startswith("/v1/") else "application/x-ndjson"

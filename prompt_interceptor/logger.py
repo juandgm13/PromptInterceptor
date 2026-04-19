@@ -210,7 +210,7 @@ class TrafficLogger:
     def get_logs(self, limit: int = 10) -> list:
         """Get recent log entries."""
         date_dir = self._get_date_dir()
-        files = sorted(date_dir.glob("req_*.json"))
+        files = sorted(date_dir.glob("req_*.json"), key=lambda f: f.stat().st_mtime)
         logs = []
 
         for f in files[-limit:]:
