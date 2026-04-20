@@ -1530,13 +1530,14 @@ def test_parse_stream_response_tool_calls_only_not_none():
 # Helpers for v1 handler tests
 # ---------------------------------------------------------------------------
 
-def _make_v1_streaming_client(chunks: list):
+def _make_v1_streaming_client(chunks: list, status_code: int = 200):
     """Build a mock httpx.AsyncClient that streams the given byte chunks."""
     async def fake_aiter_bytes():
         for c in chunks:
             yield c
 
     fake_stream_resp = MagicMock()
+    fake_stream_resp.status_code = status_code
     fake_stream_resp.aiter_bytes = fake_aiter_bytes
     fake_stream_resp.__aenter__ = AsyncMock(return_value=fake_stream_resp)
     fake_stream_resp.__aexit__ = AsyncMock(return_value=False)
@@ -2040,3 +2041,280 @@ async def test_handle_v1_chat_completions_non_streaming_non_json_response(cfg, e
         resp = await handle_v1_chat_completions(req, engine, logger)
 
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# JSON fallback when SSE/NDJSON parsing returns None (non-SSE Ollama responses)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_handle_v1_messages_streaming_json_fallback(cfg, engine_and_logger, monkeypatch):
+    """When SSE parsing returns None but accumulated has valid JSON, it is logged as response_body."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    # A plain JSON error body that is NOT SSE format
+    error_body = b'{"error": "model not found"}'
+    mock_client = _make_v1_streaming_client([error_body], status_code=404)
+
+    logged = []
+    original = logger.log_response
+    logger.log_response = lambda *a, **kw: logged.append(a) or original(*a, **kw)
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/messages")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_v1_messages(req, engine, logger)
+        b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert len(logged) >= 1
+    status_logged, logged_body = logged[-1][1], logged[-1][3]
+    assert status_logged == 404
+    assert logged_body == {"error": "model not found"}
+
+
+@pytest.mark.asyncio
+async def test_handle_v1_chat_completions_streaming_json_fallback(cfg, engine_and_logger, monkeypatch):
+    """When OpenAI SSE parsing returns None but accumulated has valid JSON, it is logged."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    error_body = b'{"error": "context length exceeded"}'
+    mock_client = _make_v1_streaming_client([error_body], status_code=400)
+
+    logged = []
+    original = logger.log_response
+    logger.log_response = lambda *a, **kw: logged.append(a) or original(*a, **kw)
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/chat/completions")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_v1_chat_completions(req, engine, logger)
+        b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert len(logged) >= 1
+    status_logged, logged_body = logged[-1][1], logged[-1][3]
+    assert status_logged == 400
+    assert logged_body == {"error": "context length exceeded"}
+
+
+@pytest.mark.asyncio
+async def test_handle_stream_chat_json_fallback(cfg, engine_and_logger, monkeypatch):
+    """When NDJSON parsing returns None but accumulated has valid JSON, it is logged."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    error_body = b'{"error": "out of memory"}'
+
+    async def fake_stream(*a, **kw):
+        yield error_body
+
+    monkeypatch.setattr(proxy_mod, "_stream_from_ollama", fake_stream)
+
+    logged = []
+    original = logger.log_response
+    logger.log_response = lambda *a, **kw: logged.append(a) or original(*a, **kw)
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/api/chat")
+    resp = await handle_stream_chat(req, engine, logger)
+    b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert len(logged) >= 1
+    logged_body = logged[-1][3]
+    assert logged_body == {"error": "out of memory"}
+
+
+@pytest.mark.asyncio
+async def test_handle_stream_generate_json_fallback(cfg, engine_and_logger, monkeypatch):
+    """When NDJSON parsing returns None but accumulated has valid JSON, it is logged."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    error_body = b'{"error": "model load failed"}'
+
+    async def fake_stream(*a, **kw):
+        yield error_body
+
+    monkeypatch.setattr(proxy_mod, "_stream_from_ollama", fake_stream)
+
+    logged = []
+    original = logger.log_response
+    logger.log_response = lambda *a, **kw: logged.append(a) or original(*a, **kw)
+
+    req = make_req({"model": "qwen3:9b", "prompt": "hello", "stream": True}, path="/api/generate")
+    resp = await handle_stream_generate(req, engine, logger)
+    b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert len(logged) >= 1
+    logged_body = logged[-1][3]
+    assert logged_body == {"error": "model load failed"}
+
+
+@pytest.mark.asyncio
+async def test_handle_v1_messages_streaming_json_fallback_invalid(cfg, engine_and_logger, monkeypatch):
+    """When both SSE and JSON parsing fail, response_body is logged as None."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    mock_client = _make_v1_streaming_client([b"not valid json"], status_code=500)
+
+    logged = []
+    original = logger.log_response
+    logger.log_response = lambda *a, **kw: logged.append(a) or original(*a, **kw)
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/messages")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_v1_messages(req, engine, logger)
+        b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert len(logged) >= 1
+    assert logged[-1][1] == 500
+    assert logged[-1][3] is None
+
+
+@pytest.mark.asyncio
+async def test_handle_v1_chat_completions_streaming_json_fallback_invalid(cfg, engine_and_logger, monkeypatch):
+    """When both OpenAI SSE and JSON parsing fail, response_body is logged as None."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    mock_client = _make_v1_streaming_client([b"not valid json"], status_code=500)
+
+    logged = []
+    original = logger.log_response
+    logger.log_response = lambda *a, **kw: logged.append(a) or original(*a, **kw)
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/chat/completions")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_v1_chat_completions(req, engine, logger)
+        b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert len(logged) >= 1
+    assert logged[-1][1] == 500
+    assert logged[-1][3] is None
+
+
+@pytest.mark.asyncio
+async def test_handle_stream_chat_json_fallback_invalid(cfg, engine_and_logger, monkeypatch):
+    """When both NDJSON and JSON parsing fail, response_body is logged as None."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    async def fake_stream(*a, **kw):
+        yield b"not valid json"
+
+    monkeypatch.setattr(proxy_mod, "_stream_from_ollama", fake_stream)
+
+    logged = []
+    original = logger.log_response
+    logger.log_response = lambda *a, **kw: logged.append(a) or original(*a, **kw)
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/api/chat")
+    resp = await handle_stream_chat(req, engine, logger)
+    b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert len(logged) >= 1
+    assert logged[-1][3] is None
+
+
+@pytest.mark.asyncio
+async def test_handle_stream_generate_json_fallback_invalid(cfg, engine_and_logger, monkeypatch):
+    """When both NDJSON and JSON parsing fail, response_body is logged as None."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    async def fake_stream(*a, **kw):
+        yield b"not valid json"
+
+    monkeypatch.setattr(proxy_mod, "_stream_from_ollama", fake_stream)
+
+    logged = []
+    original = logger.log_response
+    logger.log_response = lambda *a, **kw: logged.append(a) or original(*a, **kw)
+
+    req = make_req({"model": "qwen3:9b", "prompt": "hello", "stream": True}, path="/api/generate")
+    resp = await handle_stream_generate(req, engine, logger)
+    b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert len(logged) >= 1
+    assert logged[-1][3] is None
+
+
+@pytest.mark.asyncio
+async def test_passthrough_streaming_ndjson_path(cfg, monkeypatch, tmp_path):
+    """Streaming passthrough uses _parse_stream_response for non-/v1/ NDJSON paths."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    ndjson_chunk = b'{"message":{"content":"hi"},"done":false}\n{"done":true}\n'
+
+    async def fake_aiter_bytes():
+        yield ndjson_chunk
+
+    fake_stream_resp = MagicMock()
+    fake_stream_resp.status_code = 200
+    fake_stream_resp.aiter_bytes = fake_aiter_bytes
+    fake_stream_resp.__aenter__ = AsyncMock(return_value=fake_stream_resp)
+    fake_stream_resp.__aexit__ = AsyncMock(return_value=False)
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.stream = MagicMock(return_value=fake_stream_resp)
+
+    logger = TrafficLogger(cfg)
+    logged = []
+    original = logger.log_response
+    logger.log_response = lambda *a, **kw: logged.append(a) or original(*a, **kw)
+
+    req = _make_passthrough_req({"model": "qwen3:9b", "messages": [], "stream": True}, "/api/chat")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_passthrough(req, logger=logger)
+        b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert len(logged) == 1
+    assert logged[0][1] == 200
+    assert logged[0][3] is not None
+
+
+@pytest.mark.asyncio
+async def test_passthrough_streaming_json_fallback_invalid_json(cfg, monkeypatch, tmp_path):
+    """Streaming passthrough falls back to None when accumulated is not valid JSON."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    garbage_chunk = b"not json at all"
+
+    async def fake_aiter_bytes():
+        yield garbage_chunk
+
+    fake_stream_resp = MagicMock()
+    fake_stream_resp.status_code = 500
+    fake_stream_resp.aiter_bytes = fake_aiter_bytes
+    fake_stream_resp.__aenter__ = AsyncMock(return_value=fake_stream_resp)
+    fake_stream_resp.__aexit__ = AsyncMock(return_value=False)
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.stream = MagicMock(return_value=fake_stream_resp)
+
+    logger = TrafficLogger(cfg)
+    logged = []
+    original = logger.log_response
+    logger.log_response = lambda *a, **kw: logged.append(a) or original(*a, **kw)
+
+    req = _make_passthrough_req({"model": "qwen3:9b", "messages": [], "stream": True}, "/api/chat")
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_passthrough(req, logger=logger)
+        b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert len(logged) == 1
+    assert logged[0][1] == 500
+    assert logged[0][3] is None

@@ -277,11 +277,13 @@ async def handle_passthrough(request: Request, logger: Optional[TrafficLogger] =
 
         async def _stream_gen():
             accumulated = []
+            actual_status = 200
             try:
                 async with httpx.AsyncClient(
                     timeout=httpx.Timeout(config.timeout), follow_redirects=True
                 ) as client:
                     async with client.stream(method, url, headers=forward_headers, content=body) as resp:
+                        actual_status = resp.status_code
                         async for chunk in resp.aiter_bytes():
                             if chunk:
                                 accumulated.append(chunk)
@@ -291,8 +293,16 @@ async def handle_passthrough(request: Request, logger: Optional[TrafficLogger] =
             except Exception as exc:
                 yield json.dumps({"error": str(exc)}).encode()
             if logger and request_id:
-                parsed = _parse_sse_response(accumulated) if path.startswith("/v1/") else _parse_stream_response(accumulated)
-                logger.log_response(request_id, 200, {}, parsed)
+                if path.startswith("/v1/"):
+                    parsed = _parse_openai_sse_response(accumulated) if path == "/v1/chat/completions" else _parse_sse_response(accumulated)
+                else:
+                    parsed = _parse_stream_response(accumulated)
+                if parsed is None and accumulated:
+                    try:
+                        parsed = json.loads(b"".join(accumulated))
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                logger.log_response(request_id, actual_status, {}, parsed)
 
         return StreamingResponse(_stream_gen(), media_type=media)
 
@@ -357,6 +367,7 @@ async def handle_v1_messages(
     if is_stream:
         async def generate() -> AsyncIterator[bytes]:
             accumulated = []
+            actual_status = 200
             try:
                 async with httpx.AsyncClient(
                     timeout=httpx.Timeout(config.timeout), follow_redirects=True
@@ -365,6 +376,7 @@ async def handle_v1_messages(
                         "POST", config.target + request.url.path,
                         headers=forward_headers, content=body_bytes,
                     ) as resp:
+                        actual_status = resp.status_code
                         async for chunk in resp.aiter_bytes():
                             if chunk:
                                 accumulated.append(chunk)
@@ -375,7 +387,13 @@ async def handle_v1_messages(
                 yield json.dumps({"error": "Cannot connect to Ollama"}).encode()
             except Exception as exc:
                 yield json.dumps({"error": str(exc)}).encode()
-            logger.log_response(request_id, 200, {}, _parse_sse_response(accumulated))
+            parsed = _parse_sse_response(accumulated)
+            if parsed is None and accumulated:
+                try:
+                    parsed = json.loads(b"".join(accumulated))
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            logger.log_response(request_id, actual_status, {}, parsed)
 
         return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -434,6 +452,7 @@ async def handle_v1_chat_completions(
     if is_stream:
         async def generate() -> AsyncIterator[bytes]:
             accumulated = []
+            actual_status = 200
             try:
                 async with httpx.AsyncClient(
                     timeout=httpx.Timeout(config.timeout), follow_redirects=True
@@ -442,6 +461,7 @@ async def handle_v1_chat_completions(
                         "POST", config.target + request.url.path,
                         headers=forward_headers, content=body_bytes,
                     ) as resp:
+                        actual_status = resp.status_code
                         async for chunk in resp.aiter_bytes():
                             if chunk:
                                 accumulated.append(chunk)
@@ -452,7 +472,13 @@ async def handle_v1_chat_completions(
                 yield json.dumps({"error": "Cannot connect to Ollama"}).encode()
             except Exception as exc:
                 yield json.dumps({"error": str(exc)}).encode()
-            logger.log_response(request_id, 200, {}, _parse_openai_sse_response(accumulated))
+            parsed = _parse_openai_sse_response(accumulated)
+            if parsed is None and accumulated:
+                try:
+                    parsed = json.loads(b"".join(accumulated))
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            logger.log_response(request_id, actual_status, {}, parsed)
 
         return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -668,7 +694,13 @@ async def handle_stream_chat(
         except Exception as e:
             yield json.dumps({"error": str(e)}).encode()
 
-        logger.log_response(request_id, 200, {}, _parse_stream_response(accumulated))
+        parsed = _parse_stream_response(accumulated)
+        if parsed is None and accumulated:
+            try:
+                parsed = json.loads(b"".join(accumulated))
+            except (json.JSONDecodeError, ValueError):
+                pass
+        logger.log_response(request_id, 200, {}, parsed)
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
 
@@ -719,6 +751,12 @@ async def handle_stream_generate(
         except Exception as e:
             yield json.dumps({"error": str(e)}).encode()
 
-        logger.log_response(request_id, 200, {}, _parse_stream_response(accumulated))
+        parsed = _parse_stream_response(accumulated)
+        if parsed is None and accumulated:
+            try:
+                parsed = json.loads(b"".join(accumulated))
+            except (json.JSONDecodeError, ValueError):
+                pass
+        logger.log_response(request_id, 200, {}, parsed)
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
