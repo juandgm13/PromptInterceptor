@@ -64,7 +64,7 @@
   "default_model": "qwen3.5:9b",
   "client_work_dir": "C:/Users/juand/Documents/Repositorios/QuiniAgent",
   "python_app_path": "C:/Users/juand/Documents/Repositorios/RiggingAgent",
-  "python_app_command": "python.exe .\\main.py --object \"Mesh_0\" --debug --no-export",
+  "python_app_command": "python.exe .\\main.py --object \"Mesh_0\" --debug --no-export --ui",
   "python_app_use_venv": true,
   "python_app_env_var": "OLLAMA_HOST"
 }

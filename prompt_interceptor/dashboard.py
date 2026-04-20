@@ -289,6 +289,24 @@ function esc(s) {
     .replace(/'/g, '&#39;');
 }
 
+// Extract <tool_call>...</tool_call> blocks embedded in text (e.g. inside <think>)
+function extractEmbeddedToolCalls(text) {
+  if (!text) return [];
+  const re = /<tool_call>([\\s\\S]*?)<\\/tool_call>/g;
+  const calls = [];
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    try { calls.push(JSON.parse(m[1].trim())); }
+    catch (_) { calls.push({ _raw: m[1].trim() }); }
+  }
+  return calls;
+}
+
+// Strip <tool_call>...</tool_call> blocks from text
+function stripEmbeddedToolCalls(text) {
+  return text ? text.replace(/<tool_call>[\\s\\S]*?<\\/tool_call>/g, '').trim() : text;
+}
+
 function showRaw(id) {
   const l = _logsCache[id];
   if (!l) return;
@@ -347,16 +365,9 @@ function showRaw(id) {
     }
   }
 
-  const thinkingBlock = document.getElementById('modal-thinking-block');
-  if (thinkingText) {
-    document.getElementById('modal-thinking').textContent = thinkingText;
-    thinkingBlock.style.display = '';
-  } else {
-    thinkingBlock.style.display = 'none';
-  }
-
-  // --- Extract tool_calls ---
+  // --- Extract tool_calls (explicit fields or embedded <tool_call> tags) ---
   let toolsText = '';
+  let embeddedCalls = [];
   if (rb) {
     let toolCalls = null;
     if (rb.choices && rb.choices[0]?.message?.tool_calls) {
@@ -376,6 +387,31 @@ function showRaw(id) {
         return `[${i + 1}]${id} ${fn.name || tc.type || 'tool'}(\n${args}\n)`;
       }).join('\\n\\n');
     }
+    // Fallback: parse <tool_call> blocks embedded in thinking or response text
+    if (!toolsText) {
+      embeddedCalls = extractEmbeddedToolCalls(thinkingText + '\\n' + respText);
+      if (embeddedCalls.length) {
+        toolsText = embeddedCalls.map((tc, i) => {
+          let args = tc.arguments || tc.input || tc.parameters || '';
+          try {
+            if (typeof args === 'object') args = JSON.stringify(args, null, 2);
+            else if (typeof args === 'string' && args) args = JSON.stringify(JSON.parse(args), null, 2);
+          } catch (_) {}
+          return `[${i + 1}] ${tc.name || 'tool'}(\n${args}\n)`;
+        }).join('\\n\\n');
+      }
+    }
+  }
+
+  // Strip <tool_call> XML from thinking text so it doesn't appear raw in the panel
+  if (thinkingText) thinkingText = stripEmbeddedToolCalls(thinkingText);
+
+  const thinkingBlock = document.getElementById('modal-thinking-block');
+  if (thinkingText) {
+    document.getElementById('modal-thinking').textContent = thinkingText;
+    thinkingBlock.style.display = '';
+  } else {
+    thinkingBlock.style.display = 'none';
   }
   const toolsBlock = document.getElementById('modal-tools-block');
   if (toolsText) {
@@ -473,21 +509,34 @@ async function loadLogs() {
         // /v1/chat/completions (OpenAI-compatible)
         if (rb.choices && rb.choices[0]?.message?.content) {
           respText = rb.choices[0].message.content;
-        // /api/chat (Ollama native)
+        // /api/chat (Ollama native) — strip <think> and <tool_call> tags for clean preview
         } else if (rb.message?.content) {
-          respText = rb.message.content;
+          respText = rb.message.content
+            .replace(/<think>[\\s\\S]*?<\\/think>/g, '')
+            .replace(/<tool_call>[\\s\\S]*?<\\/tool_call>/g, '')
+            .trim();
         // /api/generate (Ollama native)
         } else if (typeof rb.response === 'string') {
           respText = rb.response;
-        // /v1/messages (Anthropic-compatible)
-        } else if (rb.content && rb.content[0]?.text) {
-          respText = rb.content[0].text;
+        // /v1/messages (Anthropic-compatible): first text block (may come after thinking)
+        } else if (Array.isArray(rb.content)) {
+          const textBlock = rb.content.find(b => b.type === 'text');
+          respText = textBlock?.text || '';
         }
-        // Fallback: tool_calls without text content
+        // Fallback: tool_calls (explicit or embedded <tool_call> tags in content/thinking)
         if (!respText) {
           let toolCalls = rb.choices?.[0]?.message?.tool_calls || rb.message?.tool_calls || null;
-          if (toolCalls && toolCalls.length) {
-            const names = toolCalls.map(tc => tc.function?.name || 'tool').join(', ');
+          if (!toolCalls?.length && Array.isArray(rb.content)) {
+            const toolUse = rb.content.filter(b => b.type === 'tool_use');
+            if (toolUse.length) toolCalls = toolUse;
+          }
+          if (!toolCalls?.length) {
+            const contentStr = rb.message?.content || rb.choices?.[0]?.message?.content || '';
+            const embedded = extractEmbeddedToolCalls(contentStr);
+            if (embedded.length) toolCalls = embedded;
+          }
+          if (toolCalls?.length) {
+            const names = toolCalls.map(tc => tc.function?.name || tc.name || 'tool').join(', ');
             respText = `[tools: ${names}]`;
           }
         }
