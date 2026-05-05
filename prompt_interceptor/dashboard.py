@@ -223,9 +223,14 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
       <h2 style="margin-bottom:0">Live Prompts</h2>
       <div style="display:flex;gap:6px">
+        <button class="btn-add" onclick="loadFile()" style="background:#0d3b66;border-color:#1a5b8a;color:#4fc3f7">&#128193; Cargar</button>
         <button class="btn-add" onclick="saveLogs()" style="background:#1a4d1a;border-color:#2a6b2a;color:#5f5">&#8595; Guardar</button>
         <button class="btn-add" onclick="clearLogs()" style="background:#4d1a1a;border-color:#6b2a2a;color:#f88">&#x2715; Limpiar</button>
       </div>
+    </div>
+    <div id="file-mode-banner" style="display:none;background:#0a1e0a;border:1px solid #1a4b1a;border-radius:6px;padding:8px 14px;margin-bottom:10px;color:#5f5;font-size:.85em;align-items:center;justify-content:space-between">
+      <span>&#128196; Archivo: <strong id="file-mode-name"></strong></span>
+      <button onclick="exitFileMode()" style="background:#4d1a1a;color:#f88;border:1px solid #6b2a2a;border-radius:4px;padding:3px 8px;cursor:pointer;font-size:.8em">&#x2715; Volver a live</button>
     </div>
     <table>
       <thead><tr>
@@ -279,6 +284,8 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 <script>
 const _logsCache = {};
 let _proxyStatusData = null;
+let _fileMode = false;
+let _loadedLogs = null;
 
 function esc(s) {
   return String(s)
@@ -296,8 +303,25 @@ function extractEmbeddedToolCalls(text) {
   const calls = [];
   let m;
   while ((m = re.exec(text)) !== null) {
-    try { calls.push(JSON.parse(m[1].trim())); }
-    catch (_) { calls.push({ _raw: m[1].trim() }); }
+    const inner = m[1].trim();
+    // Format 1: JSON  {"name": "...", "arguments": {...}}
+    try { calls.push(JSON.parse(inner)); continue; }
+    catch (_) {}
+    // Format 2: XML  <function=NAME><parameter=KEY>VALUE</parameter>...</function>
+    const fnMatch = inner.match(/<function=([\\w.:-]+)>/);
+    if (fnMatch) {
+      const name = fnMatch[1];
+      const args = {};
+      const paramRe = /<parameter=([\\w.:-]+)>([\\s\\S]*?)<\\/parameter>/g;
+      let pm;
+      while ((pm = paramRe.exec(inner)) !== null) {
+        const val = pm[2].trim();
+        try { args[pm[1]] = JSON.parse(val); } catch (_) { args[pm[1]] = val; }
+      }
+      calls.push({ name, arguments: args });
+    } else {
+      calls.push({ _raw: inner });
+    }
   }
   return calls;
 }
@@ -374,21 +398,27 @@ function showRaw(id) {
       toolCalls = rb.choices[0].message.tool_calls;
     } else if (rb.message?.tool_calls) {
       toolCalls = rb.message.tool_calls;
+    } else if (Array.isArray(rb.content)) {
+      const toolUse = rb.content.filter(b => b.type === 'tool_use');
+      if (toolUse.length) toolCalls = toolUse;
     }
     if (toolCalls && toolCalls.length) {
       toolsText = toolCalls.map((tc, i) => {
         const fn = tc.function || {};
-        let args = fn.arguments !== undefined ? fn.arguments : (tc.arguments || '');
+        let args = fn.arguments !== undefined ? fn.arguments : (tc.input || tc.arguments || '');
         try {
           if (typeof args === 'string' && args) args = JSON.stringify(JSON.parse(args), null, 2);
           else if (typeof args === 'object') args = JSON.stringify(args, null, 2);
         } catch (_) {}
         const id = tc.id ? ` (${tc.id})` : '';
-        return `[${i + 1}]${id} ${fn.name || tc.type || 'tool'}(\n${args}\n)`;
+        return `[${i + 1}]${id} ${fn.name || tc.name || tc.type || 'tool'}(\n${args}\n)`;
       }).join('\\n\\n');
     }
-    // Fallback: parse <tool_call> blocks embedded in thinking or response text
-    if (!toolsText) {
+    // Fallback: parse <tool_call> blocks embedded in thinking or response text.
+    // Also used when explicit tool_calls exist but have no valid function names
+    // (can happen when streaming assembly produces empty deltas).
+    const hasValidNames = toolCalls?.some(tc => tc.function?.name || tc.name);
+    if (!toolsText || !hasValidNames) {
       embeddedCalls = extractEmbeddedToolCalls(thinkingText + '\\n' + respText);
       if (embeddedCalls.length) {
         toolsText = embeddedCalls.map((tc, i) => {
@@ -468,95 +498,100 @@ function closeProxyModal() {
   document.getElementById('proxy-modal-overlay').style.display = 'none';
 }
 
+function renderLogsTable(logs) {
+  const tbody = document.getElementById('logs-body');
+  document.getElementById('stat-requests').textContent = logs.length;
+  if (!logs.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">No requests yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = logs.slice().reverse().map((l, i) => {
+    const cacheKey = l.request_id || i;
+    _logsCache[cacheKey] = l;
+    const ts = (l.timestamp || l.response_timestamp || '').slice(11,19) || '-';
+    const method = l.method || '-';
+    const path = l.path || '-';
+    const model = l.body?.model || l.response_body?.model || '-';
+    const msgs = l.body?.messages;
+    let preview = '-';
+    if (msgs && msgs.length) {
+      const last = msgs[msgs.length - 1];
+      const content = last.content;
+      let txt = '';
+      if (typeof content === 'string') {
+        txt = content.slice(0, 80);
+      } else if (Array.isArray(content)) {
+        const textBlock = content.find(b => b.type === 'text');
+        txt = (textBlock?.text || '').slice(0, 80);
+      }
+      preview = txt || '-';
+      if (txt.length === 80) preview += '…';
+    } else if (l.body?.prompt) {
+      preview = l.body.prompt.toString().slice(0, 80);
+    }
+    // Extract LLM response text from response_body
+    let respText = '';
+    const rb = l.response_body;
+    if (rb) {
+      // /v1/chat/completions (OpenAI-compatible)
+      if (rb.choices && rb.choices[0]?.message?.content) {
+        respText = rb.choices[0].message.content;
+      // /api/chat (Ollama native) — strip <think> and <tool_call> tags for clean preview
+      } else if (rb.message?.content) {
+        respText = rb.message.content
+          .replace(/<think>[\\s\\S]*?<\\/think>/g, '')
+          .replace(/<tool_call>[\\s\\S]*?<\\/tool_call>/g, '')
+          .trim();
+      // /api/generate (Ollama native)
+      } else if (typeof rb.response === 'string') {
+        respText = rb.response;
+      // /v1/messages (Anthropic-compatible): first text block (may come after thinking)
+      } else if (Array.isArray(rb.content)) {
+        const textBlock = rb.content.find(b => b.type === 'text');
+        respText = textBlock?.text || '';
+      }
+      // Fallback: tool_calls (explicit or embedded <tool_call> tags in content/thinking)
+      if (!respText) {
+        let toolCalls = rb.choices?.[0]?.message?.tool_calls || rb.message?.tool_calls || null;
+        if (!toolCalls?.length && Array.isArray(rb.content)) {
+          const toolUse = rb.content.filter(b => b.type === 'tool_use');
+          if (toolUse.length) toolCalls = toolUse;
+        }
+        if (!toolCalls?.length) {
+          const thinkingStr = rb.message?.thinking || rb.choices?.[0]?.message?.thinking || '';
+          const contentStr = rb.message?.content || rb.choices?.[0]?.message?.content || '';
+          const embedded = extractEmbeddedToolCalls(thinkingStr + '\\n' + contentStr);
+          if (embedded.length) toolCalls = embedded;
+        }
+        if (toolCalls?.length) {
+          const names = toolCalls.map(tc => tc.function?.name || tc.name || 'tool').join(', ');
+          respText = `[tools: ${names}]`;
+        }
+      }
+    }
+    const respPreview = respText ? esc(respText.slice(0, 100)) + (respText.length > 100 ? '…' : '') : '<span class="empty">-</span>';
+    const statusCode = l.status_code ? `<span class="badge ${l.status_code < 400 ? 'green' : 'red'}">${l.status_code}</span>` : '';
+    const typeTag = l.type === 'response'
+      ? `<span class="badge green">resp</span>`
+      : `<span class="badge blue">req</span>`;
+    return `<tr>
+      <td>${ts}</td>
+      <td>${esc(method)}</td>
+      <td><code>${esc(path)}</code></td>
+      <td><code>${esc(model)}</code></td>
+      <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(preview)}</td>
+      <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${respPreview}</td>
+      <td>${typeTag} ${statusCode}</td>
+      <td><button class="link-show" onclick="showRaw('${esc(String(cacheKey))}')">show</button></td>
+    </tr>`;
+  }).join('');
+}
+
 async function loadLogs() {
+  if (_fileMode) { renderLogsTable(_loadedLogs || []); return; }
   try {
     const data = await fetchJSON('/api/logs?limit=50');
-    const tbody = document.getElementById('logs-body');
-    const logs = data.logs || [];
-    document.getElementById('stat-requests').textContent = logs.length;
-    if (!logs.length) {
-      tbody.innerHTML = '<tr><td colspan="8" class="empty">No requests yet.</td></tr>';
-      return;
-    }
-    tbody.innerHTML = logs.slice().reverse().map((l, i) => {
-      const cacheKey = l.request_id || i;
-      _logsCache[cacheKey] = l;
-      const ts = (l.timestamp || l.response_timestamp || '').slice(11,19) || '-';
-      const method = l.method || '-';
-      const path = l.path || '-';
-      const model = l.body?.model || l.response_body?.model || '-';
-      const msgs = l.body?.messages;
-      let preview = '-';
-      if (msgs && msgs.length) {
-        const last = msgs[msgs.length - 1];
-        const content = last.content;
-        let txt = '';
-        if (typeof content === 'string') {
-          txt = content.slice(0, 80);
-        } else if (Array.isArray(content)) {
-          const textBlock = content.find(b => b.type === 'text');
-          txt = (textBlock?.text || '').slice(0, 80);
-        }
-        preview = txt || '-';
-        if (txt.length === 80) preview += '…';
-      } else if (l.body?.prompt) {
-        preview = l.body.prompt.toString().slice(0, 80);
-      }
-      // Extract LLM response text from response_body
-      let respText = '';
-      const rb = l.response_body;
-      if (rb) {
-        // /v1/chat/completions (OpenAI-compatible)
-        if (rb.choices && rb.choices[0]?.message?.content) {
-          respText = rb.choices[0].message.content;
-        // /api/chat (Ollama native) — strip <think> and <tool_call> tags for clean preview
-        } else if (rb.message?.content) {
-          respText = rb.message.content
-            .replace(/<think>[\\s\\S]*?<\\/think>/g, '')
-            .replace(/<tool_call>[\\s\\S]*?<\\/tool_call>/g, '')
-            .trim();
-        // /api/generate (Ollama native)
-        } else if (typeof rb.response === 'string') {
-          respText = rb.response;
-        // /v1/messages (Anthropic-compatible): first text block (may come after thinking)
-        } else if (Array.isArray(rb.content)) {
-          const textBlock = rb.content.find(b => b.type === 'text');
-          respText = textBlock?.text || '';
-        }
-        // Fallback: tool_calls (explicit or embedded <tool_call> tags in content/thinking)
-        if (!respText) {
-          let toolCalls = rb.choices?.[0]?.message?.tool_calls || rb.message?.tool_calls || null;
-          if (!toolCalls?.length && Array.isArray(rb.content)) {
-            const toolUse = rb.content.filter(b => b.type === 'tool_use');
-            if (toolUse.length) toolCalls = toolUse;
-          }
-          if (!toolCalls?.length) {
-            const contentStr = rb.message?.content || rb.choices?.[0]?.message?.content || '';
-            const embedded = extractEmbeddedToolCalls(contentStr);
-            if (embedded.length) toolCalls = embedded;
-          }
-          if (toolCalls?.length) {
-            const names = toolCalls.map(tc => tc.function?.name || tc.name || 'tool').join(', ');
-            respText = `[tools: ${names}]`;
-          }
-        }
-      }
-      const respPreview = respText ? esc(respText.slice(0, 100)) + (respText.length > 100 ? '…' : '') : '<span class="empty">-</span>';
-      const statusCode = l.status_code ? `<span class="badge ${l.status_code < 400 ? 'green' : 'red'}">${l.status_code}</span>` : '';
-      const typeTag = l.type === 'response'
-        ? `<span class="badge green">resp</span>`
-        : `<span class="badge blue">req</span>`;
-      return `<tr>
-        <td>${ts}</td>
-        <td>${esc(method)}</td>
-        <td><code>${esc(path)}</code></td>
-        <td><code>${esc(model)}</code></td>
-        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(preview)}</td>
-        <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${respPreview}</td>
-        <td>${typeTag} ${statusCode}</td>
-        <td><button class="link-show" onclick="showRaw('${esc(String(cacheKey))}')">show</button></td>
-      </tr>`;
-    }).join('');
+    renderLogsTable(data.logs || []);
   } catch(e) {
     const tb = document.getElementById('logs-body');
     tb.innerHTML = '<tr><td colspan="8" id="_logs-err"></td></tr>';
@@ -716,6 +751,43 @@ function saveLogs() {
   a.href = url; a.download = `prompt-interceptor-logs-${ts}.json`;
   document.body.appendChild(a); a.click();
   document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+
+function loadFile() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json';
+  input.onchange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        const logs = Array.isArray(data) ? data : (data.logs || []);
+        if (!logs.length) { alert('No se encontraron logs en el archivo.'); return; }
+        _loadedLogs = logs;
+        _fileMode = true;
+        Object.keys(_logsCache).forEach(k => delete _logsCache[k]);
+        logs.forEach((l, i) => { _logsCache[l.request_id || i] = l; });
+        document.getElementById('file-mode-name').textContent = file.name;
+        document.getElementById('file-mode-banner').style.display = 'flex';
+        renderLogsTable(logs);
+      } catch(err) {
+        alert('Error al leer el archivo: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+}
+
+function exitFileMode() {
+  _fileMode = false;
+  _loadedLogs = null;
+  document.getElementById('file-mode-banner').style.display = 'none';
+  Object.keys(_logsCache).forEach(k => delete _logsCache[k]);
+  loadLogs();
 }
 
 function refreshAll() { loadStatus(); loadRules(); loadLogs(); }

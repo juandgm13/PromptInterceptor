@@ -796,3 +796,100 @@ async def test_dashboard_html_modal_tools_label(client):
     assert resp.status_code == 200
     assert "Tools" in resp.text
     assert "modal-tools-title" in resp.text
+
+
+async def test_dashboard_html_showraw_extracts_anthropic_tool_use_blocks(client):
+    """showRaw checks rb.content for tool_use blocks (Anthropic format)."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "tool_use" in html
+    assert "rb.content" in html
+
+
+async def test_dashboard_html_showraw_fallback_when_no_valid_names(client):
+    """showRaw tries embedded fallback when explicit tool_calls have no valid function names."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "hasValidNames" in html
+
+
+async def test_dashboard_html_table_searches_thinking_for_embedded_tools(client):
+    """renderLogsTable embedded tool search includes the thinking field, not just content."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "thinkingStr" in resp.text
+
+
+async def test_dashboard_html_extract_embedded_parses_xml_function_format(client):
+    """extractEmbeddedToolCalls handles <function=NAME><parameter=KEY>VAL</parameter> format."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "fnMatch" in html
+    assert "<function=" in html or "function=" in html
+
+
+async def test_dashboard_html_extract_embedded_parses_json_format(client):
+    """extractEmbeddedToolCalls still handles the JSON {"name":..., "arguments":...} format."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "JSON.parse" in html
+    assert "extractEmbeddedToolCalls" in html
+
+
+# ---------------------------------------------------------------------------
+# Load file button
+# ---------------------------------------------------------------------------
+
+async def test_dashboard_html_has_load_file_button(client):
+    """Dashboard HTML includes a Cargar button that calls loadFile()."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "loadFile()" in resp.text
+    assert "Cargar" in resp.text
+
+
+async def test_dashboard_html_load_file_js_function(client):
+    """loadFile() JS function uses FileReader and accepts .json files."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "function loadFile()" in html
+    assert "FileReader" in html
+    assert "accept = '.json'" in html or "accept='.json'" in html or '.json' in html
+
+
+async def test_dashboard_html_file_mode_banner_present(client):
+    """file-mode-banner element is present and hidden by default."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    assert 'id="file-mode-banner"' in html
+    assert 'id="file-mode-name"' in html
+    assert 'display:none' in html
+
+
+async def test_dashboard_html_exit_file_mode_function(client):
+    """exitFileMode() JS function is defined to return to live view."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "function exitFileMode()" in resp.text
+
+
+async def test_dashboard_html_render_logs_table_function(client):
+    """renderLogsTable() is extracted from loadLogs() as a standalone function."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "function renderLogsTable(" in resp.text
+
+
+async def test_dashboard_html_file_mode_flag_variables(client):
+    """_fileMode and _loadedLogs variables are declared in the JS."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "_fileMode" in html
+    assert "_loadedLogs" in html

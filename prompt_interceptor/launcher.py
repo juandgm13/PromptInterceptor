@@ -205,6 +205,30 @@ def _start_proxy_thread():
         print(f"[PromptInterceptor] Proxy thread error: {exc}")
 
 
+def _start_dashboard_thread():
+    """Run the FastAPI dashboard server standalone (no proxy)."""
+    try:
+        import asyncio
+        import uvicorn
+
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        config = get_config()
+        if not config.dashboard_enabled:
+            return
+        uvicorn.run(
+            "prompt_interceptor.dashboard:app",
+            host="0.0.0.0",
+            port=config.dashboard_port,
+            log_level="warning",
+        )
+    except ImportError as exc:
+        print(f"[PromptInterceptor] Missing dependency for dashboard: {exc}")
+    except OSError as exc:
+        print(f"[PromptInterceptor] Failed to start dashboard (port in use?): {exc}")
+    except Exception as exc:
+        print(f"[PromptInterceptor] Dashboard thread error: {exc}")
+
+
 def _write_opencode_config(model: str, proxy_url: str) -> None:
     """Write/update ~/.config/opencode/opencode.json to point at the proxy with the selected model."""
     config_path = Path.home() / ".config" / "opencode" / "opencode.json"
@@ -237,11 +261,12 @@ class LauncherWindow:
         self.root.resizable(False, False)
         self.root.configure(bg="#1a1a2e")
         self._step2_enabled = False
+        self._servers_started = False
         self._active_target: str = get_config().target
 
         self._set_icon()
         self._build_ui()
-        self._center_window(540, 490)
+        self._center_window(540, self._get_window_height())
 
     def _set_icon(self) -> None:
         icon_path = Path(__file__).parent.parent / "res" / "PromptInterceptor_Icon.png"
@@ -252,6 +277,14 @@ class LauncherWindow:
                 self.root._icon = icon  # prevent garbage collection
             except Exception:
                 pass
+
+    def _get_window_height(self) -> int:
+        """Return the appropriate window height for the currently selected client."""
+        try:
+            name = self.client_var.get()
+        except AttributeError:
+            return 490
+        return 550 if name == "Python App (Ollama)" else 490
 
     def _center_window(self, width: int, height: int) -> None:
         self.root.update_idletasks()
@@ -421,13 +454,13 @@ class LauncherWindow:
                                               width=24, state="disabled")
         self._launch_client_btn.pack(side="left")
 
-        # ── Step 3: Proxy ──
-        ttk.Label(self.root, text="── Step 3: Proxy ──", style="Section.TLabel").pack()
+        # ── Step 3: Dashboard ──
+        ttk.Label(self.root, text="── Step 3: Dashboard ──", style="Section.TLabel").pack()
 
         btn_frame = ttk.Frame(self.root)
         btn_frame.pack(pady=(8, 16))
-        self._start_btn = ttk.Button(btn_frame, text="Start", style="Start.TButton",
-                                      command=self._on_start, state="disabled")
+        self._start_btn = ttk.Button(btn_frame, text="Open Dashboard", style="Start.TButton",
+                                      command=self._on_open_dashboard, state="normal")
         self._start_btn.pack(side="left", padx=8)
         ttk.Button(btn_frame, text="Exit", style="Exit.TButton",
                    command=self.root.destroy).pack(side="left", padx=8)
@@ -597,14 +630,13 @@ class LauncherWindow:
             self._row_command.pack(fill="x", padx=20, pady=2)
             self._row_venv.pack(fill="x", padx=20, pady=2)
             self._row_envvar.pack(fill="x", padx=20, pady=2)
+            self._row_launch.pack(fill="x", padx=20, pady=(2, 10))
             self._app_path_entry.config(state=field_state)
             self._browse_app_btn.config(state=field_state)
             self._command_entry.config(state=field_state)
             self._venv_check.config(state=field_state)
             self._env_var_entry.config(state=field_state)
-            # For Python App, Start is enabled directly once Ollama is ready
-            if self._step2_enabled:
-                self._start_btn.config(state="normal")
+            self._launch_client_btn.config(state=field_state)
         else:
             self._row_model.pack(fill="x", padx=20, pady=2)
             self._row_workdir.pack(fill="x", padx=20, pady=2)
@@ -613,6 +645,8 @@ class LauncherWindow:
             self._work_dir_entry.config(state=field_state)
             self._browse_workdir_btn.config(state=field_state)
             self._launch_client_btn.config(state=field_state)
+
+        self.root.geometry(f"540x{self._get_window_height()}")
 
     def _on_client_change(self, event=None) -> None:
         self._refresh_client_rows()
@@ -675,6 +709,15 @@ class LauncherWindow:
                     ["cmd", "/c", "start", "OpenCode (WSL)"] + wsl_args,
                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                 )
+            elif cmd_name == "__python_app__":
+                if not self._servers_started:
+                    self._servers_started = True
+                    threading.Thread(target=_start_proxy_thread, daemon=True).start()
+                    self.root.after(1500, self._reset_session)
+                self.root.after(2500, self._launch_python_app)
+                self.status_var.set("Proxy starting... Python app will launch shortly.")
+                self.root.after(2500, self.root.iconify)
+                return
             else:
                 subprocess.Popen(
                     ["cmd", "/c", "start", "cmd", "/k", cmd_name],
@@ -689,8 +732,11 @@ class LauncherWindow:
             self.status_var.set(f"Error launching {name}: {exc}")
             return
 
+        if not self._servers_started:
+            self._servers_started = True
+            threading.Thread(target=_start_proxy_thread, daemon=True).start()
+            self.root.after(1500, self._reset_session)
         self.status_var.set(f"{name} launched.")
-        self._start_btn.config(state="normal")
 
     def _launch_python_app(self) -> None:
         """Launch the configured Python app (called after proxy is ready)."""
@@ -726,9 +772,19 @@ class LauncherWindow:
         except OSError as exc:
             self.status_var.set(f"Error launching Python app: {exc}")
 
-    # ── Step 3: Proxy ──
+    # ── Step 3: Dashboard ──
 
-    def _on_start(self) -> None:
+    def _reset_session(self) -> None:
+        config = get_config()
+        reset_url = f"http://localhost:{config.dashboard_port}/api/reset"
+        try:
+            req = urllib.request.Request(reset_url, data=b"{}", method="POST")
+            req.add_header("Content-Type", "application/json")
+            urllib.request.urlopen(req, timeout=3)
+        except Exception:
+            pass
+
+    def _on_open_dashboard(self) -> None:
         config = get_config()
         try:
             config.proxy_port = int(self.proxy_port_var.get().strip())
@@ -751,28 +807,18 @@ class LauncherWindow:
         except OSError as exc:
             self.status_var.set(f"Warning: could not save config — {exc}")
 
-        threading.Thread(target=_start_proxy_thread, daemon=True).start()
-
         dashboard_port = config.dashboard_port
 
-        def _reset_session():
-            reset_url = f"http://localhost:{dashboard_port}/api/reset"
-            try:
-                req = urllib.request.Request(reset_url, data=b"{}", method="POST")
-                req.add_header("Content-Type", "application/json")
-                urllib.request.urlopen(req, timeout=3)
-            except Exception:
-                pass
+        if not self._servers_started:
+            threading.Thread(target=_start_dashboard_thread, daemon=True).start()
+            self.root.after(2000, lambda: webbrowser.open(
+                f"http://localhost:{dashboard_port}"
+            ))
+            self.status_var.set("Dashboard starting...")
+        else:
+            webbrowser.open(f"http://localhost:{dashboard_port}")
+            self.status_var.set("Dashboard opened.")
 
-        self.root.after(1500, _reset_session)
-        self.root.after(2000, lambda: webbrowser.open(
-            f"http://localhost:{dashboard_port}"
-        ))
-
-        if self.client_var.get() == "Python App (Ollama)":
-            self.root.after(2500, self._launch_python_app)
-
-        self.status_var.set("Proxy starting... Dashboard will open shortly.")
         self.root.after(2500, self.root.iconify)
 
 
