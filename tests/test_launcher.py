@@ -162,6 +162,92 @@ def test_start_proxy_thread_dashboard_disabled(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# _start_dashboard_thread
+# ---------------------------------------------------------------------------
+
+def test_start_dashboard_thread_enabled(tmp_path, monkeypatch):
+    """_start_dashboard_thread calls uvicorn.run for the dashboard when enabled."""
+    import asyncio
+    cfg = Config(log_dir=str(tmp_path / "logs"), dashboard_enabled=True, dashboard_port=9090)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    import uvicorn
+    with patch.object(uvicorn, "run", MagicMock()) as mock_run, \
+         patch.object(asyncio, "set_event_loop"), \
+         patch.object(asyncio, "new_event_loop", return_value=MagicMock()):
+        from prompt_interceptor.launcher import _start_dashboard_thread
+        _start_dashboard_thread()
+
+    assert mock_run.called
+    call_args = mock_run.call_args[0][0]
+    assert "dashboard" in call_args
+
+
+def test_start_dashboard_thread_disabled(tmp_path, monkeypatch):
+    """_start_dashboard_thread is a no-op when dashboard_enabled=False."""
+    import asyncio
+    cfg = Config(log_dir=str(tmp_path / "logs"), dashboard_enabled=False)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    import uvicorn
+    with patch.object(uvicorn, "run", MagicMock()) as mock_run, \
+         patch.object(asyncio, "set_event_loop"), \
+         patch.object(asyncio, "new_event_loop", return_value=MagicMock()):
+        from prompt_interceptor.launcher import _start_dashboard_thread
+        _start_dashboard_thread()
+
+    mock_run.assert_not_called()
+
+
+def test_start_dashboard_thread_import_error(tmp_path, monkeypatch, capsys):
+    """ImportError from uvicorn is caught and printed."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), dashboard_enabled=True, dashboard_port=9090)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    import asyncio
+    import uvicorn
+    with patch.object(uvicorn, "run", side_effect=ImportError("no module")), \
+         patch.object(asyncio, "set_event_loop"), \
+         patch.object(asyncio, "new_event_loop", return_value=MagicMock()):
+        from prompt_interceptor.launcher import _start_dashboard_thread
+        _start_dashboard_thread()
+
+    assert "no module" in capsys.readouterr().out
+
+
+def test_start_dashboard_thread_oserror(tmp_path, monkeypatch, capsys):
+    """OSError (port in use) from uvicorn is caught and printed."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), dashboard_enabled=True, dashboard_port=9090)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    import asyncio
+    import uvicorn
+    with patch.object(uvicorn, "run", side_effect=OSError("address in use")), \
+         patch.object(asyncio, "set_event_loop"), \
+         patch.object(asyncio, "new_event_loop", return_value=MagicMock()):
+        from prompt_interceptor.launcher import _start_dashboard_thread
+        _start_dashboard_thread()
+
+    assert "address in use" in capsys.readouterr().out
+
+
+def test_start_dashboard_thread_generic_error(tmp_path, monkeypatch, capsys):
+    """Unexpected exceptions from the dashboard thread are caught and printed."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), dashboard_enabled=True, dashboard_port=9090)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    import asyncio
+    import uvicorn
+    with patch.object(uvicorn, "run", side_effect=RuntimeError("unexpected crash")), \
+         patch.object(asyncio, "set_event_loop"), \
+         patch.object(asyncio, "new_event_loop", return_value=MagicMock()):
+        from prompt_interceptor.launcher import _start_dashboard_thread
+        _start_dashboard_thread()
+
+    assert "unexpected crash" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
 # LauncherWindow (fully mocked tkinter) — helpers
 # ---------------------------------------------------------------------------
 
@@ -495,7 +581,7 @@ def test_set_step2_enabled_disables_widgets(tmp_path):
 
 
 def test_refresh_client_rows_python_app_shows_app_fields(tmp_path):
-    """When Python App is selected, apppath/command/venv/env rows are shown; workdir+model hidden."""
+    """When Python App is selected, apppath/command/venv/env/launch rows shown; workdir+model hidden."""
     cfg = Config(log_dir=str(tmp_path / "logs"))
     win, _ = _make_headless_win(cfg)
     win.client_var = MagicMock()
@@ -507,11 +593,13 @@ def test_refresh_client_rows_python_app_shows_app_fields(tmp_path):
     win._row_command = MagicMock()
     win._row_venv = MagicMock()
     win._row_envvar = MagicMock()
+    win._row_launch = MagicMock()
     win._app_path_entry = MagicMock()
     win._browse_app_btn = MagicMock()
     win._command_entry = MagicMock()
     win._venv_check = MagicMock()
     win._env_var_entry = MagicMock()
+    win._launch_client_btn = MagicMock()
     win._work_dir_entry = MagicMock()
     win._browse_workdir_btn = MagicMock()
     win._model_cb = MagicMock()
@@ -524,9 +612,11 @@ def test_refresh_client_rows_python_app_shows_app_fields(tmp_path):
     win._row_command.pack.assert_called()
     win._row_venv.pack.assert_called()
     win._row_envvar.pack.assert_called()
+    win._row_launch.pack.assert_called()
     win._app_path_entry.config.assert_called_with(state="normal")
     win._command_entry.config.assert_called_with(state="normal")
     win._env_var_entry.config.assert_called_with(state="normal")
+    win._launch_client_btn.config.assert_called_with(state="normal")
 
 
 def test_refresh_client_rows_claude_shows_workdir(tmp_path):
@@ -562,6 +652,64 @@ def test_refresh_client_rows_claude_shows_workdir(tmp_path):
     win._model_cb.config.assert_called_with(state="readonly")
     win._row_workdir.pack.assert_called()
     win._work_dir_entry.config.assert_called_with(state="normal")
+
+
+def test_get_window_height_returns_550_for_python_app(tmp_path):
+    """_get_window_height returns 550 when Python App is selected."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, _ = _make_headless_win(cfg)
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Python App (Ollama)"
+    assert win._get_window_height() == 550
+
+
+def test_get_window_height_returns_490_for_other_clients(tmp_path):
+    """_get_window_height returns 490 for non-Python-App clients."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, _ = _make_headless_win(cfg)
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Claude Code"
+    assert win._get_window_height() == 490
+
+
+def test_refresh_client_rows_resizes_window_for_python_app(tmp_path):
+    """_refresh_client_rows calls root.geometry with height 550 for Python App."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, mock_root = _make_headless_win(cfg)
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Python App (Ollama)"
+    win._step2_enabled = False
+    for attr in ("_row_model", "_row_workdir", "_row_apppath", "_row_command",
+                 "_row_venv", "_row_envvar", "_row_launch",
+                 "_app_path_entry", "_browse_app_btn", "_command_entry",
+                 "_venv_check", "_env_var_entry", "_launch_client_btn",
+                 "_work_dir_entry", "_browse_workdir_btn", "_model_cb"):
+        setattr(win, attr, MagicMock())
+
+    win._refresh_client_rows()
+
+    geometry_calls = [str(c) for c in mock_root.geometry.call_args_list]
+    assert any("550" in c for c in geometry_calls)
+
+
+def test_refresh_client_rows_resizes_window_for_other_client(tmp_path):
+    """_refresh_client_rows calls root.geometry with height 490 for non-Python-App clients."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, mock_root = _make_headless_win(cfg)
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Claude Code"
+    win._step2_enabled = False
+    for attr in ("_row_model", "_row_workdir", "_row_apppath", "_row_command",
+                 "_row_venv", "_row_envvar", "_row_launch",
+                 "_app_path_entry", "_browse_app_btn", "_command_entry",
+                 "_venv_check", "_env_var_entry", "_launch_client_btn",
+                 "_work_dir_entry", "_browse_workdir_btn", "_model_cb"):
+        setattr(win, attr, MagicMock())
+
+    win._refresh_client_rows()
+
+    geometry_calls = [str(c) for c in mock_root.geometry.call_args_list]
+    assert any("490" in c for c in geometry_calls)
 
 
 def test_on_client_change_calls_refresh(tmp_path):
@@ -635,7 +783,9 @@ def test_on_launch_client_claude_code(tmp_path, monkeypatch):
 
     popen_calls = []
     with patch("prompt_interceptor.launcher.subprocess.Popen",
-               side_effect=lambda *a, **kw: popen_calls.append((a[0], kw))):
+               side_effect=lambda *a, **kw: popen_calls.append((a[0], kw))), \
+         patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+        mock_thread.return_value = MagicMock()
         win._on_launch_client()
 
     assert len(popen_calls) == 1
@@ -646,7 +796,7 @@ def test_on_launch_client_claude_code(tmp_path, monkeypatch):
     assert "llama3.2:latest" in cmd_str
     assert kwargs.get("cwd") == "/my/repo"
     assert kwargs.get("env", {}).get("ANTHROPIC_BASE_URL") == "http://localhost:8080"
-    win._start_btn.config.assert_called_with(state="normal")
+    mock_thread.assert_called()  # proxy thread started after successful launch
 
 
 def test_on_launch_client_open_code_cli(tmp_path, monkeypatch):
@@ -752,6 +902,36 @@ def test_on_launch_client_open_code_wsl_with_workdir(tmp_path, monkeypatch):
     assert "--cd" in cmd_list
     assert "C:\\Users\\user\\project" in cmd_list
     assert any("opencode" in a for a in cmd_list)
+
+
+def test_on_launch_client_python_app_via_button(tmp_path, monkeypatch):
+    """When Python App is launched via its Launch Client button, proxy starts and app is scheduled."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, mock_root = _make_headless_win(cfg)
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Python App (Ollama)"
+    win._clients = [("Python App (Ollama)", "__python_app__")]
+    win.work_dir_var = MagicMock()
+    win.work_dir_var.get.return_value = ""
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = ""
+    win.status_var = MagicMock()
+
+    after_calls = []
+    mock_root.after.side_effect = lambda delay, fn, *args: after_calls.append((delay, fn))
+
+    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+        mock_thread.return_value = MagicMock()
+        win._on_launch_client()
+
+    # Proxy thread started
+    mock_thread.assert_called()
+    assert win._servers_started is True
+    # App launch and iconify scheduled with a delay
+    delays = [d for d, _ in after_calls]
+    assert 2500 in delays
 
 
 def test_on_launch_client_python_app(tmp_path, monkeypatch):
@@ -1152,8 +1332,8 @@ def test_on_launch_client_python_app_custom_env_var(tmp_path, monkeypatch):
     assert kwargs["env"]["OPENAI_BASE_URL"] == "http://localhost:8080"
 
 
-def test_on_launch_client_unlocks_start_btn(tmp_path, monkeypatch):
-    """After a successful client launch, the Start button is enabled."""
+def test_on_launch_client_starts_proxy_on_success(tmp_path, monkeypatch):
+    """After a successful client launch, the proxy thread is started and _servers_started set."""
     cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
 
@@ -1165,20 +1345,22 @@ def test_on_launch_client_unlocks_start_btn(tmp_path, monkeypatch):
     win.work_dir_var = MagicMock()
     win.work_dir_var.get.return_value = "."
     win.status_var = MagicMock()
-    win._start_btn = MagicMock()
 
-    with patch("prompt_interceptor.launcher.subprocess.Popen"):
+    with patch("prompt_interceptor.launcher.subprocess.Popen"), \
+         patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+        mock_thread.return_value = MagicMock()
         win._on_launch_client()
 
-    win._start_btn.config.assert_called_with(state="normal")
+    mock_thread.assert_called()
+    assert win._servers_started is True
 
 
 # ---------------------------------------------------------------------------
-# Step 3: _on_start — only starts proxy + dashboard, no Popen
+# Step 3: _on_open_dashboard — starts dashboard (standalone or via proxy), no Popen
 # ---------------------------------------------------------------------------
 
-def test_on_start_saves_config_and_starts_proxy(tmp_path, monkeypatch):
-    """_on_start saves config, starts proxy thread, and opens dashboard. No Popen."""
+def test_on_open_dashboard_saves_config_and_starts_dashboard(tmp_path, monkeypatch):
+    """_on_open_dashboard saves config and starts the dashboard thread. No Popen."""
     cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, dashboard_port=9090)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
 
@@ -1205,24 +1387,24 @@ def test_on_start_saves_config_and_starts_proxy(tmp_path, monkeypatch):
     with patch("prompt_interceptor.launcher.subprocess.Popen") as mock_popen, \
          patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
         mock_thread.return_value = MagicMock()
-        win._on_start()
+        win._on_open_dashboard()
 
     # Config saved with correct context_size
     assert len(saved) == 1
     assert saved[0].context_size == 4096
 
-    # Proxy thread started
+    # Dashboard thread started (standalone, no proxy)
     mock_thread.assert_called_once()
 
-    # No Popen — Ollama and client are NOT launched by _on_start
+    # No Popen — Ollama and client are NOT launched by _on_open_dashboard
     mock_popen.assert_not_called()
 
-    # Dashboard scheduled via root.after
+    # Browser open scheduled via root.after
     mock_root.after.assert_called()
 
 
-def test_on_start_saves_model_to_config(tmp_path, monkeypatch):
-    """_on_start persists the selected model as default_model."""
+def test_on_open_dashboard_saves_model_to_config(tmp_path, monkeypatch):
+    """_on_open_dashboard persists the selected model as default_model."""
     cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, dashboard_port=9090)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
 
@@ -1248,13 +1430,13 @@ def test_on_start_saves_model_to_config(tmp_path, monkeypatch):
 
     with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
         mock_thread.return_value = MagicMock()
-        win._on_start()
+        win._on_open_dashboard()
 
     assert saved[0].default_model == "deepseek-coder"
 
 
-def test_on_start_schedules_reset_before_dashboard(tmp_path, monkeypatch):
-    """_on_start schedules a session reset (at 1500ms) before opening the dashboard (at 2000ms)."""
+def test_on_open_dashboard_standalone_schedules_browser_and_iconify(tmp_path, monkeypatch):
+    """When no servers are started, _on_open_dashboard schedules browser at 2000ms, iconify at 2500ms."""
     cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, dashboard_port=9090)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
     monkeypatch.setattr("prompt_interceptor.launcher.save_config", lambda c: None)
@@ -1281,26 +1463,24 @@ def test_on_start_schedules_reset_before_dashboard(tmp_path, monkeypatch):
 
     with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
         mock_thread.return_value = MagicMock()
-        win._on_start()
+        win._on_open_dashboard()
 
     delays = [delay for delay, _ in after_calls]
-    # reset (1500ms), open browser (2000ms), iconify (2500ms)
-    assert 1500 in delays
+    # open browser (2000ms), iconify (2500ms) — no 1500ms reset here
     assert 2000 in delays
     assert 2500 in delays
-    # reset must come before browser open
-    assert delays.index(1500) < delays.index(2000)
+    assert 1500 not in delays
 
 
-def test_on_start_reset_calls_api_endpoint(tmp_path, monkeypatch):
-    """The reset function scheduled by _on_start calls POST /api/reset on the dashboard."""
-    import urllib.request as _urllib_request
-
+def test_on_open_dashboard_with_servers_started_opens_browser_immediately(tmp_path, monkeypatch):
+    """When servers are already running, _on_open_dashboard opens the browser without starting a thread."""
+    import prompt_interceptor.launcher as _launcher_mod
     cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, dashboard_port=9090)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
     monkeypatch.setattr("prompt_interceptor.launcher.save_config", lambda c: None)
 
     win, mock_root = _make_headless_win(cfg)
+    win._servers_started = True  # simulate already-running proxy
     win.ctx_var = MagicMock()
     win.ctx_var.get.return_value = "4k  (4096)"
     win.model_var = MagicMock()
@@ -1317,17 +1497,29 @@ def test_on_start_reset_calls_api_endpoint(tmp_path, monkeypatch):
     win.proxy_port_var.get.return_value = "8080"
     win.status_var = MagicMock()
 
-    after_calls = []
-    mock_root.after.side_effect = lambda delay, fn, *args: after_calls.append((delay, fn))
+    opened = []
+    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread, \
+         patch("prompt_interceptor.launcher.webbrowser.open", side_effect=opened.append):
+        win._on_open_dashboard()
 
-    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
-        mock_thread.return_value = MagicMock()
-        win._on_start()
+    mock_thread.assert_not_called()
+    assert len(opened) == 1
+    assert "9090" in opened[0]
 
-    # Find the reset function (delay=1500)
-    reset_fn = next(fn for delay, fn in after_calls if delay == 1500)
 
-    # Call it and verify it hits the reset endpoint (or silently handles errors)
+# ---------------------------------------------------------------------------
+# _reset_session — extracted instance method
+# ---------------------------------------------------------------------------
+
+def test_reset_session_calls_api_endpoint(tmp_path, monkeypatch):
+    """_reset_session calls POST /api/reset on the dashboard."""
+    import urllib.request as _urllib_request
+
+    cfg = Config(log_dir=str(tmp_path / "logs"), dashboard_port=9090)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _make_headless_win(cfg)
+
     opened_urls = []
 
     def _fake_urlopen(req, timeout=None):
@@ -1336,46 +1528,21 @@ def test_on_start_reset_calls_api_endpoint(tmp_path, monkeypatch):
 
     with patch("prompt_interceptor.launcher.urllib.request.urlopen", side_effect=_fake_urlopen), \
          patch("prompt_interceptor.launcher.urllib.request.Request", wraps=_urllib_request.Request):
-        reset_fn()
+        win._reset_session()
 
     assert any("9090" in url and "reset" in url for url in opened_urls)
 
 
-def test_on_start_reset_silences_connection_error(tmp_path, monkeypatch):
-    """The reset function does not raise if the dashboard is not yet up."""
-    cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, dashboard_port=9090)
+def test_reset_session_silences_connection_error(tmp_path, monkeypatch):
+    """_reset_session does not raise if the dashboard is not yet up."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), dashboard_port=9090)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
-    monkeypatch.setattr("prompt_interceptor.launcher.save_config", lambda c: None)
 
-    win, mock_root = _make_headless_win(cfg)
-    win.ctx_var = MagicMock()
-    win.ctx_var.get.return_value = "4k  (4096)"
-    win.model_var = MagicMock()
-    win.model_var.get.return_value = ""
-    win.work_dir_var = MagicMock()
-    win.work_dir_var.get.return_value = ""
-    win.app_command_var = MagicMock()
-    win.app_command_var.get.return_value = ""
-    win.use_venv_var = MagicMock()
-    win.use_venv_var.get.return_value = False
-    win.env_var_var = MagicMock()
-    win.env_var_var.get.return_value = ""
-    win.proxy_port_var = MagicMock()
-    win.proxy_port_var.get.return_value = "8080"
-    win.status_var = MagicMock()
-
-    after_calls = []
-    mock_root.after.side_effect = lambda delay, fn, *args: after_calls.append((delay, fn))
-
-    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
-        mock_thread.return_value = MagicMock()
-        win._on_start()
-
-    reset_fn = next(fn for delay, fn in after_calls if delay == 1500)
+    win, _ = _make_headless_win(cfg)
 
     with patch("prompt_interceptor.launcher.urllib.request.urlopen",
                side_effect=Exception("connection refused")):
-        reset_fn()  # must not raise
+        win._reset_session()  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -1532,16 +1699,18 @@ def test_on_launch_client_os_error_shows_error(tmp_path, monkeypatch):
     assert "permission denied" in win.status_var.set.call_args[0][0]
 
 
-def test_on_launch_client_error_does_not_unlock_start_btn(tmp_path, monkeypatch):
-    """When Popen fails, the Start button is NOT unlocked."""
+def test_on_launch_client_error_does_not_start_proxy(tmp_path, monkeypatch):
+    """When Popen fails, the proxy thread is NOT started and _servers_started stays False."""
     cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
     win = _make_claude_win(cfg, monkeypatch)
 
     with patch("prompt_interceptor.launcher.subprocess.Popen",
-               side_effect=FileNotFoundError("not found")):
+               side_effect=FileNotFoundError("not found")), \
+         patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
         win._on_launch_client()
 
-    win._start_btn.config.assert_not_called()
+    mock_thread.assert_not_called()
+    assert win._servers_started is False
 
 
 # ---------------------------------------------------------------------------
@@ -1594,11 +1763,11 @@ def test_start_proxy_thread_generic_error(tmp_path, monkeypatch, capsys):
 
 
 # ---------------------------------------------------------------------------
-# Step 3: _on_start — proxy port field
+# Step 3: _on_open_dashboard — proxy port field
 # ---------------------------------------------------------------------------
 
-def test_on_start_saves_proxy_port_to_config(tmp_path, monkeypatch):
-    """_on_start reads proxy_port_var and persists it to config."""
+def test_on_open_dashboard_saves_proxy_port_to_config(tmp_path, monkeypatch):
+    """_on_open_dashboard reads proxy_port_var and persists it to config."""
     cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, dashboard_port=9090,
                  proxy_port=8080)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
@@ -1625,13 +1794,13 @@ def test_on_start_saves_proxy_port_to_config(tmp_path, monkeypatch):
 
     with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
         mock_thread.return_value = MagicMock()
-        win._on_start()
+        win._on_open_dashboard()
 
     assert saved[0].proxy_port == 9999
 
 
-def test_on_start_invalid_proxy_port_shows_error(tmp_path, monkeypatch):
-    """_on_start shows an error and does not start the proxy if the port is not numeric."""
+def test_on_open_dashboard_invalid_proxy_port_shows_error(tmp_path, monkeypatch):
+    """_on_open_dashboard shows an error and does not start if the port is not numeric."""
     cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, dashboard_port=9090)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
     monkeypatch.setattr("prompt_interceptor.launcher.save_config", lambda c: None)
@@ -1655,7 +1824,7 @@ def test_on_start_invalid_proxy_port_shows_error(tmp_path, monkeypatch):
 
     with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
         mock_thread.return_value = MagicMock()
-        win._on_start()
+        win._on_open_dashboard()
 
     # Thread must NOT be started when port is invalid
     mock_thread.assert_not_called()
@@ -1665,11 +1834,11 @@ def test_on_start_invalid_proxy_port_shows_error(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Error handling: _on_start — save_config failure
+# Error handling: _on_open_dashboard — save_config failure
 # ---------------------------------------------------------------------------
 
-def test_on_start_save_config_error_shows_warning(tmp_path, monkeypatch):
-    """When save_config raises OSError, _on_start sets a warning status message."""
+def test_on_open_dashboard_save_config_error_shows_warning(tmp_path, monkeypatch):
+    """When save_config raises OSError, _on_open_dashboard sets a warning status message."""
     cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, dashboard_port=9090)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
     monkeypatch.setattr("prompt_interceptor.launcher.save_config",
@@ -1694,7 +1863,7 @@ def test_on_start_save_config_error_shows_warning(tmp_path, monkeypatch):
 
     with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
         mock_thread.return_value = MagicMock()
-        win._on_start()  # must not raise
+        win._on_open_dashboard()  # must not raise
 
     # At least one status_var.set call must mention the save error
     all_msgs = [c[0][0] for c in win.status_var.set.call_args_list]
@@ -1802,8 +1971,8 @@ def test_check_or_launch_remote_host_unreachable_schedules_dialog(tmp_path, monk
     assert any(fn == win._ask_on_remote_fail for fn, _ in after_calls)
 
 
-def test_on_start_saves_active_target_to_config(tmp_path, monkeypatch):
-    """When _active_target differs from default, _on_start persists it in config."""
+def test_on_open_dashboard_saves_active_target_to_config(tmp_path, monkeypatch):
+    """When _active_target differs from default, _on_open_dashboard persists it in config."""
     cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, dashboard_port=9090)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
 
@@ -1830,7 +1999,7 @@ def test_on_start_saves_active_target_to_config(tmp_path, monkeypatch):
 
     with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
         mock_thread.return_value = MagicMock()
-        win._on_start()
+        win._on_open_dashboard()
 
     assert saved[0].target == "http://192.168.1.100:11434"
 
@@ -1973,48 +2142,6 @@ def test_launch_python_app_oserror_shows_error(tmp_path, monkeypatch):
     win.status_var.set.assert_called()
     msg = win.status_var.set.call_args[0][0]
     assert "permission denied" in msg
-
-
-# ---------------------------------------------------------------------------
-# _on_start — Python App auto-launch branch (line 759)
-# ---------------------------------------------------------------------------
-
-def test_on_start_schedules_python_app_launch_when_client_is_python_app(tmp_path, monkeypatch):
-    """_on_start schedules _launch_python_app via root.after when client is Python App."""
-    cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, dashboard_port=9090)
-    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
-    monkeypatch.setattr("prompt_interceptor.launcher.save_config", lambda c: None)
-
-    win, mock_root = _make_headless_win(cfg)
-    win.ctx_var = MagicMock()
-    win.ctx_var.get.return_value = "4k  (4096)"
-    win.model_var = MagicMock()
-    win.model_var.get.return_value = ""
-    win.work_dir_var = MagicMock()
-    win.work_dir_var.get.return_value = ""
-    win.app_command_var = MagicMock()
-    win.app_command_var.get.return_value = ""
-    win.use_venv_var = MagicMock()
-    win.use_venv_var.get.return_value = False
-    win.env_var_var = MagicMock()
-    win.env_var_var.get.return_value = ""
-    win.proxy_port_var = MagicMock()
-    win.proxy_port_var.get.return_value = "8080"
-    win.status_var = MagicMock()
-    # Simulate Python App being selected as the client
-    win.client_var = MagicMock()
-    win.client_var.get.return_value = "Python App (Ollama)"
-
-    after_calls = []
-    mock_root.after.side_effect = lambda delay, fn, *args: after_calls.append((delay, fn))
-
-    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
-        mock_thread.return_value = MagicMock()
-        win._on_start()
-
-    # The Python app launch must be scheduled via root.after(2500, ...)
-    scheduled_fns = [fn for delay, fn in after_calls if delay == 2500]
-    assert any(fn == win._launch_python_app for fn in scheduled_fns)
 
 
 # ---------------------------------------------------------------------------
