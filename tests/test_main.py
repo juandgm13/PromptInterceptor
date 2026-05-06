@@ -105,15 +105,22 @@ async def test_generate_endpoint(client):
 # Streaming endpoints
 # ---------------------------------------------------------------------------
 
-async def _mock_stream(*args, **kwargs):
-    yield b'{"done":false}\n'
-    yield b'{"done":true}\n'
+def _make_stream_mock(chunks):
+    async def fake_aiter_bytes():
+        for c in chunks:
+            yield c
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.aiter_bytes = fake_aiter_bytes
+    fake_resp.aclose = AsyncMock()
+    fake_client = MagicMock()
+    fake_client.aclose = AsyncMock()
+    return AsyncMock(return_value=(fake_client, fake_resp))
 
 
 async def test_stream_chat_endpoint(client):
-    # httpx AsyncClient collects the full streaming body before returning,
-    # so the patch must be active during both request and body consumption.
-    with patch("prompt_interceptor.proxy._stream_from_ollama", new=_mock_stream):
+    mock = _make_stream_mock([b'{"done":false}\n', b'{"done":true}\n'])
+    with patch("prompt_interceptor.proxy._start_streaming_request", new=mock):
         async with client.stream(
             "POST",
             "/api/chat/stream",
@@ -125,7 +132,8 @@ async def test_stream_chat_endpoint(client):
 
 
 async def test_stream_generate_endpoint(client):
-    with patch("prompt_interceptor.proxy._stream_from_ollama", new=_mock_stream):
+    mock = _make_stream_mock([b'{"done":false}\n', b'{"done":true}\n'])
+    with patch("prompt_interceptor.proxy._start_streaming_request", new=mock):
         async with client.stream(
             "POST",
             "/api/generate/stream",

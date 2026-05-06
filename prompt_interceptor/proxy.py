@@ -164,6 +164,9 @@ def _parse_stream_response(chunks: list) -> Optional[Dict[str, Any]]:
                 # /api/generate streaming: each chunk carries response
                 elif "response" in obj:
                     full_content += obj.get("response", "")
+                elif "error" in obj:
+                    # Ollama error chunk (e.g. context too long, model not found)
+                    final_obj = obj
                 if obj.get("done"):
                     final_obj = obj
             except (json.JSONDecodeError, AttributeError):
@@ -243,6 +246,55 @@ async def _stream_from_ollama(
                     yield chunk
 
 
+async def _start_streaming_request(
+    method: str,
+    url: str,
+    headers: Dict[str, str],
+    body: bytes,
+    timeout: int,
+) -> tuple:
+    """
+    Initiate a streaming HTTP request and return (http_client, response).
+
+    The response headers (including status_code) are available immediately.
+    The caller is responsible for closing http_client and reading the body.
+    Raises httpx exceptions on connection failure.
+    """
+    http_client = httpx.AsyncClient(timeout=httpx.Timeout(timeout), follow_redirects=True)
+    try:
+        req = http_client.build_request(method, url, headers=headers, content=body)
+        resp = await http_client.send(req, stream=True)
+        return http_client, resp
+    except Exception:
+        await http_client.aclose()
+        raise
+
+
+async def _handle_error_stream(
+    resp: httpx.Response,
+    http_client: httpx.AsyncClient,
+    status_code: int,
+    logger: Optional[TrafficLogger],
+    request_id: Optional[str],
+) -> JSONResponse:
+    """Read the full error body from a non-2xx stream, log it, and return a JSONResponse."""
+    try:
+        body = await resp.aread()
+    except Exception:
+        body = b""
+    finally:
+        await resp.aclose()
+        await http_client.aclose()
+    try:
+        error_json = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        raw = body.decode("utf-8", errors="replace").strip()
+        error_json = {"error": raw or f"HTTP {status_code}"}
+    if logger and request_id:
+        logger.log_response(request_id, status_code, {}, error_json)
+    return JSONResponse(status_code=status_code, content=error_json)
+
+
 async def handle_passthrough(request: Request, logger: Optional[TrafficLogger] = None) -> Response:
     """Log and forward any unhandled request to Ollama as-is."""
     config = get_config()
@@ -274,35 +326,47 @@ async def handle_passthrough(request: Request, logger: Optional[TrafficLogger] =
 
     if is_stream:
         media = "text/event-stream" if path.startswith("/v1/") else "application/x-ndjson"
+        try:
+            http_client, resp = await _start_streaming_request(
+                method, url, forward_headers, body, config.timeout
+            )
+        except httpx.ConnectError:
+            if logger and request_id:
+                logger.log_response(request_id, 502, {}, {"error": "Cannot connect to Ollama"})
+            return _error_response(502, "Cannot connect to Ollama")
+        except Exception as exc:
+            if logger and request_id:
+                logger.log_response(request_id, 500, {}, {"error": str(exc)})
+            return _error_response(500, str(exc))
+
+        if resp.status_code >= 400:
+            return await _handle_error_stream(resp, http_client, resp.status_code, logger, request_id)
+
+        def _parse_passthrough(accumulated: list) -> Optional[Dict[str, Any]]:
+            if path.startswith("/v1/"):
+                return _parse_openai_sse_response(accumulated) if path == "/v1/chat/completions" else _parse_sse_response(accumulated)
+            return _parse_stream_response(accumulated)
 
         async def _stream_gen():
             accumulated = []
-            actual_status = 200
             try:
-                async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(config.timeout), follow_redirects=True
-                ) as client:
-                    async with client.stream(method, url, headers=forward_headers, content=body) as resp:
-                        actual_status = resp.status_code
-                        async for chunk in resp.aiter_bytes():
-                            if chunk:
-                                accumulated.append(chunk)
-                                yield chunk
-            except httpx.ConnectError:
-                yield json.dumps({"error": "Cannot connect to Ollama"}).encode()
+                async for chunk in resp.aiter_bytes():
+                    if chunk:
+                        accumulated.append(chunk)
+                        yield chunk
             except Exception as exc:
                 yield json.dumps({"error": str(exc)}).encode()
-            if logger and request_id:
-                if path.startswith("/v1/"):
-                    parsed = _parse_openai_sse_response(accumulated) if path == "/v1/chat/completions" else _parse_sse_response(accumulated)
-                else:
-                    parsed = _parse_stream_response(accumulated)
-                if parsed is None and accumulated:
-                    try:
-                        parsed = json.loads(b"".join(accumulated))
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-                logger.log_response(request_id, actual_status, {}, parsed)
+            finally:
+                await resp.aclose()
+                await http_client.aclose()
+                if logger and request_id:
+                    parsed = _parse_passthrough(accumulated)
+                    if parsed is None and accumulated:
+                        try:
+                            parsed = json.loads(b"".join(accumulated))
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                    logger.log_response(request_id, 200, {}, parsed)
 
         return StreamingResponse(_stream_gen(), media_type=media)
 
@@ -365,35 +429,43 @@ async def handle_v1_messages(
     forward_headers = _forward_headers(dict(request.headers))
 
     if is_stream:
+        _v1msg_url = config.target + request.url.path
+        try:
+            http_client, resp = await _start_streaming_request(
+                "POST", _v1msg_url, forward_headers, body_bytes, config.timeout
+            )
+        except httpx.TimeoutException:
+            logger.log_response(request_id, 408, {}, {"error": "Request timeout"})
+            return _error_response(408, "Request timeout")
+        except httpx.ConnectError:
+            logger.log_response(request_id, 502, {}, {"error": "Cannot connect to Ollama"})
+            return _error_response(502, "Cannot connect to Ollama")
+        except Exception as exc:
+            logger.log_response(request_id, 500, {}, {"error": str(exc)})
+            return _error_response(500, str(exc))
+
+        if resp.status_code >= 400:
+            return await _handle_error_stream(resp, http_client, resp.status_code, logger, request_id)
+
         async def generate() -> AsyncIterator[bytes]:
             accumulated = []
-            actual_status = 200
             try:
-                async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(config.timeout), follow_redirects=True
-                ) as client:
-                    async with client.stream(
-                        "POST", config.target + request.url.path,
-                        headers=forward_headers, content=body_bytes,
-                    ) as resp:
-                        actual_status = resp.status_code
-                        async for chunk in resp.aiter_bytes():
-                            if chunk:
-                                accumulated.append(chunk)
-                                yield chunk
-            except httpx.TimeoutException:
-                yield json.dumps({"error": "Request timeout"}).encode()
-            except httpx.ConnectError:
-                yield json.dumps({"error": "Cannot connect to Ollama"}).encode()
+                async for chunk in resp.aiter_bytes():
+                    if chunk:
+                        accumulated.append(chunk)
+                        yield chunk
             except Exception as exc:
                 yield json.dumps({"error": str(exc)}).encode()
-            parsed = _parse_sse_response(accumulated)
-            if parsed is None and accumulated:
-                try:
-                    parsed = json.loads(b"".join(accumulated))
-                except (json.JSONDecodeError, ValueError):
-                    pass
-            logger.log_response(request_id, actual_status, {}, parsed)
+            finally:
+                await resp.aclose()
+                await http_client.aclose()
+                parsed = _parse_sse_response(accumulated)
+                if parsed is None and accumulated:
+                    try:
+                        parsed = json.loads(b"".join(accumulated))
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                logger.log_response(request_id, 200, {}, parsed)
 
         return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -450,35 +522,43 @@ async def handle_v1_chat_completions(
     forward_headers = _forward_headers(dict(request.headers))
 
     if is_stream:
+        _v1cc_url = config.target + request.url.path
+        try:
+            http_client, resp = await _start_streaming_request(
+                "POST", _v1cc_url, forward_headers, body_bytes, config.timeout
+            )
+        except httpx.TimeoutException:
+            logger.log_response(request_id, 408, {}, {"error": "Request timeout"})
+            return _error_response(408, "Request timeout")
+        except httpx.ConnectError:
+            logger.log_response(request_id, 502, {}, {"error": "Cannot connect to Ollama"})
+            return _error_response(502, "Cannot connect to Ollama")
+        except Exception as exc:
+            logger.log_response(request_id, 500, {}, {"error": str(exc)})
+            return _error_response(500, str(exc))
+
+        if resp.status_code >= 400:
+            return await _handle_error_stream(resp, http_client, resp.status_code, logger, request_id)
+
         async def generate() -> AsyncIterator[bytes]:
             accumulated = []
-            actual_status = 200
             try:
-                async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(config.timeout), follow_redirects=True
-                ) as client:
-                    async with client.stream(
-                        "POST", config.target + request.url.path,
-                        headers=forward_headers, content=body_bytes,
-                    ) as resp:
-                        actual_status = resp.status_code
-                        async for chunk in resp.aiter_bytes():
-                            if chunk:
-                                accumulated.append(chunk)
-                                yield chunk
-            except httpx.TimeoutException:
-                yield json.dumps({"error": "Request timeout"}).encode()
-            except httpx.ConnectError:
-                yield json.dumps({"error": "Cannot connect to Ollama"}).encode()
+                async for chunk in resp.aiter_bytes():
+                    if chunk:
+                        accumulated.append(chunk)
+                        yield chunk
             except Exception as exc:
                 yield json.dumps({"error": str(exc)}).encode()
-            parsed = _parse_openai_sse_response(accumulated)
-            if parsed is None and accumulated:
-                try:
-                    parsed = json.loads(b"".join(accumulated))
-                except (json.JSONDecodeError, ValueError):
-                    pass
-            logger.log_response(request_id, actual_status, {}, parsed)
+            finally:
+                await resp.aclose()
+                await http_client.aclose()
+                parsed = _parse_openai_sse_response(accumulated)
+                if parsed is None and accumulated:
+                    try:
+                        parsed = json.loads(b"".join(accumulated))
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                logger.log_response(request_id, 200, {}, parsed)
 
         return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -676,31 +756,45 @@ async def handle_stream_chat(
             return Response(status_code=204)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
-    forward_headers = dict(request.headers)
+    forward_headers = _forward_headers(dict(request.headers))
+
+    try:
+        http_client, resp = await _start_streaming_request(
+            "POST", config.target + request.url.path,
+            forward_headers, body_bytes, config.timeout,
+        )
+    except httpx.TimeoutException:
+        logger.log_response(request_id, 408, {}, {"error": "Request timeout"})
+        return _error_response(408, "Request timeout")
+    except httpx.ConnectError:
+        logger.log_response(request_id, 502, {}, {"error": "Cannot connect to Ollama"})
+        return _error_response(502, "Cannot connect to Ollama")
+    except Exception as exc:
+        logger.log_response(request_id, 500, {}, {"error": str(exc)})
+        return _error_response(500, str(exc))
+
+    if resp.status_code >= 400:
+        return await _handle_error_stream(resp, http_client, resp.status_code, logger, request_id)
 
     async def generate() -> AsyncIterator[bytes]:
         accumulated = []
         try:
-            async for chunk in _stream_from_ollama(
-                config.target, "POST", request.url.path,
-                forward_headers, body_bytes, config.timeout,
-            ):
-                accumulated.append(chunk)
-                yield chunk
-        except httpx.TimeoutException:
-            yield json.dumps({"error": "Request timeout"}).encode()
-        except httpx.ConnectError:
-            yield json.dumps({"error": "Cannot connect to Ollama"}).encode()
-        except Exception as e:
-            yield json.dumps({"error": str(e)}).encode()
-
-        parsed = _parse_stream_response(accumulated)
-        if parsed is None and accumulated:
-            try:
-                parsed = json.loads(b"".join(accumulated))
-            except (json.JSONDecodeError, ValueError):
-                pass
-        logger.log_response(request_id, 200, {}, parsed)
+            async for chunk in resp.aiter_bytes():
+                if chunk:
+                    accumulated.append(chunk)
+                    yield chunk
+        except Exception as exc:
+            yield json.dumps({"error": str(exc)}).encode()
+        finally:
+            await resp.aclose()
+            await http_client.aclose()
+            parsed = _parse_stream_response(accumulated)
+            if parsed is None and accumulated:
+                try:
+                    parsed = json.loads(b"".join(accumulated))
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            logger.log_response(request_id, 200, {}, parsed)
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
 
@@ -733,30 +827,44 @@ async def handle_stream_generate(
             return Response(status_code=204)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
-    forward_headers = dict(request.headers)
+    forward_headers = _forward_headers(dict(request.headers))
+
+    try:
+        http_client, resp = await _start_streaming_request(
+            "POST", config.target + request.url.path,
+            forward_headers, body_bytes, config.timeout,
+        )
+    except httpx.TimeoutException:
+        logger.log_response(request_id, 408, {}, {"error": "Request timeout"})
+        return _error_response(408, "Request timeout")
+    except httpx.ConnectError:
+        logger.log_response(request_id, 502, {}, {"error": "Cannot connect to Ollama"})
+        return _error_response(502, "Cannot connect to Ollama")
+    except Exception as exc:
+        logger.log_response(request_id, 500, {}, {"error": str(exc)})
+        return _error_response(500, str(exc))
+
+    if resp.status_code >= 400:
+        return await _handle_error_stream(resp, http_client, resp.status_code, logger, request_id)
 
     async def generate() -> AsyncIterator[bytes]:
         accumulated = []
         try:
-            async for chunk in _stream_from_ollama(
-                config.target, "POST", request.url.path,
-                forward_headers, body_bytes, config.timeout,
-            ):
-                accumulated.append(chunk)
-                yield chunk
-        except httpx.TimeoutException:
-            yield json.dumps({"error": "Request timeout"}).encode()
-        except httpx.ConnectError:
-            yield json.dumps({"error": "Cannot connect to Ollama"}).encode()
-        except Exception as e:
-            yield json.dumps({"error": str(e)}).encode()
-
-        parsed = _parse_stream_response(accumulated)
-        if parsed is None and accumulated:
-            try:
-                parsed = json.loads(b"".join(accumulated))
-            except (json.JSONDecodeError, ValueError):
-                pass
-        logger.log_response(request_id, 200, {}, parsed)
+            async for chunk in resp.aiter_bytes():
+                if chunk:
+                    accumulated.append(chunk)
+                    yield chunk
+        except Exception as exc:
+            yield json.dumps({"error": str(exc)}).encode()
+        finally:
+            await resp.aclose()
+            await http_client.aclose()
+            parsed = _parse_stream_response(accumulated)
+            if parsed is None and accumulated:
+                try:
+                    parsed = json.loads(b"".join(accumulated))
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            logger.log_response(request_id, 200, {}, parsed)
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
