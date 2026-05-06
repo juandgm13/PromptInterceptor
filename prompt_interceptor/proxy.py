@@ -14,6 +14,13 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from .config import get_config
 from .interceptor import interceptor
 from .logger import TrafficLogger
+from .response_normalizer import (
+    normalize_ollama_chat,
+    normalize_openai_chat,
+    normalize_anthropic_messages,
+    emit_anthropic_sse,
+    emit_openai_sse,
+)
 from .rules_engine import RuleEngine
 
 # Headers that must not be forwarded verbatim (managed by the HTTP layer)
@@ -449,22 +456,38 @@ async def handle_v1_messages(
 
         async def generate() -> AsyncIterator[bytes]:
             accumulated = []
+            error_str = None
             try:
                 async for chunk in resp.aiter_bytes():
                     if chunk:
                         accumulated.append(chunk)
-                        yield chunk
             except Exception as exc:
-                yield json.dumps({"error": str(exc)}).encode()
+                error_str = str(exc)
             finally:
                 await resp.aclose()
                 await http_client.aclose()
-                parsed = _parse_sse_response(accumulated)
-                if parsed is None and accumulated:
-                    try:
-                        parsed = json.loads(b"".join(accumulated))
-                    except (json.JSONDecodeError, ValueError):
-                        pass
+
+            if error_str:
+                yield json.dumps({"error": error_str}).encode()
+                logger.log_response(request_id, 500, {}, {"error": error_str})
+                return
+
+            parsed = _parse_sse_response(accumulated)
+            if parsed is None and accumulated:
+                try:
+                    parsed = json.loads(b"".join(accumulated))
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
+            corrected, was_corrected, fix_desc = (
+                normalize_anthropic_messages(parsed) if isinstance(parsed, dict) else (parsed, False, '')
+            )
+            if was_corrected:
+                yield emit_anthropic_sse(corrected)
+                logger.log_response(request_id, 200, {}, corrected, correction_applied=fix_desc)
+            else:
+                for chunk in accumulated:
+                    yield chunk
                 logger.log_response(request_id, 200, {}, parsed)
 
         return StreamingResponse(generate(), media_type="text/event-stream")
@@ -478,7 +501,15 @@ async def handle_v1_messages(
             response_json = json.loads(response_body)
         except json.JSONDecodeError:
             response_json = None
-        logger.log_response(request_id, status_code, response_headers, response_json)
+        if isinstance(response_json, dict):
+            response_json, was_corrected, fix_desc = normalize_anthropic_messages(response_json)
+            if was_corrected:
+                response_body = json.dumps(response_json).encode("utf-8")
+                logger.log_response(request_id, status_code, response_headers, response_json, correction_applied=fix_desc)
+            else:
+                logger.log_response(request_id, status_code, response_headers, response_json)
+        else:
+            logger.log_response(request_id, status_code, response_headers, response_json)
         return Response(
             content=response_body,
             status_code=status_code,
@@ -542,22 +573,38 @@ async def handle_v1_chat_completions(
 
         async def generate() -> AsyncIterator[bytes]:
             accumulated = []
+            error_str = None
             try:
                 async for chunk in resp.aiter_bytes():
                     if chunk:
                         accumulated.append(chunk)
-                        yield chunk
             except Exception as exc:
-                yield json.dumps({"error": str(exc)}).encode()
+                error_str = str(exc)
             finally:
                 await resp.aclose()
                 await http_client.aclose()
-                parsed = _parse_openai_sse_response(accumulated)
-                if parsed is None and accumulated:
-                    try:
-                        parsed = json.loads(b"".join(accumulated))
-                    except (json.JSONDecodeError, ValueError):
-                        pass
+
+            if error_str:
+                yield json.dumps({"error": error_str}).encode()
+                logger.log_response(request_id, 500, {}, {"error": error_str})
+                return
+
+            parsed = _parse_openai_sse_response(accumulated)
+            if parsed is None and accumulated:
+                try:
+                    parsed = json.loads(b"".join(accumulated))
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
+            corrected, was_corrected, fix_desc = (
+                normalize_openai_chat(parsed) if isinstance(parsed, dict) else (parsed, False, '')
+            )
+            if was_corrected:
+                yield emit_openai_sse(corrected)
+                logger.log_response(request_id, 200, {}, corrected, correction_applied=fix_desc)
+            else:
+                for chunk in accumulated:
+                    yield chunk
                 logger.log_response(request_id, 200, {}, parsed)
 
         return StreamingResponse(generate(), media_type="text/event-stream")
@@ -571,7 +618,15 @@ async def handle_v1_chat_completions(
             response_json = json.loads(response_body)
         except json.JSONDecodeError:
             response_json = None
-        logger.log_response(request_id, status_code, response_headers, response_json)
+        if isinstance(response_json, dict):
+            response_json, was_corrected, fix_desc = normalize_openai_chat(response_json)
+            if was_corrected:
+                response_body = json.dumps(response_json).encode("utf-8")
+                logger.log_response(request_id, status_code, response_headers, response_json, correction_applied=fix_desc)
+            else:
+                logger.log_response(request_id, status_code, response_headers, response_json)
+        else:
+            logger.log_response(request_id, status_code, response_headers, response_json)
         return Response(
             content=response_body,
             status_code=status_code,
@@ -654,7 +709,15 @@ async def handle_chat_request(
         except json.JSONDecodeError:
             response_json = None
 
-        logger.log_response(request_id, response_code, response_headers, response_json)
+        if isinstance(response_json, dict):
+            response_json, was_corrected, fix_desc = normalize_ollama_chat(response_json)
+            if was_corrected:
+                response_body = json.dumps(response_json).encode("utf-8")
+                logger.log_response(request_id, response_code, response_headers, response_json, correction_applied=fix_desc)
+            else:
+                logger.log_response(request_id, response_code, response_headers, response_json)
+        else:
+            logger.log_response(request_id, response_code, response_headers, response_json)
 
         return Response(
             content=response_body,
@@ -711,7 +774,15 @@ async def handle_generate_request(
         except json.JSONDecodeError:
             response_json = None
 
-        logger.log_response(request_id, response_code, response_headers, response_json)
+        if isinstance(response_json, dict):
+            response_json, was_corrected, fix_desc = normalize_ollama_chat(response_json)
+            if was_corrected:
+                response_body = json.dumps(response_json).encode("utf-8")
+                logger.log_response(request_id, response_code, response_headers, response_json, correction_applied=fix_desc)
+            else:
+                logger.log_response(request_id, response_code, response_headers, response_json)
+        else:
+            logger.log_response(request_id, response_code, response_headers, response_json)
 
         return Response(
             content=response_body,
@@ -778,22 +849,38 @@ async def handle_stream_chat(
 
     async def generate() -> AsyncIterator[bytes]:
         accumulated = []
+        error_str = None
         try:
             async for chunk in resp.aiter_bytes():
                 if chunk:
                     accumulated.append(chunk)
-                    yield chunk
         except Exception as exc:
-            yield json.dumps({"error": str(exc)}).encode()
+            error_str = str(exc)
         finally:
             await resp.aclose()
             await http_client.aclose()
-            parsed = _parse_stream_response(accumulated)
-            if parsed is None and accumulated:
-                try:
-                    parsed = json.loads(b"".join(accumulated))
-                except (json.JSONDecodeError, ValueError):
-                    pass
+
+        if error_str:
+            yield json.dumps({"error": error_str}).encode()
+            logger.log_response(request_id, 500, {}, {"error": error_str})
+            return
+
+        parsed = _parse_stream_response(accumulated)
+        if parsed is None and accumulated:
+            try:
+                parsed = json.loads(b"".join(accumulated))
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        corrected, was_corrected, fix_desc = (
+            normalize_ollama_chat(parsed) if isinstance(parsed, dict) else (parsed, False, '')
+        )
+        if was_corrected:
+            yield json.dumps(corrected).encode() + b"\n"
+            logger.log_response(request_id, 200, {}, corrected, correction_applied=fix_desc)
+        else:
+            for chunk in accumulated:
+                yield chunk
             logger.log_response(request_id, 200, {}, parsed)
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
@@ -849,22 +936,38 @@ async def handle_stream_generate(
 
     async def generate() -> AsyncIterator[bytes]:
         accumulated = []
+        error_str = None
         try:
             async for chunk in resp.aiter_bytes():
                 if chunk:
                     accumulated.append(chunk)
-                    yield chunk
         except Exception as exc:
-            yield json.dumps({"error": str(exc)}).encode()
+            error_str = str(exc)
         finally:
             await resp.aclose()
             await http_client.aclose()
-            parsed = _parse_stream_response(accumulated)
-            if parsed is None and accumulated:
-                try:
-                    parsed = json.loads(b"".join(accumulated))
-                except (json.JSONDecodeError, ValueError):
-                    pass
+
+        if error_str:
+            yield json.dumps({"error": error_str}).encode()
+            logger.log_response(request_id, 500, {}, {"error": error_str})
+            return
+
+        parsed = _parse_stream_response(accumulated)
+        if parsed is None and accumulated:
+            try:
+                parsed = json.loads(b"".join(accumulated))
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        corrected, was_corrected, fix_desc = (
+            normalize_ollama_chat(parsed) if isinstance(parsed, dict) else (parsed, False, '')
+        )
+        if was_corrected:
+            yield json.dumps(corrected).encode() + b"\n"
+            logger.log_response(request_id, 200, {}, corrected, correction_applied=fix_desc)
+        else:
+            for chunk in accumulated:
+                yield chunk
             logger.log_response(request_id, 200, {}, parsed)
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")

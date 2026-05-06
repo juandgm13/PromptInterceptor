@@ -260,6 +260,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   <div class="modal-box">
     <button class="modal-close" onclick="closeModal()">&#x2715;</button>
     <h3 class="modal-title" id="modal-title">Message Detail</h3>
+    <div id="modal-correction-banner" style="display:none;background:#0a2a1a;border:1px solid #1a4a2a;border-radius:5px;padding:7px 12px;margin-bottom:12px;color:#5dba8a;font-size:.82em">
+      &#x2714; Auto-corrected by proxy: <span id="modal-correction-text" style="font-weight:600"></span>
+    </div>
     <div class="modal-split">
       <div class="modal-panel">
         <div class="modal-panel-title">Prompt</div>
@@ -453,6 +456,14 @@ function showRaw(id) {
 
   document.getElementById('modal-response').textContent = respText || '(sin respuesta)';
 
+  const corrBanner = document.getElementById('modal-correction-banner');
+  if (l._correction_applied) {
+    document.getElementById('modal-correction-text').textContent = l._correction_applied;
+    corrBanner.style.display = '';
+  } else {
+    corrBanner.style.display = 'none';
+  }
+
   document.getElementById('modal-overlay').style.display = 'block';
 }
 
@@ -574,6 +585,9 @@ function renderLogsTable(logs) {
     const typeTag = l.type === 'response'
       ? `<span class="badge green">resp</span>`
       : `<span class="badge blue">req</span>`;
+    const corrBadge = l._correction_applied
+      ? `<span class="badge" style="background:#0a2a1a;color:#5dba8a;border:1px solid #1a4a2a;font-size:.75em" title="Auto-corrected: ${esc(l._correction_applied)}">&#x2714; fixed</span>`
+      : '';
     return `<tr>
       <td>${ts}</td>
       <td>${esc(method)}</td>
@@ -581,7 +595,7 @@ function renderLogsTable(logs) {
       <td><code>${esc(model)}</code></td>
       <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(preview)}</td>
       <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${respPreview}</td>
-      <td>${typeTag} ${statusCode}</td>
+      <td>${typeTag} ${statusCode} ${corrBadge}</td>
       <td><button class="link-show" onclick="showRaw('${esc(String(cacheKey))}')">show</button></td>
     </tr>`;
   }).join('');
