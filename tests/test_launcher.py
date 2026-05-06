@@ -672,6 +672,15 @@ def test_get_window_height_returns_490_for_other_clients(tmp_path):
     assert win._get_window_height() == 490
 
 
+def test_get_window_height_attribute_error_returns_490(tmp_path):
+    """_get_window_height returns 490 when client_var.get() raises AttributeError."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, _ = _make_headless_win(cfg)
+    win.client_var = MagicMock()
+    win.client_var.get.side_effect = AttributeError("not initialized")
+    assert win._get_window_height() == 490
+
+
 def test_refresh_client_rows_resizes_window_for_python_app(tmp_path):
     """_refresh_client_rows calls root.geometry with height 550 for Python App."""
     cfg = Config(log_dir=str(tmp_path / "logs"))

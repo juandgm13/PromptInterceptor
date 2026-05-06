@@ -2131,3 +2131,704 @@ async def test_passthrough_streaming_non2xx_logged_with_error(cfg, monkeypatch, 
     assert len(logged) == 1
     assert logged[0][1] == 500
     assert logged[0][3] == {"error": "not json at all"}
+
+
+# ---------------------------------------------------------------------------
+# Helper: streaming mock that raises mid-stream
+# ---------------------------------------------------------------------------
+
+def _make_failing_streaming_mock(error: Exception, chunks_before_error: list = None):
+    """Mock where _start_streaming_request returns a resp whose aiter_bytes raises."""
+    chunks_before_error = chunks_before_error or []
+
+    async def fake_aiter_bytes():
+        for c in chunks_before_error:
+            yield c
+        raise error
+
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.aiter_bytes = fake_aiter_bytes
+    fake_resp.aclose = AsyncMock()
+
+    fake_client = MagicMock()
+    fake_client.aclose = AsyncMock()
+
+    return AsyncMock(return_value=(fake_client, fake_resp))
+
+
+# ---------------------------------------------------------------------------
+# _start_streaming_request — exception closes client (lines 270-277)
+# ---------------------------------------------------------------------------
+
+async def test_start_streaming_request_returns_client_and_response():
+    """Successful _start_streaming_request returns (http_client, resp) tuple."""
+    from prompt_interceptor.proxy import _start_streaming_request
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    mock_client = MagicMock()
+    mock_client.build_request = MagicMock(return_value=MagicMock())
+    mock_client.send = AsyncMock(return_value=mock_resp)
+    mock_client.aclose = AsyncMock()
+
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        client, resp = await _start_streaming_request("POST", "http://localhost", {}, b"{}", 5)
+
+    assert client is mock_client
+    assert resp is mock_resp
+
+
+async def test_start_streaming_request_exception_closes_client():
+    """When http_client.send raises, client is closed and exception re-raised."""
+    from prompt_interceptor.proxy import _start_streaming_request
+
+    mock_client = MagicMock()
+    mock_client.build_request = MagicMock(return_value=MagicMock())
+    mock_client.send = AsyncMock(side_effect=RuntimeError("send failed"))
+    mock_client.aclose = AsyncMock()
+
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        with pytest.raises(RuntimeError, match="send failed"):
+            await _start_streaming_request("POST", "http://localhost", {}, b"{}", 5)
+
+    mock_client.aclose.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _handle_error_stream — aread() raises (lines 290-291)
+# ---------------------------------------------------------------------------
+
+async def test_handle_error_stream_aread_raises():
+    """When resp.aread() raises, body defaults to b'' and a JSONResponse is returned."""
+    from prompt_interceptor.proxy import _handle_error_stream
+
+    resp = MagicMock()
+    resp.aread = AsyncMock(side_effect=IOError("read error"))
+    resp.aclose = AsyncMock()
+
+    http_client = MagicMock()
+    http_client.aclose = AsyncMock()
+
+    result = await _handle_error_stream(resp, http_client, 502, None, None)
+    assert result.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# handle_passthrough streaming — ConnectError WITH logger (line 342)
+# ---------------------------------------------------------------------------
+
+async def test_passthrough_streaming_connect_error_logs_with_logger(cfg, monkeypatch):
+    """ConnectError from _start_streaming_request is logged when logger is provided."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(
+        proxy_mod, "_start_streaming_request",
+        AsyncMock(side_effect=httpx.ConnectError("refused"))
+    )
+
+    logger = TrafficLogger(cfg)
+    logged = []
+    original = logger.log_response
+    logger.log_response = lambda *a, **kw: logged.append(a) or original(*a, **kw)
+
+    req = _make_passthrough_req({"model": "llama3", "stream": True}, "/v1/messages")
+    resp = await handle_passthrough(req, logger=logger)
+
+    assert resp.status_code == 502
+    assert len(logged) == 1
+    assert logged[0][1] == 502
+
+
+# ---------------------------------------------------------------------------
+# handle_passthrough streaming — generic error WITH logger (line 346)
+# ---------------------------------------------------------------------------
+
+async def test_passthrough_streaming_generic_error_logs_with_logger(cfg, monkeypatch):
+    """Generic error from _start_streaming_request is logged when logger is provided."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(
+        proxy_mod, "_start_streaming_request",
+        AsyncMock(side_effect=RuntimeError("oops"))
+    )
+
+    logger = TrafficLogger(cfg)
+    logged = []
+    original = logger.log_response
+    logger.log_response = lambda *a, **kw: logged.append(a) or original(*a, **kw)
+
+    req = _make_passthrough_req({"model": "llama3", "stream": True}, "/v1/messages")
+    resp = await handle_passthrough(req, logger=logger)
+
+    assert resp.status_code == 500
+    assert len(logged) == 1
+    assert logged[0][1] == 500
+
+
+# ---------------------------------------------------------------------------
+# handle_passthrough streaming — mid-stream error yields error chunk (lines 364-365)
+# ---------------------------------------------------------------------------
+
+async def test_passthrough_streaming_midstream_error_yields_error_chunk(cfg, monkeypatch):
+    """When aiter_bytes raises mid-stream in _stream_gen, an error JSON chunk is yielded."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    async def _failing_aiter_bytes():
+        yield b"data: first\n"
+        raise IOError("mid-stream error")
+
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.aiter_bytes = _failing_aiter_bytes
+    fake_resp.aclose = AsyncMock()
+
+    fake_client = MagicMock()
+    fake_client.aclose = AsyncMock()
+
+    monkeypatch.setattr(
+        proxy_mod, "_start_streaming_request",
+        AsyncMock(return_value=(fake_client, fake_resp))
+    )
+
+    req = _make_passthrough_req({"model": "llama3", "stream": True}, "/v1/messages")
+    resp = await handle_passthrough(req)
+    collected = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert b"error" in collected
+
+
+# ---------------------------------------------------------------------------
+# handle_passthrough streaming — JSON fallback fails with logger (lines 374-375)
+# ---------------------------------------------------------------------------
+
+async def test_passthrough_streaming_json_fallback_invalid_with_logger(cfg, monkeypatch):
+    """Garbage bytes that fail both NDJSON and JSON fallback are logged as None."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(
+        proxy_mod, "_start_streaming_request",
+        _make_start_streaming_mock([b"pure garbage text not json"])
+    )
+
+    logger = TrafficLogger(cfg)
+    logged = []
+    original = logger.log_response
+    logger.log_response = lambda *a, **kw: logged.append(a) or original(*a, **kw)
+
+    req = _make_passthrough_req({"model": "llama3", "stream": True}, "/api/chat")
+    resp = await handle_passthrough(req, logger=logger)
+    b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert len(logged) == 1
+    assert logged[0][3] is None
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_messages streaming — aiter_bytes raises (lines 464-465, 471-473)
+# ---------------------------------------------------------------------------
+
+async def test_handle_v1_messages_streaming_aiter_bytes_raises(cfg, engine_and_logger, monkeypatch):
+    """When aiter_bytes raises in generate(), error chunk is yielded and logged as 500."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(
+        proxy_mod, "_start_streaming_request",
+        _make_failing_streaming_mock(IOError("stream broken"))
+    )
+
+    logged_calls = []
+    original = logger.log_response
+
+    def capture(*a, **kw):
+        logged_calls.append({"args": a, "kwargs": kw})
+        return original(*a, **kw)
+
+    logger.log_response = capture
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/messages")
+    resp = await handle_v1_messages(req, engine, logger)
+    collected = b"".join([chunk async for chunk in resp.body_iterator])
+
+    data = json.loads(collected)
+    assert data["error"] == "stream broken"
+    assert len(logged_calls) >= 1
+    assert logged_calls[-1]["args"][1] == 500
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_messages streaming — unparseable 200 body (lines 477-480)
+# ---------------------------------------------------------------------------
+
+async def test_handle_v1_messages_streaming_unparseable_200_body(cfg, engine_and_logger, monkeypatch):
+    """Status-200 body that fails SSE parsing and JSON fallback is logged as None."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(
+        proxy_mod, "_start_streaming_request",
+        _make_start_streaming_mock([b"raw garbage text not sse or json"])
+    )
+
+    logged = []
+    original = logger.log_response
+    logger.log_response = lambda *a, **kw: logged.append(a) or original(*a, **kw)
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/messages")
+    resp = await handle_v1_messages(req, engine, logger)
+    b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert len(logged) >= 1
+    assert logged[-1][3] is None
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_messages streaming — was_corrected=True (lines 486-487)
+# ---------------------------------------------------------------------------
+
+async def test_handle_v1_messages_streaming_was_corrected(cfg, engine_and_logger, monkeypatch):
+    """SSE with think-tags triggers normalization; emit_anthropic_sse is yielded."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    sse_chunks = [
+        b'data: {"type":"message_start","message":{"id":"msg_01","role":"assistant","content":[]}}\n\n',
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"<think>deep reasoning</think>The answer"}}\n\n',
+        b'data: {"type":"message_stop"}\n\n',
+    ]
+    monkeypatch.setattr(proxy_mod, "_start_streaming_request", _make_start_streaming_mock(sse_chunks))
+
+    logged_calls = []
+    original = logger.log_response
+
+    def capture(*a, **kw):
+        logged_calls.append({"args": a, "kwargs": kw})
+        return original(*a, **kw)
+
+    logger.log_response = capture
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/messages")
+    resp = await handle_v1_messages(req, engine, logger)
+    collected = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert b"The answer" in collected
+    assert b"deep reasoning" in collected
+    assert len(logged_calls) >= 1
+    assert logged_calls[-1]["kwargs"].get("correction_applied") is not None
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_messages non-streaming — was_corrected=True (lines 507-508)
+# ---------------------------------------------------------------------------
+
+async def test_handle_v1_messages_non_streaming_was_corrected(cfg, engine_and_logger, monkeypatch):
+    """Non-streaming Anthropic response with think-tags is corrected and logged."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    response_data = {
+        "id": "msg_01", "type": "message", "role": "assistant",
+        "content": [{"type": "text", "text": "<think>my reasoning</think>The answer"}],
+        "model": "qwen3:9b",
+    }
+
+    logged_calls = []
+    original = logger.log_response
+
+    def capture(*a, **kw):
+        logged_calls.append({"args": a, "kwargs": kw})
+        return original(*a, **kw)
+
+    logger.log_response = capture
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(return_value=(200, {"content-type": "application/json"}, json.dumps(response_data).encode())),
+    ):
+        req = make_req({"model": "qwen3:9b", "messages": []}, path="/v1/messages")
+        resp = await handle_v1_messages(req, engine, logger)
+
+    assert resp.status_code == 200
+    assert logged_calls[-1]["kwargs"].get("correction_applied") is not None
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_chat_completions streaming — aiter_bytes raises (lines 581-582, 588-590)
+# ---------------------------------------------------------------------------
+
+async def test_handle_v1_chat_completions_streaming_aiter_bytes_raises(cfg, engine_and_logger, monkeypatch):
+    """When aiter_bytes raises in generate(), error chunk is yielded and logged as 500."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(
+        proxy_mod, "_start_streaming_request",
+        _make_failing_streaming_mock(IOError("network error"))
+    )
+
+    logged_calls = []
+    original = logger.log_response
+
+    def capture(*a, **kw):
+        logged_calls.append({"args": a, "kwargs": kw})
+        return original(*a, **kw)
+
+    logger.log_response = capture
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/chat/completions")
+    resp = await handle_v1_chat_completions(req, engine, logger)
+    collected = b"".join([chunk async for chunk in resp.body_iterator])
+
+    data = json.loads(collected)
+    assert data["error"] == "network error"
+    assert len(logged_calls) >= 1
+    assert logged_calls[-1]["args"][1] == 500
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_chat_completions streaming — unparseable 200 body (lines 594-597)
+# ---------------------------------------------------------------------------
+
+async def test_handle_v1_chat_completions_streaming_unparseable_200_body(cfg, engine_and_logger, monkeypatch):
+    """Status-200 body that fails SSE parsing and JSON fallback is logged as None."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(
+        proxy_mod, "_start_streaming_request",
+        _make_start_streaming_mock([b"raw garbage not sse or json"])
+    )
+
+    logged = []
+    original = logger.log_response
+    logger.log_response = lambda *a, **kw: logged.append(a) or original(*a, **kw)
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/chat/completions")
+    resp = await handle_v1_chat_completions(req, engine, logger)
+    b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert len(logged) >= 1
+    assert logged[-1][3] is None
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_chat_completions streaming — was_corrected=True (lines 603-604)
+# ---------------------------------------------------------------------------
+
+async def test_handle_v1_chat_completions_streaming_was_corrected(cfg, engine_and_logger, monkeypatch):
+    """OpenAI SSE with think-tags triggers normalization; emit_openai_sse is yielded."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    sse_chunks = [
+        b'data: {"id":"cmp-1","choices":[{"index":0,"delta":{"role":"assistant","content":"<think>reasoning</think>The answer"},"finish_reason":"stop"}]}\n\n',
+        b'data: [DONE]\n',
+    ]
+    monkeypatch.setattr(proxy_mod, "_start_streaming_request", _make_start_streaming_mock(sse_chunks))
+
+    logged_calls = []
+    original = logger.log_response
+
+    def capture(*a, **kw):
+        logged_calls.append({"args": a, "kwargs": kw})
+        return original(*a, **kw)
+
+    logger.log_response = capture
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/chat/completions")
+    resp = await handle_v1_chat_completions(req, engine, logger)
+    collected = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert b"The answer" in collected
+    assert len(logged_calls) >= 1
+    assert logged_calls[-1]["kwargs"].get("correction_applied") is not None
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_chat_completions non-streaming — was_corrected=True (lines 624-625)
+# ---------------------------------------------------------------------------
+
+async def test_handle_v1_chat_completions_non_streaming_was_corrected(cfg, engine_and_logger, monkeypatch):
+    """Non-streaming OpenAI response with think-tags is corrected and logged."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    response_data = {
+        "id": "chatcmpl-1", "object": "chat.completion",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "<think>my thinking</think>The answer"}, "finish_reason": "stop"}],
+        "model": "qwen3:9b",
+    }
+
+    logged_calls = []
+    original = logger.log_response
+
+    def capture(*a, **kw):
+        logged_calls.append({"args": a, "kwargs": kw})
+        return original(*a, **kw)
+
+    logger.log_response = capture
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(return_value=(200, {"content-type": "application/json"}, json.dumps(response_data).encode())),
+    ):
+        req = make_req({"model": "qwen3:9b", "messages": []}, path="/v1/chat/completions")
+        resp = await handle_v1_chat_completions(req, engine, logger)
+
+    assert resp.status_code == 200
+    assert logged_calls[-1]["kwargs"].get("correction_applied") is not None
+
+
+# ---------------------------------------------------------------------------
+# handle_chat_request non-streaming — was_corrected=True (lines 715-716)
+# ---------------------------------------------------------------------------
+
+async def test_handle_chat_request_non_streaming_was_corrected(cfg, engine_and_logger, monkeypatch):
+    """handle_chat_request corrects think-tags in message.content and logs correction_applied."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    response_data = {
+        "model": "qwen3:9b",
+        "message": {"role": "assistant", "content": "<think>chain of thought</think>The final answer"},
+        "done": True,
+    }
+
+    logged_calls = []
+    original = logger.log_response
+
+    def capture(*a, **kw):
+        logged_calls.append({"args": a, "kwargs": kw})
+        return original(*a, **kw)
+
+    logger.log_response = capture
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(return_value=(200, {"content-type": "application/json"}, json.dumps(response_data).encode())),
+    ):
+        req = make_req({"model": "qwen3:9b", "messages": [{"role": "user", "content": "hi"}]})
+        resp = await handle_chat_request(req, engine, logger)
+
+    assert resp.status_code == 200
+    body = json.loads(resp.body)
+    assert "<think>" not in body["message"]["content"]
+    assert logged_calls[-1]["kwargs"].get("correction_applied") is not None
+
+
+# ---------------------------------------------------------------------------
+# handle_generate_request non-streaming — was_corrected=True (lines 780-781)
+# ---------------------------------------------------------------------------
+
+async def test_handle_generate_request_non_streaming_was_corrected(cfg, engine_and_logger, monkeypatch):
+    """handle_generate_request corrects think-tags in message.content and logs correction_applied."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    response_data = {
+        "model": "qwen3:9b",
+        "message": {"role": "assistant", "content": "<think>step by step</think>Final answer"},
+        "done": True,
+    }
+
+    logged_calls = []
+    original = logger.log_response
+
+    def capture(*a, **kw):
+        logged_calls.append({"args": a, "kwargs": kw})
+        return original(*a, **kw)
+
+    logger.log_response = capture
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(return_value=(200, {"content-type": "application/json"}, json.dumps(response_data).encode())),
+    ):
+        req = make_req({"model": "qwen3:9b", "prompt": "calculate 2+2"}, path="/api/generate")
+        resp = await handle_generate_request(req, engine, logger)
+
+    assert resp.status_code == 200
+    assert logged_calls[-1]["kwargs"].get("correction_applied") is not None
+
+
+# ---------------------------------------------------------------------------
+# handle_stream_chat — non-2xx response (line 848)
+# ---------------------------------------------------------------------------
+
+async def test_handle_stream_chat_non_2xx_returns_error_response(cfg, engine_and_logger, monkeypatch):
+    """Non-2xx response from Ollama in handle_stream_chat is handled by _handle_error_stream."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(
+        proxy_mod, "_start_streaming_request",
+        _make_start_streaming_mock([b'{"error":"model not found"}'], status_code=404)
+    )
+
+    req = make_req({"model": "nonexistent", "messages": []})
+    resp = await handle_stream_chat(req, engine, logger)
+
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# handle_stream_chat streaming — aiter_bytes raises (lines 857-858, 864-866)
+# ---------------------------------------------------------------------------
+
+async def test_handle_stream_chat_aiter_bytes_raises(cfg, engine_and_logger, monkeypatch):
+    """When aiter_bytes raises in generate(), error chunk is yielded and logged as 500."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(
+        proxy_mod, "_start_streaming_request",
+        _make_failing_streaming_mock(IOError("connection dropped"))
+    )
+
+    logged_calls = []
+    original = logger.log_response
+
+    def capture(*a, **kw):
+        logged_calls.append({"args": a, "kwargs": kw})
+        return original(*a, **kw)
+
+    logger.log_response = capture
+
+    req = make_req({"model": "qwen3:9b", "messages": []})
+    resp = await handle_stream_chat(req, engine, logger)
+    collected = b"".join([chunk async for chunk in resp.body_iterator])
+
+    data = json.loads(collected)
+    assert data["error"] == "connection dropped"
+    assert len(logged_calls) >= 1
+    assert logged_calls[-1]["args"][1] == 500
+
+
+# ---------------------------------------------------------------------------
+# handle_stream_chat streaming — was_corrected=True (lines 879-880)
+# ---------------------------------------------------------------------------
+
+async def test_handle_stream_chat_streaming_was_corrected(cfg, engine_and_logger, monkeypatch):
+    """NDJSON response with think-tags triggers normalization; corrected chunk is yielded."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    ndjson_chunks = [
+        b'{"message":{"role":"assistant","content":"<think>deep thought</think>The answer"},"done":true}\n',
+    ]
+    monkeypatch.setattr(proxy_mod, "_start_streaming_request", _make_start_streaming_mock(ndjson_chunks))
+
+    logged_calls = []
+    original = logger.log_response
+
+    def capture(*a, **kw):
+        logged_calls.append({"args": a, "kwargs": kw})
+        return original(*a, **kw)
+
+    logger.log_response = capture
+
+    req = make_req({"model": "qwen3:9b", "messages": []})
+    resp = await handle_stream_chat(req, engine, logger)
+    collected = b"".join([chunk async for chunk in resp.body_iterator])
+
+    body = json.loads(collected)
+    assert "<think>" not in body["message"]["content"]
+    assert len(logged_calls) >= 1
+    assert logged_calls[-1]["kwargs"].get("correction_applied") is not None
+
+
+# ---------------------------------------------------------------------------
+# handle_stream_generate — non-2xx response (line 935)
+# ---------------------------------------------------------------------------
+
+async def test_handle_stream_generate_non_2xx_returns_error_response(cfg, engine_and_logger, monkeypatch):
+    """Non-2xx response from Ollama in handle_stream_generate is handled by _handle_error_stream."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(
+        proxy_mod, "_start_streaming_request",
+        _make_start_streaming_mock([b'{"error":"model not found"}'], status_code=404)
+    )
+
+    req = make_req({"model": "nonexistent", "prompt": "hello"}, path="/api/generate")
+    resp = await handle_stream_generate(req, engine, logger)
+
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# handle_stream_generate streaming — aiter_bytes raises (lines 944-945, 951-953)
+# ---------------------------------------------------------------------------
+
+async def test_handle_stream_generate_aiter_bytes_raises(cfg, engine_and_logger, monkeypatch):
+    """When aiter_bytes raises in generate(), error chunk is yielded and logged as 500."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(
+        proxy_mod, "_start_streaming_request",
+        _make_failing_streaming_mock(IOError("network reset"))
+    )
+
+    logged_calls = []
+    original = logger.log_response
+
+    def capture(*a, **kw):
+        logged_calls.append({"args": a, "kwargs": kw})
+        return original(*a, **kw)
+
+    logger.log_response = capture
+
+    req = make_req({"model": "qwen3:9b", "prompt": "hello"}, path="/api/generate")
+    resp = await handle_stream_generate(req, engine, logger)
+    collected = b"".join([chunk async for chunk in resp.body_iterator])
+
+    data = json.loads(collected)
+    assert data["error"] == "network reset"
+    assert len(logged_calls) >= 1
+    assert logged_calls[-1]["args"][1] == 500
+
+
+# ---------------------------------------------------------------------------
+# handle_stream_generate streaming — was_corrected=True (lines 966-967)
+# ---------------------------------------------------------------------------
+
+async def test_handle_stream_generate_streaming_was_corrected(cfg, engine_and_logger, monkeypatch):
+    """NDJSON generate response with think-tags triggers normalization."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    ndjson_chunks = [
+        b'{"message":{"role":"assistant","content":"<think>thinking step</think>Final answer"},"done":true}\n',
+    ]
+    monkeypatch.setattr(proxy_mod, "_start_streaming_request", _make_start_streaming_mock(ndjson_chunks))
+
+    logged_calls = []
+    original = logger.log_response
+
+    def capture(*a, **kw):
+        logged_calls.append({"args": a, "kwargs": kw})
+        return original(*a, **kw)
+
+    logger.log_response = capture
+
+    req = make_req({"model": "qwen3:9b", "prompt": "hello"}, path="/api/generate")
+    resp = await handle_stream_generate(req, engine, logger)
+    collected = b"".join([chunk async for chunk in resp.body_iterator])
+
+    body = json.loads(collected)
+    assert "<think>" not in body["message"]["content"]
+    assert len(logged_calls) >= 1
+    assert logged_calls[-1]["kwargs"].get("correction_applied") is not None

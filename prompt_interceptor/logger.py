@@ -114,7 +114,8 @@ class TrafficLogger:
         request_id: str,
         status_code: int,
         headers: Dict[str, str],
-        body: Optional[Dict[str, Any]] = None
+        body: Optional[Dict[str, Any]] = None,
+        correction_applied: Optional[str] = None,
     ) -> None:
         """
         Log a response, merging into the existing request log entry if present.
@@ -124,6 +125,7 @@ class TrafficLogger:
             status_code: HTTP status code
             headers: Response headers
             body: Response body (JSON)
+            correction_applied: Description of auto-corrections applied, or None
         """
         date_dir = self._get_date_dir()
         filepath = date_dir / f"req_{request_id}.json"
@@ -145,6 +147,8 @@ class TrafficLogger:
             "response_headers": self._get_headers_for_log(headers),
             "response_body": self._truncate_body(body),
         }
+        if correction_applied:
+            log_entry["_correction_applied"] = correction_applied
         # Ensure request_id is always present
         log_entry["request_id"] = request_id
 

@@ -85,6 +85,24 @@ def test_log_response_corrupt_existing_file(tl, cfg):
     assert data["status_code"] == 200
 
 
+def test_log_response_correction_applied_stored(tl, cfg):
+    """correction_applied field is saved in log when provided."""
+    rid = tl.log_request("POST", "/api/chat", {}, {"model": "qwen3"})
+    tl.log_response(rid, 200, {}, {"done": True}, correction_applied="think→thinking")
+    files = list(Path(cfg.log_dir).rglob("req_*.json"))
+    data = json.loads(files[0].read_text())
+    assert data.get("_correction_applied") == "think→thinking"
+
+
+def test_log_response_no_correction_field_omitted(tl, cfg):
+    """When correction_applied is None, _correction_applied is not saved."""
+    rid = tl.log_request("POST", "/api/chat", {}, {})
+    tl.log_response(rid, 200, {}, {"done": True})
+    files = list(Path(cfg.log_dir).rglob("req_*.json"))
+    data = json.loads(files[0].read_text())
+    assert "_correction_applied" not in data
+
+
 # ---------------------------------------------------------------------------
 # _truncate_body
 # ---------------------------------------------------------------------------
