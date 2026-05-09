@@ -74,10 +74,11 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .btn-mode{padding:6px 14px;border:1px solid #333;border-radius:4px;cursor:pointer;
             font-size:.85em;background:#16213e;color:#888;margin-right:6px}
   .btn-mode.active{background:#0d3b66;color:#4fc3f7;border-color:#4fc3f7}
-  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
   .stat{background:#16213e;border-radius:8px;padding:16px;text-align:center}
   .stat-value{font-size:2em;color:#4fc3f7}
   .stat-label{color:#888;font-size:.82em;margin-top:4px}
+  .ctx-warn{display:none;background:#3a1a00;border:1px solid #7a4a00;border-radius:6px;padding:10px 16px;margin-bottom:10px;color:#ffa040;font-size:.88em}
   footer{text-align:center;margin-top:30px;color:#555;font-size:.82em}
   pre{background:#0d0d1e;padding:12px;border-radius:6px;font-size:.78em;
       overflow:auto;max-height:280px;line-height:1.5}
@@ -171,6 +172,10 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="stat-value" id="stat-mode">-</div>
       <div class="stat-label">Current Mode</div>
     </div>
+    <div class="stat">
+      <div class="stat-value" id="stat-ctx">-</div>
+      <div class="stat-label">Context Used</div>
+    </div>
   </div>
 
   <!-- Pending Intercepts -->
@@ -232,11 +237,14 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       <span>&#128196; Archivo: <strong id="file-mode-name"></strong></span>
       <button onclick="exitFileMode()" style="background:#4d1a1a;color:#f88;border:1px solid #6b2a2a;border-radius:4px;padding:3px 8px;cursor:pointer;font-size:.8em">&#x2715; Volver a live</button>
     </div>
+    <div class="ctx-warn" id="ctx-warn-banner">
+      &#x26A0; Contexto al <strong id="ctx-warn-pct">-</strong> de capacidad &mdash; la calidad de respuesta puede empeorar.
+    </div>
     <table>
       <thead><tr>
-        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Prompt</th><th>Response</th><th>Status</th><th>Raw</th>
+        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Tokens / Ctx%</th><th>Prompt</th><th>Response</th><th>Status</th><th>Raw</th>
       </tr></thead>
-      <tbody id="logs-body"><tr><td colspan="8" class="empty">Loading...</td></tr></tbody>
+      <tbody id="logs-body"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody>
     </table>
   </div>
 
@@ -262,6 +270,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <h3 class="modal-title" id="modal-title">Message Detail</h3>
     <div id="modal-correction-banner" style="display:none;background:#0a2a1a;border:1px solid #1a4a2a;border-radius:5px;padding:7px 12px;margin-bottom:12px;color:#5dba8a;font-size:.82em">
       &#x2714; Auto-corrected by proxy: <span id="modal-correction-text" style="font-weight:600"></span>
+    </div>
+    <div id="modal-token-banner" style="display:none;background:#0a1222;border:1px solid #1a2a4a;border-radius:5px;padding:7px 12px;margin-bottom:12px;color:#4fc3f7;font-size:.82em">
+      &#x1F4CA; Tokens: <span id="modal-token-text"></span>
     </div>
     <div class="modal-split">
       <div class="modal-panel">
@@ -463,6 +474,27 @@ function showRaw(id) {
   } else {
     corrBanner.style.display = 'none';
   }
+  const tokenBanner = document.getElementById('modal-token-banner');
+  const ttu = l._tokens_usage;
+  if (ttu && ttu.total_tokens != null) {
+    const parts = ['Total: ' + ttu.total_tokens];
+    if (ttu.prompt_tokens != null) parts.push('Prompt: ' + ttu.prompt_tokens);
+    if (ttu.completion_tokens != null) parts.push('Completion: ' + ttu.completion_tokens);
+    if (ttu.context_size != null) parts.push('Ctx: ' + ttu.context_size);
+    if (ttu.context_utilization_pct != null) {
+      const pc = ttu.context_utilization_pct >= 90 ? '#f55' : ttu.context_utilization_pct >= 70 ? '#ffa040' : '#4fc3f7';
+      parts.push('<span style="color:' + pc + '">' + ttu.context_utilization_pct + '% de contexto</span>');
+    }
+    if (ttu.offload) {
+      const offloadLabel = ttu.offload === 'gpu' ? '&#x1F7E2; GPU' : ttu.offload === 'cpu' ? '&#x1F7E1; CPU' : '&#x1F7E0; GPU+CPU';
+      const vramMB = ttu.size_vram ? Math.round(ttu.size_vram / 1024 / 1024) + ' MB VRAM' : '';
+      parts.push(offloadLabel + (vramMB ? ' (' + vramMB + ')' : ''));
+    }
+    document.getElementById('modal-token-text').innerHTML = parts.join(' &nbsp;|&nbsp; ');
+    tokenBanner.style.display = '';
+  } else {
+    tokenBanner.style.display = 'none';
+  }
 
   document.getElementById('modal-overlay').style.display = 'block';
 }
@@ -513,9 +545,13 @@ function renderLogsTable(logs) {
   const tbody = document.getElementById('logs-body');
   document.getElementById('stat-requests').textContent = logs.length;
   if (!logs.length) {
-    tbody.innerHTML = '<tr><td colspan="8" class="empty">No requests yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="empty">No requests yet.</td></tr>';
+    document.getElementById('stat-ctx').textContent = '-';
+    document.getElementById('stat-ctx').style.color = '';
+    document.getElementById('ctx-warn-banner').style.display = 'none';
     return;
   }
+  let lastCtxPct = null;
   tbody.innerHTML = logs.slice().reverse().map((l, i) => {
     const cacheKey = l.request_id || i;
     _logsCache[cacheKey] = l;
@@ -588,17 +624,48 @@ function renderLogsTable(logs) {
     const corrBadge = l._correction_applied
       ? `<span class="badge" style="background:#0a2a1a;color:#5dba8a;border:1px solid #1a4a2a;font-size:.75em" title="Auto-corrected: ${esc(l._correction_applied)}">&#x2714; fixed</span>`
       : '';
+    const tu = l._tokens_usage;
+    let tokenCell = '<span class="empty">-</span>';
+    if (tu && tu.total_tokens != null) {
+      const tot = tu.total_tokens;
+      const totStr = tot >= 1000 ? (tot/1000).toFixed(1) + 'K' : String(tot);
+      const pct = tu.context_utilization_pct;
+      if (pct != null) {
+        if (lastCtxPct === null) lastCtxPct = pct;
+        const pctColor = pct >= 90 ? '#f55' : pct >= 70 ? '#ffa040' : '#4fc3f7';
+        tokenCell = totStr + '<br><small style="color:' + pctColor + '">' + pct + '%</small>';
+      } else {
+        tokenCell = totStr;
+      }
+    }
     return `<tr>
       <td>${ts}</td>
       <td>${esc(method)}</td>
       <td><code>${esc(path)}</code></td>
       <td><code>${esc(model)}</code></td>
+      <td style="white-space:nowrap;text-align:right;font-size:.85em">${tokenCell}</td>
       <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(preview)}</td>
       <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${respPreview}</td>
       <td>${typeTag} ${statusCode} ${corrBadge}</td>
       <td><button class="link-show" onclick="showRaw('${esc(String(cacheKey))}')">show</button></td>
     </tr>`;
   }).join('');
+  if (lastCtxPct !== null) {
+    const ctxEl = document.getElementById('stat-ctx');
+    const pctColor = lastCtxPct >= 90 ? '#f55' : lastCtxPct >= 70 ? '#ffa040' : '#4fc3f7';
+    ctxEl.textContent = lastCtxPct + '%';
+    ctxEl.style.color = pctColor;
+    if (lastCtxPct >= 80) {
+      document.getElementById('ctx-warn-pct').textContent = lastCtxPct + '%';
+      document.getElementById('ctx-warn-banner').style.display = '';
+    } else {
+      document.getElementById('ctx-warn-banner').style.display = 'none';
+    }
+  } else {
+    document.getElementById('stat-ctx').textContent = '-';
+    document.getElementById('stat-ctx').style.color = '';
+    document.getElementById('ctx-warn-banner').style.display = 'none';
+  }
 }
 
 async function loadLogs() {
@@ -608,7 +675,7 @@ async function loadLogs() {
     renderLogsTable(data.logs || []);
   } catch(e) {
     const tb = document.getElementById('logs-body');
-    tb.innerHTML = '<tr><td colspan="8" id="_logs-err"></td></tr>';
+    tb.innerHTML = '<tr><td colspan="9" id="_logs-err"></td></tr>';
     document.getElementById('_logs-err').textContent = 'Error: ' + e.message;
   }
 }

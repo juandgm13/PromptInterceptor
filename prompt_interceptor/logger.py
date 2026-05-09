@@ -10,7 +10,47 @@ from typing import Optional, Dict, Any
 import hashlib
 import shutil
 
+import httpx
+
 from .config import get_config
+
+
+def _get_ollama_ps_info(model: str, target: str) -> Dict[str, Any]:
+    """
+    Query /api/ps for the running model's actual context size and GPU/CPU offload.
+
+    Returns a dict with optional keys:
+      context_size (int), offload ('gpu'|'partial'|'cpu'), size_vram (int), size_total (int)
+    Returns {} on failure or when model is not loaded.
+    """
+    try:
+        with httpx.Client(timeout=3.0) as client:
+            r = client.get(f"{target}/api/ps")
+            if r.status_code != 200:
+                return {}
+            for m in r.json().get("models", []):
+                name = m.get("name", "")
+                # Match "llama3" == "llama3:latest", etc.
+                if name != model and name.split(":")[0] != model.split(":")[0]:
+                    continue
+                result: Dict[str, Any] = {}
+                # Context size: field name varies across Ollama versions
+                for field in ("num_ctx", "context_length", "context"):
+                    if m.get(field):
+                        result["context_size"] = int(m[field])
+                        break
+                # GPU/CPU offload derived from size vs size_vram
+                size_total = m.get("size", 0)
+                size_vram = m.get("size_vram", 0)
+                if size_total > 0:
+                    result["size_total"] = size_total
+                    result["size_vram"] = size_vram
+                    ratio = size_vram / size_total
+                    result["offload"] = "gpu" if ratio >= 0.99 else ("cpu" if size_vram == 0 else "partial")
+                return result
+    except Exception:
+        pass
+    return {}
 
 
 class TrafficLogger:
@@ -64,6 +104,56 @@ class TrafficLogger:
             k: v for k, v in headers.items()
             if k.lower() not in sensitive
         }
+
+    def _extract_token_usage(
+        self,
+        response_body: Optional[Dict[str, Any]],
+        model_name: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Extract and normalize token usage, querying Ollama /api/ps for actual context size."""
+        if not response_body:
+            return None
+
+        prompt_tokens = None
+        completion_tokens = None
+
+        # Ollama native (/api/chat, /api/generate): prompt_eval_count + eval_count
+        if "prompt_eval_count" in response_body:
+            prompt_tokens = response_body["prompt_eval_count"]
+            completion_tokens = response_body.get("eval_count", 0)
+        # OpenAI-compat (/v1/chat/completions) and Anthropic (/v1/messages): usage object
+        elif isinstance(response_body.get("usage"), dict):
+            u = response_body["usage"]
+            prompt_tokens = u.get("prompt_tokens") or u.get("input_tokens")
+            completion_tokens = u.get("completion_tokens") or u.get("output_tokens")
+
+        if prompt_tokens is None:
+            return None
+
+        total = (prompt_tokens or 0) + (completion_tokens or 0)
+
+        # Query /api/ps for the loaded model's actual num_ctx and GPU/CPU offload
+        ps_info: Dict[str, Any] = {}
+        if model_name:
+            ps_info = _get_ollama_ps_info(model_name, self.config.target)
+
+        ctx = ps_info.get("context_size") or self.config.context_size
+        # Use prompt_tokens as numerator: measures context fill *before* generation,
+        # avoiding >100% artifacts from adding completion tokens to total.
+        pct = round(((prompt_tokens or 0) / ctx) * 100, 1) if ctx else None
+
+        result: Dict[str, Any] = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total,
+            "context_size": ctx,
+            "context_utilization_pct": pct,
+        }
+        if "offload" in ps_info:
+            result["offload"] = ps_info["offload"]
+            result["size_vram"] = ps_info.get("size_vram", 0)
+            result["size_total"] = ps_info.get("size_total", 0)
+        return result
 
     def log_request(
         self,
@@ -149,6 +239,15 @@ class TrafficLogger:
         }
         if correction_applied:
             log_entry["_correction_applied"] = correction_applied
+        # Extract model name from response or request body for context size lookup
+        model_name: Optional[str] = None
+        if isinstance(body, dict):
+            model_name = body.get("model")
+        if not model_name and isinstance(existing.get("body"), dict):
+            model_name = existing["body"].get("model")
+        token_usage = self._extract_token_usage(body, model_name)
+        if token_usage:
+            log_entry["_tokens_usage"] = token_usage
         # Ensure request_id is always present
         log_entry["request_id"] = request_id
 
