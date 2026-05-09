@@ -8,7 +8,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from prompt_interceptor.config import Config
-from prompt_interceptor.logger import TrafficLogger
+from prompt_interceptor.logger import TrafficLogger, _get_ollama_ps_info
 
 
 @pytest.fixture
@@ -407,3 +407,162 @@ def test_clear_logs_oserror_on_unlink_is_ignored(tl):
 
     # One file raises OSError (skipped), one is deleted → reported count = 2
     assert deleted == 2
+
+
+# ---------------------------------------------------------------------------
+# _get_ollama_ps_info
+# ---------------------------------------------------------------------------
+
+def _mock_ps_client(status_code: int, models: list):
+    """Build a patched httpx.Client that returns a fake /api/ps response."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = status_code
+    mock_resp.json.return_value = {"models": models}
+    mock_client = MagicMock()
+    mock_client.__enter__ = lambda s: mock_client
+    mock_client.__exit__ = MagicMock(return_value=False)
+    mock_client.get.return_value = mock_resp
+    return mock_client
+
+
+def test_get_ollama_ps_info_returns_context_and_gpu():
+    model = {"name": "llama3:latest", "num_ctx": 16384, "size": 8_000_000_000, "size_vram": 8_000_000_000}
+    with patch("prompt_interceptor.logger.httpx.Client", return_value=_mock_ps_client(200, [model])):
+        info = _get_ollama_ps_info("llama3", "http://localhost:11434")
+    assert info["context_size"] == 16384
+    assert info["offload"] == "gpu"
+    assert info["size_vram"] == 8_000_000_000
+
+
+def test_get_ollama_ps_info_partial_gpu():
+    model = {"name": "llama3:latest", "num_ctx": 8192, "size": 8_000_000_000, "size_vram": 4_000_000_000}
+    with patch("prompt_interceptor.logger.httpx.Client", return_value=_mock_ps_client(200, [model])):
+        info = _get_ollama_ps_info("llama3", "http://localhost:11434")
+    assert info["offload"] == "partial"
+
+
+def test_get_ollama_ps_info_cpu_only():
+    model = {"name": "llama3:latest", "num_ctx": 8192, "size": 8_000_000_000, "size_vram": 0}
+    with patch("prompt_interceptor.logger.httpx.Client", return_value=_mock_ps_client(200, [model])):
+        info = _get_ollama_ps_info("llama3", "http://localhost:11434")
+    assert info["offload"] == "cpu"
+
+
+def test_get_ollama_ps_info_model_not_loaded():
+    """Returns {} when the model isn't in the ps list."""
+    model = {"name": "other:latest", "num_ctx": 4096, "size": 1000, "size_vram": 1000}
+    with patch("prompt_interceptor.logger.httpx.Client", return_value=_mock_ps_client(200, [model])):
+        info = _get_ollama_ps_info("llama3", "http://localhost:11434")
+    assert info == {}
+
+
+def test_get_ollama_ps_info_non_200_returns_empty():
+    with patch("prompt_interceptor.logger.httpx.Client", return_value=_mock_ps_client(503, [])):
+        assert _get_ollama_ps_info("llama3", "http://localhost:11434") == {}
+
+
+def test_get_ollama_ps_info_exception_returns_empty():
+    with patch("prompt_interceptor.logger.httpx.Client", side_effect=Exception("refused")):
+        assert _get_ollama_ps_info("llama3", "http://localhost:11434") == {}
+
+
+def test_get_ollama_ps_info_no_context_field():
+    """Returns {} context_size when ps has no known num_ctx field."""
+    model = {"name": "llama3:latest", "size": 1000, "size_vram": 1000}
+    with patch("prompt_interceptor.logger.httpx.Client", return_value=_mock_ps_client(200, [model])):
+        info = _get_ollama_ps_info("llama3", "http://localhost:11434")
+    assert "context_size" not in info
+    assert info["offload"] == "gpu"
+
+
+# ---------------------------------------------------------------------------
+# _extract_token_usage
+# ---------------------------------------------------------------------------
+
+def test_extract_token_usage_none_body(tl):
+    assert tl._extract_token_usage(None) is None
+
+
+def test_extract_token_usage_no_token_fields(tl):
+    assert tl._extract_token_usage({"done": True, "model": "x"}) is None
+
+
+def test_extract_token_usage_ollama_native(tl, cfg):
+    body = {"done": True, "prompt_eval_count": 100, "eval_count": 50}
+    result = tl._extract_token_usage(body)
+    assert result["prompt_tokens"] == 100
+    assert result["completion_tokens"] == 50
+    assert result["total_tokens"] == 150
+    assert result["context_size"] == cfg.context_size
+    # Percentage uses prompt_tokens only (context fill before generation)
+    assert result["context_utilization_pct"] == round(100 / cfg.context_size * 100, 1)
+
+
+def test_extract_token_usage_openai_compat(tl):
+    body = {"usage": {"prompt_tokens": 200, "completion_tokens": 75, "total_tokens": 275}}
+    result = tl._extract_token_usage(body)
+    assert result["prompt_tokens"] == 200
+    assert result["completion_tokens"] == 75
+    assert result["total_tokens"] == 275
+
+
+def test_extract_token_usage_anthropic_compat(tl):
+    body = {"usage": {"input_tokens": 300, "output_tokens": 60}}
+    result = tl._extract_token_usage(body)
+    assert result["prompt_tokens"] == 300
+    assert result["completion_tokens"] == 60
+    assert result["total_tokens"] == 360
+
+
+def test_extract_token_usage_uses_ollama_ps_ctx_when_available(tl):
+    body = {"prompt_eval_count": 100, "eval_count": 50}
+    ps = {"context_size": 16384, "offload": "gpu", "size_vram": 8_000_000_000, "size_total": 8_000_000_000}
+    with patch("prompt_interceptor.logger._get_ollama_ps_info", return_value=ps):
+        result = tl._extract_token_usage(body, model_name="llama3")
+    assert result["context_size"] == 16384
+    assert result["context_utilization_pct"] == round(100 / 16384 * 100, 1)
+    assert result["offload"] == "gpu"
+    assert result["size_vram"] == 8_000_000_000
+
+
+def test_extract_token_usage_falls_back_to_config_when_ps_empty(tl, cfg):
+    body = {"prompt_eval_count": 100, "eval_count": 50}
+    with patch("prompt_interceptor.logger._get_ollama_ps_info", return_value={}):
+        result = tl._extract_token_usage(body, model_name="llama3")
+    assert result["context_size"] == cfg.context_size
+    assert "offload" not in result
+
+
+# ---------------------------------------------------------------------------
+# _tokens_usage stored in log_response
+# ---------------------------------------------------------------------------
+
+def test_log_response_stores_tokens_usage_ollama_native(tl, cfg):
+    """_tokens_usage is written to the log file for Ollama native responses."""
+    rid = tl.log_request("POST", "/api/chat", {}, {"model": "llama3"})
+    with patch("prompt_interceptor.logger._get_ollama_ps_info", return_value={}):
+        tl.log_response(rid, 200, {}, {"model": "llama3", "done": True, "prompt_eval_count": 500, "eval_count": 100})
+    data = json.loads(list(Path(cfg.log_dir).rglob("req_*.json"))[0].read_text())
+    assert "_tokens_usage" in data
+    assert data["_tokens_usage"]["prompt_tokens"] == 500
+    assert data["_tokens_usage"]["total_tokens"] == 600
+
+
+def test_log_response_no_tokens_usage_when_absent(tl, cfg):
+    """_tokens_usage is omitted when response has no token fields."""
+    rid = tl.log_request("POST", "/api/chat", {}, {})
+    tl.log_response(rid, 200, {}, {"done": True})
+    data = json.loads(list(Path(cfg.log_dir).rglob("req_*.json"))[0].read_text())
+    assert "_tokens_usage" not in data
+
+
+def test_log_response_model_from_request_body_used_for_ctx(tl, cfg):
+    """When response body has no model, model from request body is used for Ollama query."""
+    rid = tl.log_request("POST", "/api/chat", {}, {"model": "qwen3"})
+    ps = {"context_size": 16384, "offload": "gpu", "size_vram": 4_000_000_000, "size_total": 4_000_000_000}
+    with patch("prompt_interceptor.logger._get_ollama_ps_info", return_value=ps) as mock_fn:
+        tl.log_response(rid, 200, {}, {"done": True, "prompt_eval_count": 50, "eval_count": 20})
+    mock_fn.assert_called_once_with("qwen3", tl.config.target)
+    data = json.loads(list(Path(cfg.log_dir).rglob("req_*.json"))[0].read_text())
+    assert data["_tokens_usage"]["context_size"] == 16384
+    assert data["_tokens_usage"]["offload"] == "gpu"
