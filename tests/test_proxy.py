@@ -16,6 +16,9 @@ from prompt_interceptor.proxy import (
     _parse_stream_response,
     _parse_sse_response,
     _parse_openai_sse_response,
+    _detect_context_overflow,
+    _resolve_context_size,
+    _CONTEXT_OVERFLOW_MSG,
     handle_chat_request,
     handle_generate_request,
     handle_stream_chat,
@@ -51,6 +54,13 @@ def engine_and_logger(cfg, monkeypatch):
     logger = TrafficLogger(cfg)
     engine = RuleEngine(logger)
     return engine, logger
+
+
+@pytest.fixture(autouse=True)
+def mock_resolve_context_size(monkeypatch):
+    """Prevent real /api/ps calls in every test; individual tests may override."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "_resolve_context_size", AsyncMock(return_value=None))
 
 
 # ---------------------------------------------------------------------------
@@ -2832,3 +2842,419 @@ async def test_handle_stream_generate_streaming_was_corrected(cfg, engine_and_lo
     assert "<think>" not in body["message"]["content"]
     assert len(logged_calls) >= 1
     assert logged_calls[-1]["kwargs"].get("correction_applied") is not None
+
+
+# ---------------------------------------------------------------------------
+# _detect_context_overflow — unit tests
+# ---------------------------------------------------------------------------
+
+def test_detect_context_overflow_ollama_done_reason_length():
+    assert _detect_context_overflow({"done_reason": "length", "done": True}) is True
+
+
+def test_detect_context_overflow_ollama_done_reason_stop():
+    assert _detect_context_overflow({"done_reason": "stop", "done": True}) is False
+
+
+def test_detect_context_overflow_openai_finish_reason_length():
+    parsed = {"choices": [{"finish_reason": "length", "message": {"content": "hi"}}]}
+    assert _detect_context_overflow(parsed) is True
+
+
+def test_detect_context_overflow_openai_finish_reason_stop():
+    parsed = {"choices": [{"finish_reason": "stop", "message": {"content": "hi"}}]}
+    assert _detect_context_overflow(parsed) is False
+
+
+def test_detect_context_overflow_empty_choices():
+    assert _detect_context_overflow({"choices": []}) is False
+
+
+def test_detect_context_overflow_none():
+    assert _detect_context_overflow(None) is False
+
+
+def test_detect_context_overflow_non_dict():
+    assert _detect_context_overflow("string") is False
+
+
+def test_detect_context_overflow_empty_dict():
+    assert _detect_context_overflow({}) is False
+
+
+def test_detect_context_overflow_utilization_at_100pct():
+    """prompt_eval_count == context_size triggers overflow (>= 100%)."""
+    assert _detect_context_overflow({"prompt_eval_count": 8192, "done": True}, context_size=8192) is True
+
+
+def test_detect_context_overflow_utilization_above_100pct():
+    assert _detect_context_overflow({"prompt_eval_count": 9000, "done": True}, context_size=8192) is True
+
+
+def test_detect_context_overflow_utilization_below_100pct():
+    assert _detect_context_overflow({"prompt_eval_count": 4096, "done": True}, context_size=8192) is False
+
+
+def test_detect_context_overflow_utilization_no_context_size():
+    """Without context_size, token count alone cannot trigger overflow."""
+    assert _detect_context_overflow({"prompt_eval_count": 9000, "done": True}, context_size=None) is False
+
+
+def test_detect_context_overflow_openai_usage_prompt_tokens():
+    """OpenAI usage.prompt_tokens >= context_size triggers overflow."""
+    parsed = {
+        "choices": [{"finish_reason": "stop", "message": {"content": "hi"}}],
+        "usage": {"prompt_tokens": 8192, "completion_tokens": 10},
+    }
+    assert _detect_context_overflow(parsed, context_size=8192) is True
+
+
+def test_detect_context_overflow_openai_usage_below():
+    parsed = {
+        "choices": [{"finish_reason": "stop", "message": {"content": "hi"}}],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 10},
+    }
+    assert _detect_context_overflow(parsed, context_size=8192) is False
+
+
+# ---------------------------------------------------------------------------
+# _resolve_context_size — unit tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_resolve_context_size_returns_ps_info(monkeypatch):
+    """When /api/ps returns context_size for the model, use it."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(
+        proxy_mod, "_get_ollama_ps_info",
+        lambda model, target: {"context_size": 16384},
+    )
+    result = await _resolve_context_size("qwen3:9b", "http://localhost:11434", 8192)
+    assert result == 16384
+
+
+@pytest.mark.asyncio
+async def test_resolve_context_size_fallback_to_config(monkeypatch):
+    """When /api/ps returns no context_size, fall back to config value."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(
+        proxy_mod, "_get_ollama_ps_info",
+        lambda model, target: {},
+    )
+    result = await _resolve_context_size("qwen3:9b", "http://localhost:11434", 8192)
+    assert result == 8192
+
+
+@pytest.mark.asyncio
+async def test_resolve_context_size_ps_raises_falls_back(monkeypatch):
+    """When /api/ps raises, fall back to config value."""
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(
+        proxy_mod, "_get_ollama_ps_info",
+        lambda model, target: (_ for _ in ()).throw(RuntimeError("unreachable")),
+    )
+    result = await _resolve_context_size("qwen3:9b", "http://localhost:11434", 4096)
+    assert result == 4096
+
+
+@pytest.mark.asyncio
+async def test_resolve_context_size_no_model_skips_ps(monkeypatch):
+    """Without a model name, /api/ps is never queried; returns config value."""
+    import prompt_interceptor.proxy as proxy_mod
+    called = []
+    monkeypatch.setattr(
+        proxy_mod, "_get_ollama_ps_info",
+        lambda model, target: called.append(1) or {},
+    )
+    result = await _resolve_context_size(None, "http://localhost:11434", 4096)
+    assert result == 4096
+    assert called == []
+
+
+# ---------------------------------------------------------------------------
+# handle_chat_request — context overflow (non-streaming)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_handle_chat_context_overflow_returns_413(cfg, engine_and_logger, monkeypatch):
+    """When Ollama signals done_reason=length, handle_chat_request returns 413."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(proxy_mod, "_resolve_context_size", AsyncMock(return_value=None))
+
+    overflow_body = json.dumps({
+        "model": "qwen3:9b",
+        "message": {"role": "assistant", "content": "truncated"},
+        "done": True,
+        "done_reason": "length",
+        "prompt_eval_count": 8192,
+        "eval_count": 1,
+    }).encode()
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(return_value=(200, {"content-type": "application/json"}, overflow_body)),
+    ):
+        req = make_req({"model": "qwen3:9b", "messages": [{"role": "user", "content": "hi"}]})
+        resp = await handle_chat_request(req, engine, logger)
+
+    assert resp.status_code == 413
+    assert json.loads(resp.body)["error"] == _CONTEXT_OVERFLOW_MSG
+
+
+@pytest.mark.asyncio
+async def test_handle_chat_context_overflow_by_utilization(cfg, engine_and_logger, monkeypatch):
+    """When prompt tokens >= resolved context_size, handle_chat_request returns 413."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(proxy_mod, "_resolve_context_size", AsyncMock(return_value=8192))
+
+    overflow_body = json.dumps({
+        "model": "qwen3:9b",
+        "message": {"role": "assistant", "content": "ok"},
+        "done": True,
+        "done_reason": "stop",
+        "prompt_eval_count": 8192,
+        "eval_count": 5,
+    }).encode()
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(return_value=(200, {"content-type": "application/json"}, overflow_body)),
+    ):
+        req = make_req({"model": "qwen3:9b", "messages": []})
+        resp = await handle_chat_request(req, engine, logger)
+
+    assert resp.status_code == 413
+    assert json.loads(resp.body)["error"] == _CONTEXT_OVERFLOW_MSG
+
+
+# ---------------------------------------------------------------------------
+# handle_generate_request — context overflow (non-streaming)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_handle_generate_context_overflow_returns_413(cfg, engine_and_logger, monkeypatch):
+    """When Ollama signals done_reason=length, handle_generate_request returns 413."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(proxy_mod, "_resolve_context_size", AsyncMock(return_value=None))
+
+    overflow_body = json.dumps({
+        "model": "qwen3:9b",
+        "response": "truncated",
+        "done": True,
+        "done_reason": "length",
+    }).encode()
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(return_value=(200, {"content-type": "application/json"}, overflow_body)),
+    ):
+        req = make_req({"model": "qwen3:9b", "prompt": "long prompt"}, path="/api/generate")
+        resp = await handle_generate_request(req, engine, logger)
+
+    assert resp.status_code == 413
+    assert json.loads(resp.body)["error"] == _CONTEXT_OVERFLOW_MSG
+
+
+# ---------------------------------------------------------------------------
+# handle_stream_chat — context overflow (streaming)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_handle_stream_chat_context_overflow_yields_error(cfg, engine_and_logger, monkeypatch):
+    """Streaming /api/chat with done_reason=length yields error chunk instead of response."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(proxy_mod, "_resolve_context_size", AsyncMock(return_value=None))
+
+    ndjson = json.dumps({
+        "message": {"role": "assistant", "content": "cut off"},
+        "done": True,
+        "done_reason": "length",
+    }).encode() + b"\n"
+    monkeypatch.setattr(proxy_mod, "_start_streaming_request", _make_start_streaming_mock([ndjson]))
+
+    logged_calls = []
+    original = logger.log_response
+
+    def capture(*a, **kw):
+        logged_calls.append({"args": a, "kwargs": kw})
+        return original(*a, **kw)
+
+    logger.log_response = capture
+
+    req = make_req({"model": "qwen3:9b", "messages": []})
+    resp = await handle_stream_chat(req, engine, logger)
+    collected = b"".join([chunk async for chunk in resp.body_iterator])
+
+    data = json.loads(collected.strip())
+    assert data["error"] == _CONTEXT_OVERFLOW_MSG
+    assert logged_calls[-1]["args"][1] == 413
+
+
+@pytest.mark.asyncio
+async def test_handle_stream_chat_context_overflow_by_utilization(cfg, engine_and_logger, monkeypatch):
+    """Streaming /api/chat: prompt tokens >= resolved context triggers 413 even with done_reason=stop."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(proxy_mod, "_resolve_context_size", AsyncMock(return_value=4096))
+
+    ndjson = json.dumps({
+        "message": {"role": "assistant", "content": "ok"},
+        "done": True,
+        "done_reason": "stop",
+        "prompt_eval_count": 4096,
+        "eval_count": 10,
+    }).encode() + b"\n"
+    monkeypatch.setattr(proxy_mod, "_start_streaming_request", _make_start_streaming_mock([ndjson]))
+
+    logged_calls = []
+    original = logger.log_response
+
+    def capture(*a, **kw):
+        logged_calls.append({"args": a, "kwargs": kw})
+        return original(*a, **kw)
+
+    logger.log_response = capture
+
+    req = make_req({"model": "qwen3:9b", "messages": []})
+    resp = await handle_stream_chat(req, engine, logger)
+    collected = b"".join([chunk async for chunk in resp.body_iterator])
+
+    data = json.loads(collected.strip())
+    assert data["error"] == _CONTEXT_OVERFLOW_MSG
+    assert logged_calls[-1]["args"][1] == 413
+
+
+# ---------------------------------------------------------------------------
+# handle_stream_generate — context overflow (streaming)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_handle_stream_generate_context_overflow_yields_error(cfg, engine_and_logger, monkeypatch):
+    """Streaming /api/generate with done_reason=length yields error chunk instead of response."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(proxy_mod, "_resolve_context_size", AsyncMock(return_value=None))
+
+    ndjson = json.dumps({
+        "response": "cut off",
+        "done": True,
+        "done_reason": "length",
+    }).encode() + b"\n"
+    monkeypatch.setattr(proxy_mod, "_start_streaming_request", _make_start_streaming_mock([ndjson]))
+
+    logged_calls = []
+    original = logger.log_response
+
+    def capture(*a, **kw):
+        logged_calls.append({"args": a, "kwargs": kw})
+        return original(*a, **kw)
+
+    logger.log_response = capture
+
+    req = make_req({"model": "qwen3:9b", "prompt": "hi"}, path="/api/generate")
+    resp = await handle_stream_generate(req, engine, logger)
+    collected = b"".join([chunk async for chunk in resp.body_iterator])
+
+    data = json.loads(collected.strip())
+    assert data["error"] == _CONTEXT_OVERFLOW_MSG
+    assert logged_calls[-1]["args"][1] == 413
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_chat_completions — context overflow (streaming)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_handle_v1_chat_completions_streaming_context_overflow(cfg, engine_and_logger, monkeypatch):
+    """SSE /v1/chat/completions with finish_reason=length yields error chunk instead of response."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(proxy_mod, "_resolve_context_size", AsyncMock(return_value=None))
+
+    sse_chunk = (
+        b'data: {"id":"c1","choices":[{"delta":{"content":"cut"},"finish_reason":"length"}]}\n\n'
+        b"data: [DONE]\n\n"
+    )
+    monkeypatch.setattr(proxy_mod, "_start_streaming_request", _make_start_streaming_mock([sse_chunk]))
+
+    logged_calls = []
+    original = logger.log_response
+
+    def capture(*a, **kw):
+        logged_calls.append({"args": a, "kwargs": kw})
+        return original(*a, **kw)
+
+    logger.log_response = capture
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True}, path="/v1/chat/completions")
+    resp = await handle_v1_chat_completions(req, engine, logger)
+    collected = b"".join([chunk async for chunk in resp.body_iterator])
+
+    data = json.loads(collected.strip())
+    assert data["error"] == _CONTEXT_OVERFLOW_MSG
+    assert logged_calls[-1]["args"][1] == 413
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_chat_completions — context overflow (non-streaming)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_handle_v1_chat_completions_non_streaming_context_overflow(cfg, engine_and_logger, monkeypatch):
+    """Non-streaming /v1/chat/completions with finish_reason=length returns 413."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(proxy_mod, "_resolve_context_size", AsyncMock(return_value=None))
+
+    overflow_body = json.dumps({
+        "id": "c1",
+        "choices": [{"finish_reason": "length", "message": {"role": "assistant", "content": "cut"}}],
+        "usage": {"prompt_tokens": 8192, "completion_tokens": 1},
+    }).encode()
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(return_value=(200, {"content-type": "application/json"}, overflow_body)),
+    ):
+        req = make_req({"model": "qwen3:9b", "messages": []}, path="/v1/chat/completions")
+        resp = await handle_v1_chat_completions(req, engine, logger)
+
+    assert resp.status_code == 413
+    assert json.loads(resp.body)["error"] == _CONTEXT_OVERFLOW_MSG
+
+
+@pytest.mark.asyncio
+async def test_handle_v1_chat_completions_non_streaming_overflow_by_utilization(cfg, engine_and_logger, monkeypatch):
+    """Non-streaming /v1/chat/completions: usage.prompt_tokens >= resolved ctx returns 413."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(proxy_mod, "_resolve_context_size", AsyncMock(return_value=8192))
+
+    overflow_body = json.dumps({
+        "id": "c1",
+        "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 8192, "completion_tokens": 5},
+    }).encode()
+
+    with patch(
+        "prompt_interceptor.proxy._fetch_from_ollama",
+        new=AsyncMock(return_value=(200, {"content-type": "application/json"}, overflow_body)),
+    ):
+        req = make_req({"model": "qwen3:9b", "messages": []}, path="/v1/chat/completions")
+        resp = await handle_v1_chat_completions(req, engine, logger)
+
+    assert resp.status_code == 413
+    assert json.loads(resp.body)["error"] == _CONTEXT_OVERFLOW_MSG

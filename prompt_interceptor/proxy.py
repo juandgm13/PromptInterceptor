@@ -4,6 +4,7 @@ Core proxy module for PyProxy.
 Handles HTTP proxying, async request forwarding, and response handling.
 """
 
+import asyncio
 import json
 from typing import Optional, Dict, Any, AsyncIterator
 
@@ -13,7 +14,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .config import get_config
 from .interceptor import interceptor
-from .logger import TrafficLogger
+from .logger import TrafficLogger, _get_ollama_ps_info
 from .response_normalizer import (
     normalize_ollama_chat,
     normalize_openai_chat,
@@ -571,6 +572,9 @@ async def handle_v1_chat_completions(
         if resp.status_code >= 400:
             return await _handle_error_stream(resp, http_client, resp.status_code, logger, request_id)
 
+        model_name = (body_json or {}).get("model")
+        resolved_ctx = await _resolve_context_size(model_name, config.target, config.context_size)
+
         async def generate() -> AsyncIterator[bytes]:
             accumulated = []
             error_str = None
@@ -596,6 +600,11 @@ async def handle_v1_chat_completions(
                 except (json.JSONDecodeError, ValueError):
                     pass
 
+            if _detect_context_overflow(parsed, resolved_ctx):
+                yield json.dumps({"error": _CONTEXT_OVERFLOW_MSG}).encode()
+                logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG})
+                return
+
             corrected, was_corrected, fix_desc = (
                 normalize_openai_chat(parsed) if isinstance(parsed, dict) else (parsed, False, '')
             )
@@ -619,6 +628,13 @@ async def handle_v1_chat_completions(
         except json.JSONDecodeError:
             response_json = None
         if isinstance(response_json, dict):
+            ctx = await _resolve_context_size(
+                response_json.get("model") or (body_json or {}).get("model"),
+                config.target, config.context_size,
+            )
+            if _detect_context_overflow(response_json, ctx):
+                logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG})
+                return _error_response(413, _CONTEXT_OVERFLOW_MSG)
             response_json, was_corrected, fix_desc = normalize_openai_chat(response_json)
             if was_corrected:
                 response_body = json.dumps(response_json).encode("utf-8")
@@ -646,6 +662,58 @@ def _error_response(status_code: int, message: str) -> JSONResponse:
         status_code=status_code,
         content={"error": message},
     )
+
+
+_CONTEXT_OVERFLOW_MSG = (
+    "Contexto agotado: el modelo truncó su respuesta al alcanzar el límite de contexto. "
+    "Reduce la longitud de la conversación o aumenta el tamaño de contexto."
+)
+
+
+async def _resolve_context_size(
+    model: Optional[str],
+    target: str,
+    config_ctx: Optional[int],
+) -> Optional[int]:
+    """Query /api/ps for the model's actual loaded context size; falls back to config."""
+    if model:
+        try:
+            ps_info = await asyncio.to_thread(_get_ollama_ps_info, model, target)
+            if ps_info.get("context_size"):
+                return ps_info["context_size"]
+        except Exception:
+            pass
+    return config_ctx
+
+
+def _detect_context_overflow(
+    parsed: Optional[Dict[str, Any]],
+    context_size: Optional[int] = None,
+) -> bool:
+    """Return True if Ollama indicates the response was cut off due to context limit.
+
+    Two signals are checked:
+    - done_reason/finish_reason == "length" (model stopped at context boundary)
+    - prompt_tokens >= context_size (input already fills 100% of the window)
+    """
+    if not isinstance(parsed, dict):
+        return False
+    # Ollama native /api/chat and /api/generate
+    if parsed.get("done_reason") == "length":
+        return True
+    # OpenAI-compat /v1/chat/completions
+    choices = parsed.get("choices") or []
+    if choices and isinstance(choices[0], dict) and choices[0].get("finish_reason") == "length":
+        return True
+    # Context utilization >= 100% (mirrors the dashboard calculation)
+    if context_size:
+        prompt_tokens = parsed.get("prompt_eval_count")
+        if prompt_tokens is None and isinstance(parsed.get("usage"), dict):
+            u = parsed["usage"]
+            prompt_tokens = u.get("prompt_tokens") or u.get("input_tokens")
+        if prompt_tokens is not None and prompt_tokens >= context_size:
+            return True
+    return False
 
 
 async def _apply_intercept(
@@ -710,6 +778,13 @@ async def handle_chat_request(
             response_json = None
 
         if isinstance(response_json, dict):
+            ctx = await _resolve_context_size(
+                response_json.get("model") or (body_json or {}).get("model"),
+                config.target, config.context_size,
+            )
+            if _detect_context_overflow(response_json, ctx):
+                logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG})
+                return _error_response(413, _CONTEXT_OVERFLOW_MSG)
             response_json, was_corrected, fix_desc = normalize_ollama_chat(response_json)
             if was_corrected:
                 response_body = json.dumps(response_json).encode("utf-8")
@@ -775,6 +850,13 @@ async def handle_generate_request(
             response_json = None
 
         if isinstance(response_json, dict):
+            ctx = await _resolve_context_size(
+                response_json.get("model") or (body_json or {}).get("model"),
+                config.target, config.context_size,
+            )
+            if _detect_context_overflow(response_json, ctx):
+                logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG})
+                return _error_response(413, _CONTEXT_OVERFLOW_MSG)
             response_json, was_corrected, fix_desc = normalize_ollama_chat(response_json)
             if was_corrected:
                 response_body = json.dumps(response_json).encode("utf-8")
@@ -847,6 +929,9 @@ async def handle_stream_chat(
     if resp.status_code >= 400:
         return await _handle_error_stream(resp, http_client, resp.status_code, logger, request_id)
 
+    model_name = (body_json or {}).get("model")
+    resolved_ctx = await _resolve_context_size(model_name, config.target, config.context_size)
+
     async def generate() -> AsyncIterator[bytes]:
         accumulated = []
         error_str = None
@@ -871,6 +956,11 @@ async def handle_stream_chat(
                 parsed = json.loads(b"".join(accumulated))
             except (json.JSONDecodeError, ValueError):
                 pass
+
+        if _detect_context_overflow(parsed, resolved_ctx):
+            yield json.dumps({"error": _CONTEXT_OVERFLOW_MSG}).encode() + b"\n"
+            logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG})
+            return
 
         corrected, was_corrected, fix_desc = (
             normalize_ollama_chat(parsed) if isinstance(parsed, dict) else (parsed, False, '')
@@ -934,6 +1024,9 @@ async def handle_stream_generate(
     if resp.status_code >= 400:
         return await _handle_error_stream(resp, http_client, resp.status_code, logger, request_id)
 
+    model_name = (body_json or {}).get("model")
+    resolved_ctx = await _resolve_context_size(model_name, config.target, config.context_size)
+
     async def generate() -> AsyncIterator[bytes]:
         accumulated = []
         error_str = None
@@ -958,6 +1051,11 @@ async def handle_stream_generate(
                 parsed = json.loads(b"".join(accumulated))
             except (json.JSONDecodeError, ValueError):
                 pass
+
+        if _detect_context_overflow(parsed, resolved_ctx):
+            yield json.dumps({"error": _CONTEXT_OVERFLOW_MSG}).encode() + b"\n"
+            logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG})
+            return
 
         corrected, was_corrected, fix_desc = (
             normalize_ollama_chat(parsed) if isinstance(parsed, dict) else (parsed, False, '')
