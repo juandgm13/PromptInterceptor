@@ -274,6 +274,13 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <div id="modal-token-banner" style="display:none;background:#0a1222;border:1px solid #1a2a4a;border-radius:5px;padding:7px 12px;margin-bottom:12px;color:#4fc3f7;font-size:.82em">
       &#x1F4CA; Tokens: <span id="modal-token-text"></span>
     </div>
+    <div id="modal-error-banner" style="display:none;background:#1a0a0a;border:1px solid #4a1a1a;border-radius:5px;padding:10px 14px;margin-bottom:12px;color:#f55;font-size:.83em">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+        <span style="font-size:1.1em;font-weight:700" id="modal-error-code"></span>
+        <span style="color:#c77;font-weight:600" id="modal-error-label"></span>
+      </div>
+      <div id="modal-error-msg" style="color:#daa;margin-top:2px;word-break:break-word"></div>
+    </div>
     <div class="modal-split">
       <div class="modal-panel">
         <div class="modal-panel-title">Prompt</div>
@@ -494,6 +501,28 @@ function showRaw(id) {
     tokenBanner.style.display = '';
   } else {
     tokenBanner.style.display = 'none';
+  }
+
+  // --- Error banner ---
+  const errorBanner = document.getElementById('modal-error-banner');
+  const sc = l.status_code;
+  const errMsg = l.response_body?.error || '';
+  if (sc && sc >= 400) {
+    const labels = {
+      400: 'Bad Request',
+      408: 'Request Timeout — tiempo de espera agotado',
+      413: 'Context Window Exceeded — contexto agotado',
+      500: 'Internal Server Error — error interno del proxy',
+      502: 'Bad Gateway — no se puede conectar a Ollama',
+      503: 'Service Unavailable — Ollama no disponible',
+      504: 'Gateway Timeout — Ollama tardó demasiado',
+    };
+    document.getElementById('modal-error-code').textContent = 'HTTP ' + sc;
+    document.getElementById('modal-error-label').textContent = labels[sc] || 'Error';
+    document.getElementById('modal-error-msg').textContent = errMsg || '';
+    errorBanner.style.display = '';
+  } else {
+    errorBanner.style.display = 'none';
   }
 
   document.getElementById('modal-overlay').style.display = 'block';
