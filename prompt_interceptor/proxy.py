@@ -6,6 +6,7 @@ Handles HTTP proxying, async request forwarding, and response handling.
 
 import asyncio
 import json
+import time as _time
 from typing import Optional, Dict, Any, AsyncIterator
 
 import httpx
@@ -424,6 +425,118 @@ async def handle_v1_messages(
         "POST", request.url.path, dict(request.headers), body_json
     )
 
+    if config.context_size:
+        # ── Native /api/chat path ────────────────────────────────────────────
+        # Ollama's /v1/messages ignores options.num_ctx when deciding whether
+        # to reload the model, so we translate to the native endpoint which
+        # does honour it.
+        native_body = _v1msg_to_api_chat_body(body_json, config.context_size)
+        model_name = native_body.get("model", "")
+
+        if config.mode == "intercept":
+            drop, intercepted = await _apply_intercept(
+                request_id, "POST", request.url.path, dict(request.headers), body_json
+            )
+            if drop:
+                return Response(status_code=204)
+            native_body = _v1msg_to_api_chat_body(intercepted or body_json, config.context_size)
+            model_name = native_body.get("model", "")
+
+        is_stream = bool(native_body.get("stream", False))
+        body_bytes = json.dumps(native_body).encode("utf-8")
+        forward_headers = _forward_headers(dict(request.headers))
+        api_chat_url = config.target + "/api/chat"
+
+        if is_stream:
+            try:
+                http_client, resp = await _start_streaming_request(
+                    "POST", api_chat_url, forward_headers, body_bytes, config.timeout
+                )
+            except httpx.TimeoutException:
+                logger.log_response(request_id, 408, {}, {"error": "Request timeout"})
+                return _error_response(408, "Request timeout")
+            except httpx.ConnectError:
+                logger.log_response(request_id, 502, {}, {"error": "Cannot connect to Ollama"})
+                return _error_response(502, "Cannot connect to Ollama")
+            except Exception as exc:
+                logger.log_response(request_id, 500, {}, {"error": str(exc)})
+                return _error_response(500, str(exc))
+
+            if resp.status_code >= 400:
+                return await _handle_error_stream(resp, http_client, resp.status_code, logger, request_id)
+
+            resolved_ctx = await _resolve_context_size(model_name, config.target, config.context_size)
+
+            async def generate_native_msg() -> AsyncIterator[bytes]:
+                accumulated: list = []
+                error_str = None
+                try:
+                    async for chunk in resp.aiter_bytes():
+                        if chunk:
+                            accumulated.append(chunk)
+                except Exception as exc:
+                    error_str = str(exc)
+                finally:
+                    await resp.aclose()
+                    await http_client.aclose()
+
+                if error_str:
+                    yield json.dumps({"error": error_str}).encode()
+                    logger.log_response(request_id, 500, {}, {"error": error_str})
+                    return
+
+                parsed = _parse_stream_response(accumulated)
+                if _detect_context_overflow(parsed, resolved_ctx):
+                    yield json.dumps({"error": _CONTEXT_OVERFLOW_MSG}).encode() + b"\n"
+                    logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG})
+                    return
+
+                yield _api_chat_to_anthropic_sse(accumulated, model_name)
+                if isinstance(parsed, dict):
+                    logger.log_response(request_id, 200, {}, _api_chat_to_v1msg_response(parsed))
+                else:
+                    logger.log_response(request_id, 200, {}, parsed)
+
+            return StreamingResponse(generate_native_msg(), media_type="text/event-stream")
+
+        # Non-streaming native path
+        try:
+            status_code, response_headers, response_body = await _fetch_from_ollama(
+                config.target, "POST", "/api/chat",
+                dict(request.headers), body_bytes, config.timeout,
+            )
+            try:
+                ollama_resp = json.loads(response_body)
+            except json.JSONDecodeError:
+                ollama_resp = None
+            if isinstance(ollama_resp, dict):
+                ctx = await _resolve_context_size(
+                    ollama_resp.get("model") or model_name,
+                    config.target, config.context_size,
+                )
+                if _detect_context_overflow(ollama_resp, ctx):
+                    logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG})
+                    return _error_response(413, _CONTEXT_OVERFLOW_MSG)
+                v1msg_resp = _api_chat_to_v1msg_response(ollama_resp)
+                logger.log_response(request_id, status_code, response_headers, v1msg_resp)
+                return JSONResponse(content=v1msg_resp, status_code=status_code)
+            else:
+                logger.log_response(request_id, status_code, response_headers, ollama_resp)
+                return Response(
+                    content=response_body,
+                    status_code=status_code,
+                    headers=_forward_headers(response_headers),
+                    media_type=response_headers.get("content-type", "application/json"),
+                )
+        except httpx.TimeoutException:
+            return _error_response(408, "Request timeout")
+        except httpx.ConnectError:
+            return _error_response(502, "Cannot connect to Ollama")
+        except Exception as exc:
+            return _error_response(500, str(exc))
+
+    # ── Legacy path: forward as-is to /v1/messages ──────────────────────────
+    body_json = _inject_num_ctx(body_json)
     is_stream = bool(body_json.get("stream", False)) if body_json else False
 
     if config.mode == "intercept":
@@ -525,6 +638,269 @@ async def handle_v1_messages(
         return _error_response(500, str(exc))
 
 
+# ---------------------------------------------------------------------------
+# /v1/messages → /api/chat translation helpers
+# ---------------------------------------------------------------------------
+
+def _v1msg_to_api_chat_body(body_json: Dict[str, Any], num_ctx: Optional[int]) -> Dict[str, Any]:
+    """Translate an Anthropic /v1/messages body to Ollama /api/chat format."""
+    messages = list(body_json.get("messages", []))
+
+    # Anthropic top-level system field → prepend as system message
+    if body_json.get("system"):
+        sys_content = body_json["system"]
+        if isinstance(sys_content, list):
+            sys_content = " ".join(
+                b.get("text", "") for b in sys_content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        messages = [{"role": "system", "content": sys_content}] + messages
+
+    # Normalize Anthropic content-block arrays to plain strings for Ollama
+    normalized: list = []
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            parts: list = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "text":
+                    parts.append(block.get("text", ""))
+                elif btype == "tool_result":
+                    inner = block.get("content", "")
+                    if isinstance(inner, list):
+                        inner = " ".join(
+                            b.get("text", "") for b in inner
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        )
+                    parts.append(str(inner))
+            content = "".join(parts)
+        normalized.append({**msg, "content": content})
+
+    options: Dict[str, Any] = {}
+    if num_ctx:
+        options["num_ctx"] = num_ctx
+    for src, dst in (("temperature", "temperature"), ("top_p", "top_p"), ("top_k", "top_k")):
+        if src in body_json:
+            options.setdefault(dst, body_json[src])
+    if body_json.get("max_tokens"):
+        options.setdefault("num_predict", body_json["max_tokens"])
+
+    result: Dict[str, Any] = {
+        "model": body_json.get("model", ""),
+        "messages": normalized,
+        "stream": body_json.get("stream", False),
+    }
+    if options:
+        result["options"] = options
+    if "tools" in body_json:
+        result["tools"] = body_json["tools"]
+    return result
+
+
+def _api_chat_to_v1msg_response(ollama_resp: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate a non-streaming /api/chat response to Anthropic /v1/messages format."""
+    model = ollama_resp.get("model", "")
+    message = dict(ollama_resp.get("message") or {})
+    content_text = message.get("content", "")
+    thinking = message.get("thinking", "") or message.get("reasoning", "") or ""
+    done_reason = ollama_resp.get("done_reason") or "stop"
+    stop_reason = "max_tokens" if done_reason == "length" else "end_turn"
+    if message.get("tool_calls"):
+        stop_reason = "tool_use"
+    input_tokens = ollama_resp.get("prompt_eval_count") or 0
+    output_tokens = ollama_resp.get("eval_count") or 0
+    content_blocks: list = []
+    if thinking:
+        content_blocks.append({"type": "thinking", "thinking": thinking})
+    if content_text:
+        content_blocks.append({"type": "text", "text": content_text})
+    if message.get("tool_calls"):
+        for tc in message["tool_calls"]:
+            fn = tc.get("function", {})
+            args = fn.get("arguments", {})
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    pass
+            content_blocks.append({
+                "type": "tool_use",
+                "id": f"toolu_{int(_time.time())}",
+                "name": fn.get("name", ""),
+                "input": args,
+            })
+    return {
+        "id": f"msg_{int(_time.time())}",
+        "type": "message",
+        "role": "assistant",
+        "model": model,
+        "content": content_blocks,
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+    }
+
+
+def _api_chat_to_anthropic_sse(accumulated: list, model: str) -> bytes:
+    """Convert accumulated Ollama /api/chat NDJSON chunks to Anthropic SSE format."""
+    full_content = ""
+    full_thinking = ""
+    prompt_tokens = 0
+    completion_tokens = 0
+    stop_reason = "end_turn"
+    for chunk in accumulated:
+        for line in chunk.split(b"\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                msg = obj.get("message") or {}
+                full_content += msg.get("content", "")
+                full_thinking += msg.get("thinking", "") or msg.get("reasoning", "") or ""
+                if obj.get("done"):
+                    prompt_tokens = obj.get("prompt_eval_count", 0) or 0
+                    completion_tokens = obj.get("eval_count", 0) or 0
+                    done_reason = obj.get("done_reason") or "stop"
+                    stop_reason = "max_tokens" if done_reason == "length" else "end_turn"
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+    msg_id = f"msg_{int(_time.time())}"
+
+    def _ev(event: str, data: Any) -> str:
+        return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+    events: list = [
+        _ev("message_start", {
+            "type": "message_start",
+            "message": {
+                "id": msg_id, "type": "message", "role": "assistant",
+                "content": [], "model": model,
+                "stop_reason": None, "stop_sequence": None,
+                "usage": {"input_tokens": prompt_tokens, "output_tokens": 1},
+            },
+        }),
+    ]
+    idx = 0
+    if full_thinking:
+        events.append(_ev("content_block_start", {
+            "type": "content_block_start", "index": idx,
+            "content_block": {"type": "thinking", "thinking": ""},
+        }))
+        events.append(_ev("content_block_delta", {
+            "type": "content_block_delta", "index": idx,
+            "delta": {"type": "thinking_delta", "thinking": full_thinking},
+        }))
+        events.append(_ev("content_block_stop", {"type": "content_block_stop", "index": idx}))
+        idx += 1
+    events.append(_ev("content_block_start", {
+        "type": "content_block_start", "index": idx,
+        "content_block": {"type": "text", "text": ""},
+    }))
+    events.append(_ev("ping", {"type": "ping"}))
+    if full_content:
+        events.append(_ev("content_block_delta", {
+            "type": "content_block_delta", "index": idx,
+            "delta": {"type": "text_delta", "text": full_content},
+        }))
+    events.append(_ev("content_block_stop", {"type": "content_block_stop", "index": idx}))
+    events.append(_ev("message_delta", {
+        "type": "message_delta",
+        "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+        "usage": {"output_tokens": completion_tokens},
+    }))
+    events.append(_ev("message_stop", {"type": "message_stop"}))
+    return "".join(events).encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# /v1/chat/completions → /api/chat translation helpers
+# ---------------------------------------------------------------------------
+
+def _v1cc_to_api_chat_body(body_json: Dict[str, Any], num_ctx: Optional[int]) -> Dict[str, Any]:
+    """Translate an OpenAI /v1/chat/completions body to Ollama /api/chat format."""
+    options: Dict[str, Any] = dict(body_json.get("options") or {})
+    if num_ctx:
+        options["num_ctx"] = num_ctx
+    for src, dst in (("temperature", "temperature"), ("top_p", "top_p"), ("seed", "seed")):
+        if src in body_json:
+            options.setdefault(dst, body_json[src])
+    for max_f in ("max_tokens", "max_completion_tokens"):
+        if max_f in body_json:
+            options.setdefault("num_predict", body_json[max_f])
+            break
+    result: Dict[str, Any] = {
+        "model": body_json.get("model", ""),
+        "messages": body_json.get("messages", []),
+        "stream": body_json.get("stream", False),
+    }
+    if options:
+        result["options"] = options
+    if "tools" in body_json:
+        result["tools"] = body_json["tools"]
+    if "format" in body_json:
+        result["format"] = body_json["format"]
+    return result
+
+
+def _api_chat_to_v1cc_response(ollama_resp: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate a non-streaming /api/chat response to OpenAI /v1/chat/completions format."""
+    model = ollama_resp.get("model", "")
+    message = dict(ollama_resp.get("message") or {})
+    done_reason = ollama_resp.get("done_reason") or "stop"
+    finish_reason = "length" if done_reason == "length" else "stop"
+    if message.get("tool_calls"):
+        finish_reason = "tool_calls"
+    prompt_tokens = ollama_resp.get("prompt_eval_count") or 0
+    completion_tokens = ollama_resp.get("eval_count") or 0
+    return {
+        "id": f"chatcmpl-{int(_time.time())}",
+        "object": "chat.completion",
+        "created": int(_time.time()),
+        "model": model,
+        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+    }
+
+
+def _api_chat_chunk_to_openai_sse(chunk: Dict[str, Any], chat_id: str, created: int) -> str:
+    """Convert a single Ollama /api/chat NDJSON chunk to an OpenAI SSE data line."""
+    base: Dict[str, Any] = {
+        "id": chat_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": chunk.get("model", ""),
+    }
+    msg = chunk.get("message") or {}
+    if not chunk.get("done"):
+        content = msg.get("content", "")
+        thinking = msg.get("thinking", "") or msg.get("reasoning", "") or ""
+        delta: Dict[str, Any] = {}
+        if thinking:
+            delta["thinking"] = thinking
+        if content:
+            delta["content"] = content
+        choice: Dict[str, Any] = {"index": 0, "delta": delta, "finish_reason": None}
+    else:
+        done_reason = chunk.get("done_reason") or "stop"
+        finish_reason = "length" if done_reason == "length" else "stop"
+        tool_calls = msg.get("tool_calls")
+        if tool_calls:
+            finish_reason = "tool_calls"
+            choice = {"index": 0, "delta": {"tool_calls": tool_calls}, "finish_reason": finish_reason}
+        else:
+            choice = {"index": 0, "delta": {}, "finish_reason": finish_reason}
+    return f"data: {json.dumps({**base, 'choices': [choice]})}\n\n"
+
+
 async def handle_v1_chat_completions(
     request: Request,
     rule_engine: RuleEngine,
@@ -540,6 +916,132 @@ async def handle_v1_chat_completions(
     _modified, body_json, request_id = await rule_engine.process_request(
         "POST", request.url.path, dict(request.headers), body_json
     )
+
+    if config.context_size:
+        # ── Native /api/chat path ────────────────────────────────────────────
+        # Ollama's /v1/ endpoints ignore options.num_ctx when deciding whether
+        # to reload the model, so we translate to the native endpoint which
+        # does honour it.
+        native_body = _v1cc_to_api_chat_body(body_json, config.context_size)
+        model_name = native_body.get("model", "")
+
+        if config.mode == "intercept":
+            drop, intercepted = await _apply_intercept(
+                request_id, "POST", request.url.path, dict(request.headers), body_json
+            )
+            if drop:
+                return Response(status_code=204)
+            native_body = _v1cc_to_api_chat_body(intercepted or body_json, config.context_size)
+            model_name = native_body.get("model", "")
+
+        is_stream = bool(native_body.get("stream", False))
+        body_bytes = json.dumps(native_body).encode("utf-8")
+        forward_headers = _forward_headers(dict(request.headers))
+        api_chat_url = config.target + "/api/chat"
+
+        if is_stream:
+            try:
+                http_client, resp = await _start_streaming_request(
+                    "POST", api_chat_url, forward_headers, body_bytes, config.timeout
+                )
+            except httpx.TimeoutException:
+                logger.log_response(request_id, 408, {}, {"error": "Request timeout"})
+                return _error_response(408, "Request timeout")
+            except httpx.ConnectError:
+                logger.log_response(request_id, 502, {}, {"error": "Cannot connect to Ollama"})
+                return _error_response(502, "Cannot connect to Ollama")
+            except Exception as exc:
+                logger.log_response(request_id, 500, {}, {"error": str(exc)})
+                return _error_response(500, str(exc))
+
+            if resp.status_code >= 400:
+                return await _handle_error_stream(resp, http_client, resp.status_code, logger, request_id)
+
+            resolved_ctx = await _resolve_context_size(model_name, config.target, config.context_size)
+            chat_id = f"chatcmpl-{int(_time.time())}"
+            created = int(_time.time())
+
+            async def generate_native() -> AsyncIterator[bytes]:
+                accumulated: list = []
+                error_str = None
+                try:
+                    async for chunk in resp.aiter_bytes():
+                        if chunk:
+                            accumulated.append(chunk)
+                except Exception as exc:
+                    error_str = str(exc)
+                finally:
+                    await resp.aclose()
+                    await http_client.aclose()
+
+                if error_str:
+                    yield json.dumps({"error": error_str}).encode()
+                    logger.log_response(request_id, 500, {}, {"error": error_str})
+                    return
+
+                parsed = _parse_stream_response(accumulated)
+                if _detect_context_overflow(parsed, resolved_ctx):
+                    yield json.dumps({"error": _CONTEXT_OVERFLOW_MSG}).encode() + b"\n"
+                    logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG})
+                    return
+
+                for raw in accumulated:
+                    for line in raw.split(b"\n"):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                            yield _api_chat_chunk_to_openai_sse(obj, chat_id, created).encode("utf-8")
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
+                yield b"data: [DONE]\n\n"
+
+                if isinstance(parsed, dict):
+                    logger.log_response(request_id, 200, {}, _api_chat_to_v1cc_response(parsed))
+                else:
+                    logger.log_response(request_id, 200, {}, parsed)
+
+            return StreamingResponse(generate_native(), media_type="text/event-stream")
+
+        # Non-streaming native path
+        try:
+            status_code, response_headers, response_body = await _fetch_from_ollama(
+                config.target, "POST", "/api/chat",
+                dict(request.headers), body_bytes, config.timeout,
+            )
+            try:
+                ollama_resp = json.loads(response_body)
+            except json.JSONDecodeError:
+                ollama_resp = None
+            if isinstance(ollama_resp, dict):
+                ctx = await _resolve_context_size(
+                    ollama_resp.get("model") or model_name,
+                    config.target, config.context_size,
+                )
+                if _detect_context_overflow(ollama_resp, ctx):
+                    logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG})
+                    return _error_response(413, _CONTEXT_OVERFLOW_MSG)
+                v1_resp = _api_chat_to_v1cc_response(ollama_resp)
+                logger.log_response(request_id, status_code, response_headers, v1_resp)
+                return JSONResponse(content=v1_resp, status_code=status_code)
+            else:
+                logger.log_response(request_id, status_code, response_headers, ollama_resp)
+                return Response(
+                    content=response_body,
+                    status_code=status_code,
+                    headers=_forward_headers(response_headers),
+                    media_type=response_headers.get("content-type", "application/json"),
+                )
+        except httpx.TimeoutException:
+            return _error_response(408, "Request timeout")
+        except httpx.ConnectError:
+            return _error_response(502, "Cannot connect to Ollama")
+        except Exception as exc:
+            return _error_response(500, str(exc))
+
+    # ── Legacy path: forward as-is to /v1/chat/completions ──────────────────
+    body_json = _inject_num_ctx(body_json)
 
     is_stream = bool(body_json.get("stream", False)) if body_json else False
 
@@ -668,6 +1170,38 @@ _CONTEXT_OVERFLOW_MSG = (
     "Contexto agotado: el modelo truncó su respuesta al alcanzar el límite de contexto. "
     "Reduce la longitud de la conversación o aumenta el tamaño de contexto."
 )
+
+
+async def _preload_model_with_ctx(model: str, target: str, num_ctx: int) -> None:
+    """
+    Ensure Ollama loads the model with the correct num_ctx via the native API.
+
+    Ollama's /v1/ (OpenAI/Anthropic-compat) endpoints do not trigger a model
+    reload when options.num_ctx changes, so we force it here by sending a
+    no-op request to /api/generate (the native endpoint that does respect it).
+    Skipped if the model is already loaded with the correct context size.
+    """
+    if not model or not num_ctx:
+        return
+    try:
+        ps_info = await asyncio.to_thread(_get_ollama_ps_info, model, target)
+        if ps_info.get("context_size") == num_ctx:
+            return
+    except Exception:
+        pass
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120)) as client:
+            await client.post(
+                target + "/api/generate",
+                json={
+                    "model": model,
+                    "prompt": "",
+                    "stream": False,
+                    "options": {"num_ctx": num_ctx},
+                },
+            )
+    except Exception:
+        pass
 
 
 async def _resolve_context_size(
