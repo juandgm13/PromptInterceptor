@@ -206,6 +206,7 @@ class TrafficLogger:
         headers: Dict[str, str],
         body: Optional[Dict[str, Any]] = None,
         correction_applied: Optional[str] = None,
+        token_source_body: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Log a response, merging into the existing request log entry if present.
@@ -216,6 +217,8 @@ class TrafficLogger:
             headers: Response headers
             body: Response body (JSON)
             correction_applied: Description of auto-corrections applied, or None
+            token_source_body: Alternative body to extract token usage from (e.g. the
+                original Ollama response when body is an error dict like for 413s).
         """
         date_dir = self._get_date_dir()
         filepath = date_dir / f"req_{request_id}.json"
@@ -241,11 +244,12 @@ class TrafficLogger:
             log_entry["_correction_applied"] = correction_applied
         # Extract model name from response or request body for context size lookup
         model_name: Optional[str] = None
-        if isinstance(body, dict):
-            model_name = body.get("model")
+        token_src = token_source_body if token_source_body is not None else body
+        if isinstance(token_src, dict):
+            model_name = token_src.get("model")
         if not model_name and isinstance(existing.get("body"), dict):
             model_name = existing["body"].get("model")
-        token_usage = self._extract_token_usage(body, model_name)
+        token_usage = self._extract_token_usage(token_src, model_name)
         if token_usage:
             log_entry["_tokens_usage"] = token_usage
         # Ensure request_id is always present
