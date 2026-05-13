@@ -143,8 +143,9 @@ def _detect_clients() -> list:
     Always includes 'Python App (Ollama)' as a custom option.
     """
     clients = []
-    if shutil.which("claude"):
-        clients.append(("Claude Code", "claude"))
+    # Claude Code disabled for now — proxy translation not yet stable for this client.
+    # if shutil.which("claude"):
+    #     clients.append(("Claude Code", "claude"))
     if shutil.which("opencode"):
         clients.append(("Open Code (CLI)", "opencode"))
     # Open Code (WSL) support is implemented but disabled in the UI for now.
@@ -283,8 +284,8 @@ class LauncherWindow:
         try:
             name = self.client_var.get()
         except AttributeError:
-            return 490
-        return 550 if name == "Python App (Ollama)" else 490
+            return 460
+        return 550 if name == "Python App (Ollama)" else 460
 
     def _center_window(self, width: int, height: int) -> None:
         self.root.update_idletasks()
@@ -351,18 +352,6 @@ class LauncherWindow:
         self.ollama_host_var = tk.StringVar(value=initial_host)
         self._host_entry = ttk.Entry(row_host, textvariable=self.ollama_host_var, width=22)
         self._host_entry.pack(side="left")
-
-        row1 = ttk.Frame(self.root)
-        row1.pack(fill="x", **pad)
-        ttk.Label(row1, text="Context Size:", width=14, anchor="w").pack(side="left")
-        default_ctx = next(
-            (k for k, v in _CTX_OPTIONS.items() if v == config.context_size),
-            _CTX_DEFAULT
-        )
-        self.ctx_var = tk.StringVar(value=default_ctx)
-        ttk.Combobox(row1, textvariable=self.ctx_var,
-                     values=list(_CTX_OPTIONS.keys()),
-                     state="readonly", width=22).pack(side="left")
 
         row1c = ttk.Frame(self.root)
         row1c.pack(fill="x", padx=20, pady=(2, 10))
@@ -446,6 +435,19 @@ class LauncherWindow:
                                          width=26, state="disabled")
         self._env_var_entry.pack(side="left")
 
+        # Context Size row (Python App only — controls OLLAMA_NUM_CTX at Ollama launch)
+        self._row_ctx = ttk.Frame(self._client_details)
+        ttk.Label(self._row_ctx, text="Context Size:", width=14, anchor="w").pack(side="left")
+        default_ctx = next(
+            (k for k, v in _CTX_OPTIONS.items() if v == config.context_size),
+            _CTX_DEFAULT
+        )
+        self.ctx_var = tk.StringVar(value=default_ctx)
+        self._ctx_cb = ttk.Combobox(self._row_ctx, textvariable=self.ctx_var,
+                                     values=list(_CTX_OPTIONS.keys()),
+                                     state="readonly", width=22)
+        self._ctx_cb.pack(side="left")
+
         self._row_launch = ttk.Frame(self._client_details)
         ttk.Label(self._row_launch, text="", width=14).pack(side="left")
         self._launch_client_btn = ttk.Button(self._row_launch, text="Launch Client",
@@ -478,13 +480,6 @@ class LauncherWindow:
     def _on_launch_ollama(self) -> None:
         self._launch_ollama_btn.config(state="disabled")
         self.status_var.set("Checking Ollama...")
-        ctx_value = _CTX_OPTIONS.get(self.ctx_var.get(), 32768)
-        config = get_config()
-        config.context_size = ctx_value
-        try:
-            save_config(config)
-        except OSError:
-            pass
         threading.Thread(target=self._check_or_launch_ollama, daemon=True).start()
 
     def _check_or_launch_ollama(self) -> None:
@@ -505,13 +500,11 @@ class LauncherWindow:
             self.root.after(0, self._ask_on_remote_fail, host, port)
             return
 
-        ctx_value = config.context_size or 32768
         self.root.after(0, lambda: self.status_var.set("Launching Ollama server..."))
         self._active_target = target
         try:
             subprocess.Popen(
-                ["cmd", "/c", "start", "", "cmd", "/k",
-                 f"set OLLAMA_NUM_CTX={ctx_value} && ollama serve"],
+                ["cmd", "/c", "start", "", "cmd", "/k", "ollama serve"],
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
             )
         except FileNotFoundError:
@@ -619,6 +612,7 @@ class LauncherWindow:
         self._row_command.pack_forget()
         self._row_venv.pack_forget()
         self._row_envvar.pack_forget()
+        self._row_ctx.pack_forget()
         self._row_launch.pack_forget()
 
         name = self.client_var.get()
@@ -626,11 +620,13 @@ class LauncherWindow:
         field_state = "normal" if self._step2_enabled else "disabled"
 
         if is_python:
+            self._row_ctx.pack(fill="x", padx=20, pady=2)
             self._row_apppath.pack(fill="x", padx=20, pady=2)
             self._row_command.pack(fill="x", padx=20, pady=2)
             self._row_venv.pack(fill="x", padx=20, pady=2)
             self._row_envvar.pack(fill="x", padx=20, pady=2)
             self._row_launch.pack(fill="x", padx=20, pady=(2, 10))
+            self._ctx_cb.config(state="readonly" if self._step2_enabled else "disabled")
             self._app_path_entry.config(state=field_state)
             self._browse_app_btn.config(state=field_state)
             self._command_entry.config(state=field_state)
