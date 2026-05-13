@@ -41,6 +41,7 @@ def test_detect_clients_no_system_clients(monkeypatch):
     assert clients[0] == ("Python App (Ollama)", "__python_app__")
 
 
+@pytest.mark.skip(reason="Claude Code client deshabilitado en el launcher")
 def test_detect_clients_claude_only(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/claude" if cmd == "claude" else None)
     from prompt_interceptor import launcher
@@ -61,6 +62,7 @@ def test_detect_clients_opencode_only(monkeypatch):
     assert clients[-1] == ("Python App (Ollama)", "__python_app__")
 
 
+@pytest.mark.skip(reason="Claude Code client deshabilitado en el launcher")
 def test_detect_clients_both(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
     from prompt_interceptor import launcher
@@ -382,34 +384,26 @@ def test_on_launch_ollama_opens_process_and_thread(tmp_path, monkeypatch):
 
     assert len(popen_calls) == 1
     cmd_args, _ = popen_calls[0]
-    # context size is embedded in the command string, not in env
     assert "ollama serve" in " ".join(cmd_args)
-    assert "OLLAMA_NUM_CTX=8192" in cmd_args[-1]
     mock_thread.assert_called_once()
 
 
 def test_on_launch_ollama_disables_button_and_starts_thread(tmp_path, monkeypatch):
-    """_on_launch_ollama disables the button, saves context_size, and starts the check thread."""
+    """_on_launch_ollama disables the button and starts the check thread."""
     cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
 
     win, _ = _make_headless_win(cfg)
-    win.ctx_var = MagicMock()
-    win.ctx_var.get.return_value = "4k  (4096)"
     win.status_var = MagicMock()
     win._launch_ollama_btn = MagicMock()
 
-    saved = []
-    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread, \
-         patch("prompt_interceptor.launcher.save_config", side_effect=lambda c: saved.append(c)):
+    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
         mock_thread.return_value = MagicMock()
         win._on_launch_ollama()
 
     win._launch_ollama_btn.config.assert_called_with(state="disabled")
     win.status_var.set.assert_called_with("Checking Ollama...")
     mock_thread.assert_called_once()
-    # context_size persisted to config before the thread starts
-    assert saved and saved[0].context_size == 4096
 
 
 def test_check_or_launch_ollama_already_running(tmp_path, monkeypatch):
@@ -435,7 +429,7 @@ def test_check_or_launch_ollama_already_running(tmp_path, monkeypatch):
 
 
 def test_on_launch_ollama_uses_selected_ctx(tmp_path, monkeypatch):
-    """Context size selected in the UI reaches the Ollama command via the config."""
+    """_check_or_launch_ollama lanza Ollama con 'ollama serve' (context_size se aplica en el paso Python App)."""
     cfg = Config(log_dir=str(tmp_path / "logs"), context_size=32768)
     monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
     monkeypatch.setattr("prompt_interceptor.launcher._fetch_ollama_models", lambda t: [])
@@ -443,8 +437,6 @@ def test_on_launch_ollama_uses_selected_ctx(tmp_path, monkeypatch):
     win, mock_root = _make_headless_win(cfg)
     win.ollama_host_var = MagicMock()
     win.ollama_host_var.get.return_value = "127.0.0.1"
-    win.ctx_var = MagicMock()
-    win.ctx_var.get.return_value = "32k (32768)"
     win.status_var = MagicMock()
     win._launch_ollama_btn = MagicMock()
     mock_root.after.side_effect = lambda delay, fn, *args: fn(*args)
@@ -452,13 +444,12 @@ def test_on_launch_ollama_uses_selected_ctx(tmp_path, monkeypatch):
     popen_calls = []
     with patch("prompt_interceptor.launcher.subprocess.Popen",
                side_effect=lambda *a, **kw: popen_calls.append((a[0], kw))), \
-         patch("prompt_interceptor.launcher.threading.Thread") as mock_thread, \
-         patch("prompt_interceptor.launcher.save_config"):
+         patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
         mock_thread.return_value = MagicMock()
-        # _check_or_launch_ollama reads context_size from config (saved by _on_launch_ollama)
         win._check_or_launch_ollama()
 
-    assert "OLLAMA_NUM_CTX=32768" in popen_calls[0][0][-1]
+    assert len(popen_calls) == 1
+    assert "ollama serve" in " ".join(popen_calls[0][0])
 
 
 # ---------------------------------------------------------------------------
@@ -664,21 +655,21 @@ def test_get_window_height_returns_550_for_python_app(tmp_path):
 
 
 def test_get_window_height_returns_490_for_other_clients(tmp_path):
-    """_get_window_height returns 490 for non-Python-App clients."""
+    """_get_window_height returns 460 for non-Python-App clients."""
     cfg = Config(log_dir=str(tmp_path / "logs"))
     win, _ = _make_headless_win(cfg)
     win.client_var = MagicMock()
-    win.client_var.get.return_value = "Claude Code"
-    assert win._get_window_height() == 490
+    win.client_var.get.return_value = "Open Code (CLI)"
+    assert win._get_window_height() == 460
 
 
 def test_get_window_height_attribute_error_returns_490(tmp_path):
-    """_get_window_height returns 490 when client_var.get() raises AttributeError."""
+    """_get_window_height returns 460 when client_var.get() raises AttributeError."""
     cfg = Config(log_dir=str(tmp_path / "logs"))
     win, _ = _make_headless_win(cfg)
     win.client_var = MagicMock()
     win.client_var.get.side_effect = AttributeError("not initialized")
-    assert win._get_window_height() == 490
+    assert win._get_window_height() == 460
 
 
 def test_refresh_client_rows_resizes_window_for_python_app(tmp_path):
@@ -702,11 +693,11 @@ def test_refresh_client_rows_resizes_window_for_python_app(tmp_path):
 
 
 def test_refresh_client_rows_resizes_window_for_other_client(tmp_path):
-    """_refresh_client_rows calls root.geometry with height 490 for non-Python-App clients."""
+    """_refresh_client_rows calls root.geometry with height 460 for non-Python-App clients."""
     cfg = Config(log_dir=str(tmp_path / "logs"))
     win, mock_root = _make_headless_win(cfg)
     win.client_var = MagicMock()
-    win.client_var.get.return_value = "Claude Code"
+    win.client_var.get.return_value = "Open Code (CLI)"
     win._step2_enabled = False
     for attr in ("_row_model", "_row_workdir", "_row_apppath", "_row_command",
                  "_row_venv", "_row_envvar", "_row_launch",
@@ -718,7 +709,7 @@ def test_refresh_client_rows_resizes_window_for_other_client(tmp_path):
     win._refresh_client_rows()
 
     geometry_calls = [str(c) for c in mock_root.geometry.call_args_list]
-    assert any("490" in c for c in geometry_calls)
+    assert any("460" in c for c in geometry_calls)
 
 
 def test_on_client_change_calls_refresh(tmp_path):
