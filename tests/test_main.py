@@ -257,13 +257,7 @@ async def test_v1_messages_endpoint_is_registered(proxy_app):
     from httpx import AsyncClient, ASGITransport
     import prompt_interceptor.proxy as proxy_mod
 
-    # Native path forwards to /api/chat and expects Ollama native response format
-    response_bytes = json.dumps({
-        "model": "qwen3:9b",
-        "message": {"role": "assistant", "content": "hi"},
-        "done_reason": "stop", "done": True,
-        "prompt_eval_count": 5, "eval_count": 3,
-    }).encode()
+    response_bytes = json.dumps({"id": "msg_01", "type": "message"}).encode()
 
     with patch(
         "prompt_interceptor.proxy._fetch_from_ollama",
@@ -278,20 +272,16 @@ async def test_v1_messages_endpoint_is_registered(proxy_app):
             )
 
     assert resp.status_code == 200
-    assert resp.json()["type"] == "message"
-    assert resp.json()["content"][0]["text"] == "hi"
+    assert resp.json()["id"] == "msg_01"
 
 
 async def test_v1_chat_completions_endpoint_is_registered(proxy_app):
     """/v1/chat/completions has a dedicated handler (not passthrough)."""
     from httpx import AsyncClient, ASGITransport
 
-    # Native path forwards to /api/chat and expects Ollama native response format
     response_bytes = json.dumps({
-        "model": "qwen3:9b",
-        "message": {"role": "assistant", "content": "hi"},
-        "done_reason": "stop", "done": True,
-        "prompt_eval_count": 5, "eval_count": 3,
+        "id": "chatcmpl-1", "object": "chat.completion",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
     }).encode()
 
     with patch(
@@ -307,8 +297,7 @@ async def test_v1_chat_completions_endpoint_is_registered(proxy_app):
             )
 
     assert resp.status_code == 200
-    assert resp.json()["object"] == "chat.completion"
-    assert resp.json()["choices"][0]["message"]["content"] == "hi"
+    assert resp.json()["id"] == "chatcmpl-1"
 
 
 async def test_passthrough_endpoint_is_registered(proxy_app):
