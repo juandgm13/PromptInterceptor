@@ -602,7 +602,7 @@ async def handle_v1_chat_completions(
 
             if _detect_context_overflow(parsed, resolved_ctx):
                 yield json.dumps({"error": _CONTEXT_OVERFLOW_MSG}).encode()
-                logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG})
+                logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG}, token_source_body=parsed)
                 return
 
             corrected, was_corrected, fix_desc = (
@@ -633,7 +633,7 @@ async def handle_v1_chat_completions(
                 config.target, config.context_size,
             )
             if _detect_context_overflow(response_json, ctx):
-                logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG})
+                logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG}, token_source_body=response_json)
                 return _error_response(413, _CONTEXT_OVERFLOW_MSG)
             response_json, was_corrected, fix_desc = normalize_openai_chat(response_json)
             if was_corrected:
@@ -783,7 +783,7 @@ async def handle_chat_request(
                 config.target, config.context_size,
             )
             if _detect_context_overflow(response_json, ctx):
-                logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG})
+                logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG}, token_source_body=response_json)
                 return _error_response(413, _CONTEXT_OVERFLOW_MSG)
             response_json, was_corrected, fix_desc = normalize_ollama_chat(response_json)
             if was_corrected:
@@ -855,7 +855,7 @@ async def handle_generate_request(
                 config.target, config.context_size,
             )
             if _detect_context_overflow(response_json, ctx):
-                logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG})
+                logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG}, token_source_body=response_json)
                 return _error_response(413, _CONTEXT_OVERFLOW_MSG)
             response_json, was_corrected, fix_desc = normalize_ollama_chat(response_json)
             if was_corrected:
@@ -959,7 +959,7 @@ async def handle_stream_chat(
 
         if _detect_context_overflow(parsed, resolved_ctx):
             yield json.dumps({"error": _CONTEXT_OVERFLOW_MSG}).encode() + b"\n"
-            logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG})
+            logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG}, token_source_body=parsed)
             return
 
         corrected, was_corrected, fix_desc = (
@@ -1054,7 +1054,7 @@ async def handle_stream_generate(
 
         if _detect_context_overflow(parsed, resolved_ctx):
             yield json.dumps({"error": _CONTEXT_OVERFLOW_MSG}).encode() + b"\n"
-            logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG})
+            logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG}, token_source_body=parsed)
             return
 
         corrected, was_corrected, fix_desc = (
