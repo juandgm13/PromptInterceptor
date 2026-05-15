@@ -541,6 +541,8 @@ async def handle_v1_chat_completions(
         "POST", request.url.path, dict(request.headers), body_json
     )
 
+    body_json = _inject_num_ctx(body_json)
+
     is_stream = bool(body_json.get("stream", False)) if body_json else False
 
     if config.mode == "intercept":
@@ -692,27 +694,31 @@ def _detect_context_overflow(
 ) -> bool:
     """Return True if Ollama indicates the response was cut off due to context limit.
 
-    Two signals are checked:
-    - done_reason/finish_reason == "length" (model stopped at context boundary)
-    - prompt_tokens >= context_size (input already fills 100% of the window)
+    Ollama uses done_reason/finish_reason == "length" for BOTH context exhaustion and
+    num_predict (generation length cap), so that signal alone is ambiguous.  The
+    definitive check is prompt_tokens >= context_size (>= 100% utilisation).
+    The done_reason signal is only used as a fallback when token counts are unavailable.
     """
     if not isinstance(parsed, dict):
         return False
-    # Ollama native /api/chat and /api/generate
+
+    # Extract prompt token count (native and OpenAI-compat formats)
+    prompt_tokens = parsed.get("prompt_eval_count")
+    if prompt_tokens is None and isinstance(parsed.get("usage"), dict):
+        u = parsed["usage"]
+        prompt_tokens = u.get("prompt_tokens") or u.get("input_tokens")
+
+    # Definitive check: prompt fills >= 100% of the context window
+    if context_size and prompt_tokens is not None:
+        return prompt_tokens >= context_size
+
+    # Fallback when token counts are absent: trust done_reason/finish_reason
     if parsed.get("done_reason") == "length":
         return True
-    # OpenAI-compat /v1/chat/completions
     choices = parsed.get("choices") or []
     if choices and isinstance(choices[0], dict) and choices[0].get("finish_reason") == "length":
         return True
-    # Context utilization >= 100% (mirrors the dashboard calculation)
-    if context_size:
-        prompt_tokens = parsed.get("prompt_eval_count")
-        if prompt_tokens is None and isinstance(parsed.get("usage"), dict):
-            u = parsed["usage"]
-            prompt_tokens = u.get("prompt_tokens") or u.get("input_tokens")
-        if prompt_tokens is not None and prompt_tokens >= context_size:
-            return True
+
     return False
 
 

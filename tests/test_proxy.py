@@ -2848,7 +2848,8 @@ async def test_handle_stream_generate_streaming_was_corrected(cfg, engine_and_lo
 # _detect_context_overflow — unit tests
 # ---------------------------------------------------------------------------
 
-def test_detect_context_overflow_ollama_done_reason_length():
+def test_detect_context_overflow_ollama_done_reason_length_no_tokens():
+    """done_reason='length' without token counts falls back to signal — treat as overflow."""
     assert _detect_context_overflow({"done_reason": "length", "done": True}) is True
 
 
@@ -2856,7 +2857,8 @@ def test_detect_context_overflow_ollama_done_reason_stop():
     assert _detect_context_overflow({"done_reason": "stop", "done": True}) is False
 
 
-def test_detect_context_overflow_openai_finish_reason_length():
+def test_detect_context_overflow_openai_finish_reason_length_no_tokens():
+    """finish_reason='length' without token counts falls back to signal — treat as overflow."""
     parsed = {"choices": [{"finish_reason": "length", "message": {"content": "hi"}}]}
     assert _detect_context_overflow(parsed) is True
 
@@ -2915,6 +2917,40 @@ def test_detect_context_overflow_openai_usage_below():
         "usage": {"prompt_tokens": 100, "completion_tokens": 10},
     }
     assert _detect_context_overflow(parsed, context_size=8192) is False
+
+
+def test_detect_context_overflow_done_reason_length_below_context():
+    """done_reason='length' with prompt_tokens < context_size is a num_predict stop, not overflow."""
+    assert _detect_context_overflow(
+        {"done_reason": "length", "prompt_eval_count": 1000, "done": True},
+        context_size=32768,
+    ) is False
+
+
+def test_detect_context_overflow_done_reason_length_at_context():
+    """done_reason='length' with prompt_tokens == context_size is a real context overflow."""
+    assert _detect_context_overflow(
+        {"done_reason": "length", "prompt_eval_count": 32768, "done": True},
+        context_size=32768,
+    ) is True
+
+
+def test_detect_context_overflow_finish_reason_length_below_context():
+    """finish_reason='length' with usage.prompt_tokens < context_size is a num_predict stop."""
+    parsed = {
+        "choices": [{"finish_reason": "length", "message": {"content": "truncated"}}],
+        "usage": {"prompt_tokens": 1000, "completion_tokens": 500},
+    }
+    assert _detect_context_overflow(parsed, context_size=32768) is False
+
+
+def test_detect_context_overflow_finish_reason_length_at_context():
+    """finish_reason='length' with usage.prompt_tokens == context_size is real overflow."""
+    parsed = {
+        "choices": [{"finish_reason": "length", "message": {"content": "truncated"}}],
+        "usage": {"prompt_tokens": 32768, "completion_tokens": 10},
+    }
+    assert _detect_context_overflow(parsed, context_size=32768) is True
 
 
 # ---------------------------------------------------------------------------
