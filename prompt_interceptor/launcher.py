@@ -7,7 +7,6 @@ import os
 import shutil
 import subprocess
 import threading
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -344,8 +343,8 @@ class LauncherWindow:
         self.proxy_port_var = tk.StringVar(value=str(config.proxy_port))
         ttk.Entry(row_port, textvariable=self.proxy_port_var, width=8).pack(side="left")
 
-        # ── Step 1: Ollama Server ──
-        ttk.Label(self.root, text="── Step 1: Ollama Server ──", style="Section.TLabel").pack(pady=(6, 0))
+        # ── Step 1: Check Ollama ──
+        ttk.Label(self.root, text="── Step 1: Check Ollama ──", style="Section.TLabel").pack(pady=(6, 0))
 
         # Ollama Host row
         parsed_target = urllib.parse.urlparse(config.target)
@@ -360,9 +359,9 @@ class LauncherWindow:
         row1c = ttk.Frame(self.root)
         row1c.pack(fill="x", padx=20, pady=(2, 10))
         ttk.Label(row1c, text="", width=14).pack(side="left")
-        self._launch_ollama_btn = ttk.Button(row1c, text="Launch Ollama Server",
+        self._launch_ollama_btn = ttk.Button(row1c, text="Check Ollama",
                                               style="Action.TButton",
-                                              command=self._on_launch_ollama, width=24)
+                                              command=self._on_launch_ollama, width=18)
         self._launch_ollama_btn.pack(side="left")
 
         # ── Step 2: AI Client ──
@@ -503,7 +502,7 @@ class LauncherWindow:
         models = _fetch_ollama_models(target)
         if models:
             self._active_target = target
-            self.root.after(0, lambda: self.status_var.set("Ollama already running."))
+            self.root.after(0, lambda: self.status_var.set("Ollama running."))
             self.root.after(0, self._on_models_ready, models)
             return
 
@@ -511,24 +510,10 @@ class LauncherWindow:
             self.root.after(0, self._ask_on_remote_fail, host, port)
             return
 
-        self.root.after(0, lambda: self.status_var.set("Launching Ollama server..."))
-        self._active_target = target
-        try:
-            subprocess.Popen(
-                ["cmd", "/c", "start", "", "cmd", "/k", "ollama serve"],
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-            )
-        except FileNotFoundError:
-            self.root.after(0, lambda: self._launch_ollama_btn.config(state="normal"))
-            self.root.after(0, lambda: self.status_var.set(
-                "Error: 'ollama' command not found. Is Ollama installed?"))
-            return
-        except OSError as exc:
-            msg = str(exc)
-            self.root.after(0, lambda: self._launch_ollama_btn.config(state="normal"))
-            self.root.after(0, lambda: self.status_var.set(f"Error launching Ollama: {msg}"))
-            return
-        threading.Thread(target=self._fetch_models_after_launch, daemon=True).start()
+        self.root.after(0, lambda: self._launch_ollama_btn.config(state="normal"))
+        self.root.after(0, lambda: self.status_var.set(
+            "Ollama not running. Start it (ollama serve) and click Check again."
+        ))
 
     def _ask_on_remote_fail(self, host: str, port: int) -> None:
         """Show a dialog when a remote Ollama host is unreachable."""
@@ -585,17 +570,6 @@ class LauncherWindow:
         y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
         dialog.geometry(f"+{x}+{y}")
 
-    def _fetch_models_after_launch(self) -> None:
-        """Wait for Ollama to start, fetch downloaded models, then unlock Step 2."""
-        target = getattr(self, "_active_target", None) or get_config().target
-        time.sleep(2)
-        models = _fetch_ollama_models(target)
-        if not models:
-            self.root.after(0, lambda: self.status_var.set("Retrying model fetch..."))
-            time.sleep(3)
-            models = _fetch_ollama_models(target)
-        self.root.after(0, self._on_models_ready, models)
-
     def _on_models_ready(self, models: list) -> None:
         if models:
             self._model_cb["values"] = models
@@ -604,7 +578,7 @@ class LauncherWindow:
             self.model_var.set(initial)
             self.status_var.set(f"Ollama ready — {len(models)} model(s) available.")
         else:
-            self.status_var.set("Ollama launched (models unavailable — check Ollama manually).")
+            self.status_var.set("Ollama found (no models — pull one with 'ollama pull <model>').")
         self._set_step2_enabled(True)
 
     # ── Step 2: Client ──
