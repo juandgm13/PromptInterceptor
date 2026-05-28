@@ -142,7 +142,7 @@ def _detect_clients() -> list:
     """Detect installed AI clients. Returns list of (display_name, command).
     Always includes 'Python App (Ollama)' as a custom option.
     """
-    clients = []
+    clients = [("Only Proxy", "__only_proxy__")]
     # Claude Code disabled for now — proxy translation not yet stable for this client.
     # if shutil.which("claude"):
     #     clients.append(("Claude Code", "claude"))
@@ -285,7 +285,11 @@ class LauncherWindow:
             name = self.client_var.get()
         except AttributeError:
             return 460
-        return 550 if name == "Python App (Ollama)" else 460
+        if name == "Python App (Ollama)":
+            return 550
+        if name == "Only Proxy":
+            return 400
+        return 460
 
     def _center_window(self, width: int, height: int) -> None:
         self.root.update_idletasks()
@@ -447,6 +451,13 @@ class LauncherWindow:
                                      values=list(_CTX_OPTIONS.keys()),
                                      state="readonly", width=22)
         self._ctx_cb.pack(side="left")
+
+        # Proxy URL info row (Only Proxy mode)
+        self._row_proxy_info = ttk.Frame(self._client_details)
+        ttk.Label(self._row_proxy_info, text="Proxy URL:", width=14, anchor="w").pack(side="left")
+        self._proxy_url_var = tk.StringVar(value=f"http://localhost:{config.proxy_port}")
+        ttk.Label(self._row_proxy_info, textvariable=self._proxy_url_var,
+                  foreground="#4fc3f7", font=("Segoe UI", 10, "bold")).pack(side="left")
 
         self._row_launch = ttk.Frame(self._client_details)
         ttk.Label(self._row_launch, text="", width=14).pack(side="left")
@@ -613,13 +624,25 @@ class LauncherWindow:
         self._row_venv.pack_forget()
         self._row_envvar.pack_forget()
         self._row_ctx.pack_forget()
+        self._row_proxy_info.pack_forget()
         self._row_launch.pack_forget()
 
         name = self.client_var.get()
-        is_python = name == "Python App (Ollama)"
+        cmd_name = next((c for n, c in self._clients if n == name), "")
+        is_python = cmd_name == "__python_app__"
+        is_only_proxy = cmd_name == "__only_proxy__"
         field_state = "normal" if self._step2_enabled else "disabled"
 
-        if is_python:
+        if is_only_proxy:
+            try:
+                port = int(self.proxy_port_var.get().strip())
+            except ValueError:
+                port = get_config().proxy_port
+            self._proxy_url_var.set(f"http://localhost:{port}")
+            self._row_proxy_info.pack(fill="x", padx=20, pady=2)
+            self._row_launch.pack(fill="x", padx=20, pady=(2, 10))
+            self._launch_client_btn.config(text="Launch Proxy", state=field_state)
+        elif is_python:
             self._row_ctx.pack(fill="x", padx=20, pady=2)
             self._row_apppath.pack(fill="x", padx=20, pady=2)
             self._row_command.pack(fill="x", padx=20, pady=2)
@@ -632,7 +655,7 @@ class LauncherWindow:
             self._command_entry.config(state=field_state)
             self._venv_check.config(state=field_state)
             self._env_var_entry.config(state=field_state)
-            self._launch_client_btn.config(state=field_state)
+            self._launch_client_btn.config(text="Launch Client", state=field_state)
         else:
             self._row_model.pack(fill="x", padx=20, pady=2)
             self._row_workdir.pack(fill="x", padx=20, pady=2)
@@ -640,7 +663,7 @@ class LauncherWindow:
             self._model_cb.config(state="readonly" if self._step2_enabled else "disabled")
             self._work_dir_entry.config(state=field_state)
             self._browse_workdir_btn.config(state=field_state)
-            self._launch_client_btn.config(state=field_state)
+            self._launch_client_btn.config(text="Launch Client", state=field_state)
 
         self.root.geometry(f"540x{self._get_window_height()}")
 
@@ -665,6 +688,20 @@ class LauncherWindow:
         model = self.model_var.get().strip()
         proxy_url = f"http://localhost:{config.proxy_port}"
         env = os.environ.copy()
+
+        if cmd_name == "__only_proxy__":
+            if not self._servers_started:
+                self._servers_started = True
+                threading.Thread(target=_start_proxy_thread, daemon=True).start()
+                self.root.after(1500, self._reset_session)
+            if config.dashboard_enabled:
+                dashboard_port = config.dashboard_port
+                self.root.after(2000, lambda: webbrowser.open(
+                    f"http://localhost:{dashboard_port}"
+                ))
+            self.status_var.set(f"Proxy started. Point your client at {proxy_url}")
+            self.root.after(2500, self.root.iconify)
+            return
 
         try:
             if cmd_name == "claude":
