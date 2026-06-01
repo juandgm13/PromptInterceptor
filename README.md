@@ -6,86 +6,138 @@
 
 [Architecture](docs/architecture.md) · [API Reference](docs/api.md) · [Configuration](docs/configuration.md) · [Modifiers / Rules](docs/rules.md)
 
-## Description
+## Why use it
 
-PromptInterceptor is a local HTTP proxy that sits between your AI client (Claude Code, Open Code) and an Ollama server. It lets you inspect, modify, and intercept every prompt and response in real time — without touching the client or the model.
+Local LLMs don't always behave perfectly. A model may ignore tool definitions, emit `tool_calls` in the wrong format, skip chain-of-thought entirely, or hallucinate the wrong model name. Your AI client expects clean, well-formed messages — and Ollama just passes whatever the model produces.
+
+PromptInterceptor sits between your client and Ollama and can rewrite any field of any request or response in real time. Fix a malformed `tool_calls` array, inject a `thinking` block, force a specific model, cap the temperature — all without touching the client or restarting Ollama. The client and the model never know the proxy is there.
 
 ## Features
 
-- **Model switching** — automatically reroute requests from one model to another using JSONPath rules
-- **Temperature tuning** — override temperature or any other option in every request
+- **Tool call repair** — use modifier rules to fix or inject `tool_calls` fields when the model doesn't emit them correctly
+- **Thinking / chain-of-thought injection** — add or rewrite `thinking` blocks in responses before they reach the client
+- **Model switching** — silently reroute requests from one model to another using JSONPath rules
+- **Temperature tuning** — override temperature or any other option on every request
 - **Live prompt viewer** — see every request and response as it flows through the proxy
-- **Intercept mode** — pause any request, edit the JSON body, then forward or drop it
+- **Intercept mode** — pause any request, edit the JSON body by hand, then forward or drop it
 - **Modifier management** — create, enable, disable and delete rules from the dashboard without restarting
-- **Context size control** — set `OLLAMA_NUM_CTX` on the Ollama server at launch time (4k–256k)
-- **Model selector** — pick from models already downloaded in Ollama, populated automatically after launch
-- **Python app support** — connect any Python app that uses Ollama by specifying its entry point and the Ollama host env var
+- **Only Proxy mode** — launch just the proxy and point any client at it manually
+- **Open Code support** — auto-configures `~/.config/opencode/opencode.json` to point at the proxy
+- **Python app support** — connect any Python app that uses Ollama by setting its host env var
 - **Full traffic logging** — all requests and responses saved as JSON files with rotation
-- **Desktop launcher** — guided 3-step tkinter window (Ollama → Client → Proxy)
+- **Desktop launcher** — guided tkinter window (Check Ollama → Client → Dashboard)
 - **Streaming support** — transparent proxying of NDJSON streaming responses
 
 ## Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/your-user/PromptInterceptor.git
 cd PromptInterceptor
-
-# Install dependencies
 pip install -r prompt_interceptor/requirements.txt
 ```
 
-Requirements: Python 3.9+, Ollama installed and available in PATH.
+Requirements: Python 3.9+, Ollama installed and running.
 
 ## Usage
 
-### Launch with the desktop window
+### Launch the desktop window
 
 ```bash
 python -m prompt_interceptor
 ```
 
-The launcher uses a three-step sequential flow. Each step unlocks the next.
+The launcher guides you through three steps. Each step unlocks the next.
 
-### Step 1 — Ollama Server
+---
+
+### Step 1 — Check Ollama
 
 | Field / Button | Description |
 |---|---|
-| **Context Size** | Sets `OLLAMA_NUM_CTX` for the Ollama server (4k–256k) |
-| **Model** | Populated automatically from Ollama's downloaded models after launch |
-| **Launch Ollama Server** | Opens a terminal running `ollama serve`. Fetches available models. Unlocks Step 2. |
+| **Ollama Host** | IP or hostname of the Ollama server (default: `127.0.0.1`) |
+| **Check Ollama** | Connects to Ollama, fetches available models, and unlocks Step 2. Ollama must already be running (`ollama serve`). |
+
+If the check fails, start Ollama manually and click **Check Ollama** again.
+
+---
 
 ### Step 2 — AI Client
 
-| Field / Button | Description |
+| Option | Description |
 |---|---|
-| **AI Client** | Auto-detected clients (`claude`, `opencode`) plus _Python App (Ollama)_ for any Python app that uses Ollama |
-| **Work Dir** _(Claude Code / Open Code)_ | Directory where the client terminal opens. Use **Browse…** to pick a folder. |
-| **App Path** _(Python App)_ | Path to the Python app's entry point (`.py` or executable). Use **Browse…** to pick a file. |
-| **Ollama Env Var** _(Python App)_ | Name of the environment variable the app uses to configure the Ollama host (e.g. `OLLAMA_HOST`). Set to `http://localhost:8080` so the app goes through the proxy. |
-| **Launch Client** | Opens a terminal running the selected client with the correct configuration. Unlocks Step 3. |
+| **Only Proxy** _(default)_ | Starts the proxy without launching any client. Point your own tool at `http://localhost:8080`. |
+| **Open Code (CLI)** | Auto-configures opencode to use the proxy and opens a terminal. |
+| **Python App (Ollama)** | Launches a Python app with the Ollama host env var set to the proxy URL. |
 
-### Step 3 — Proxy
+| Field | Description |
+|---|---|
+| **Work Dir** _(Open Code)_ | Directory where the client terminal opens. |
+| **App Dir** _(Python App)_ | Working directory for the Python app. |
+| **Command** _(Python App)_ | Command to run the app (default: `python main.py`). |
+| **Ollama Env Var** _(Python App)_ | Env var the app uses for the Ollama host (e.g. `OLLAMA_HOST`). Set automatically to the proxy URL. |
 
-Click **Start** to launch the proxy server and open the dashboard in your browser at `http://localhost:9090`.
+---
 
-### Use case: Ollama + Claude Code
+### Step 3 — Dashboard
 
-1. Make sure Ollama is installed: `ollama --version`
-2. Make sure Claude Code is installed: `claude --version`
-3. Run `python -m prompt_interceptor`
-4. Step 1: choose context size → click **Launch Ollama Server**
-5. Step 2: select model, select _Claude Code_, choose a work directory → click **Launch Client**
-6. Step 3: click **Start**
-7. The launcher sets `ANTHROPIC_BASE_URL=http://localhost:8080` and passes `--model <model>` automatically. All prompts now flow through PromptInterceptor — open the dashboard to see them.
+Click **Open Dashboard** to launch the proxy server and open the dashboard at `http://localhost:9090`.
 
-### Use case: Ollama + custom Python app
+---
 
-1. Run `python -m prompt_interceptor`
-2. Step 1: choose context size → click **Launch Ollama Server**
-3. Step 2: select _Python App (Ollama)_, fill in **App Path** and **Ollama Env Var** → click **Launch Client**
-4. Step 3: click **Start**
-5. The app will use `http://localhost:8080` as its Ollama host, routing all traffic through the proxy
+## Use cases
+
+### Just the proxy — point your own client at it
+
+1. Start Ollama: `ollama serve`
+2. Run `python -m prompt_interceptor`
+3. Step 1: click **Check Ollama**
+4. Step 2: select **Only Proxy** → click **Launch Proxy**
+5. Step 3: click **Open Dashboard**
+6. Point your client at `http://localhost:8080` and open `http://localhost:9090` to monitor traffic
+
+### Fix tool calls or thinking with a modifier
+
+When a model sends `tool_calls: []` instead of the expected call, or skips the `thinking` block entirely, add a modifier rule in the dashboard to patch the response before it reaches the client.
+
+Example — force a specific model on every request:
+
+```json
+{
+  "match": {"path": "/api/chat"},
+  "replace": {"jsonpath": "$.model", "value": "qwen2.5-coder:7b"}
+}
+```
+
+Example — override temperature to reduce randomness:
+
+```json
+{
+  "match": {"path": "/api/chat"},
+  "replace": {"jsonpath": "$.options.temperature", "value": 0.1}
+}
+```
+
+See [docs/rules.md](docs/rules.md) for the full modifier reference.
+
+### Ollama + Open Code
+
+1. Start Ollama: `ollama serve`
+2. Run `python -m prompt_interceptor`
+3. Step 1: click **Check Ollama** — pick a model from the dropdown
+4. Step 2: select **Open Code (CLI)**, choose a work directory → click **Launch Client**
+5. Step 3: click **Open Dashboard**
+6. Open Code starts with the proxy as its Ollama backend. All traffic is visible in the dashboard.
+
+### Ollama + custom Python app
+
+1. Start Ollama: `ollama serve`
+2. Run `python -m prompt_interceptor`
+3. Step 1: click **Check Ollama**
+4. Step 2: select **Python App (Ollama)**, fill in **App Dir**, **Command**, and **Ollama Env Var** → click **Launch Client**
+5. Step 3: click **Open Dashboard**
+6. The app sends all Ollama traffic through `http://localhost:8080`
+
+---
 
 ## Configuration
 
@@ -97,7 +149,7 @@ Edit `prompt_interceptor/config.json`:
   "target": "http://localhost:11434",
   "mode": "passthrough",
   "context_size": 32768,
-  "default_model": "qwen3.5",
+  "default_model": "",
   "dashboard_enabled": true,
   "dashboard_port": 9090,
   "rules": []
