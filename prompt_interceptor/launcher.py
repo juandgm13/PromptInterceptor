@@ -7,7 +7,6 @@ import os
 import shutil
 import subprocess
 import threading
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -142,7 +141,7 @@ def _detect_clients() -> list:
     """Detect installed AI clients. Returns list of (display_name, command).
     Always includes 'Python App (Ollama)' as a custom option.
     """
-    clients = []
+    clients = [("Only Proxy", "__only_proxy__")]
     # Claude Code disabled for now — proxy translation not yet stable for this client.
     # if shutil.which("claude"):
     #     clients.append(("Claude Code", "claude"))
@@ -285,7 +284,11 @@ class LauncherWindow:
             name = self.client_var.get()
         except AttributeError:
             return 460
-        return 550 if name == "Python App (Ollama)" else 460
+        if name == "Python App (Ollama)":
+            return 550
+        if name == "Only Proxy":
+            return 400
+        return 460
 
     def _center_window(self, width: int, height: int) -> None:
         self.root.update_idletasks()
@@ -340,8 +343,8 @@ class LauncherWindow:
         self.proxy_port_var = tk.StringVar(value=str(config.proxy_port))
         ttk.Entry(row_port, textvariable=self.proxy_port_var, width=8).pack(side="left")
 
-        # ── Step 1: Ollama Server ──
-        ttk.Label(self.root, text="── Step 1: Ollama Server ──", style="Section.TLabel").pack(pady=(6, 0))
+        # ── Step 1: Check Ollama ──
+        ttk.Label(self.root, text="── Step 1: Check Ollama ──", style="Section.TLabel").pack(pady=(6, 0))
 
         # Ollama Host row
         parsed_target = urllib.parse.urlparse(config.target)
@@ -356,9 +359,9 @@ class LauncherWindow:
         row1c = ttk.Frame(self.root)
         row1c.pack(fill="x", padx=20, pady=(2, 10))
         ttk.Label(row1c, text="", width=14).pack(side="left")
-        self._launch_ollama_btn = ttk.Button(row1c, text="Launch Ollama Server",
+        self._launch_ollama_btn = ttk.Button(row1c, text="Check Ollama",
                                               style="Action.TButton",
-                                              command=self._on_launch_ollama, width=24)
+                                              command=self._on_launch_ollama, width=18)
         self._launch_ollama_btn.pack(side="left")
 
         # ── Step 2: AI Client ──
@@ -448,6 +451,13 @@ class LauncherWindow:
                                      state="readonly", width=22)
         self._ctx_cb.pack(side="left")
 
+        # Proxy URL info row (Only Proxy mode)
+        self._row_proxy_info = ttk.Frame(self._client_details)
+        ttk.Label(self._row_proxy_info, text="Proxy URL:", width=14, anchor="w").pack(side="left")
+        self._proxy_url_var = tk.StringVar(value=f"http://localhost:{config.proxy_port}")
+        ttk.Label(self._row_proxy_info, textvariable=self._proxy_url_var,
+                  foreground="#4fc3f7", font=("Segoe UI", 10, "bold")).pack(side="left")
+
         self._row_launch = ttk.Frame(self._client_details)
         ttk.Label(self._row_launch, text="", width=14).pack(side="left")
         self._launch_client_btn = ttk.Button(self._row_launch, text="Launch Client",
@@ -492,7 +502,7 @@ class LauncherWindow:
         models = _fetch_ollama_models(target)
         if models:
             self._active_target = target
-            self.root.after(0, lambda: self.status_var.set("Ollama already running."))
+            self.root.after(0, lambda: self.status_var.set("Ollama running."))
             self.root.after(0, self._on_models_ready, models)
             return
 
@@ -500,24 +510,10 @@ class LauncherWindow:
             self.root.after(0, self._ask_on_remote_fail, host, port)
             return
 
-        self.root.after(0, lambda: self.status_var.set("Launching Ollama server..."))
-        self._active_target = target
-        try:
-            subprocess.Popen(
-                ["cmd", "/c", "start", "", "cmd", "/k", "ollama serve"],
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-            )
-        except FileNotFoundError:
-            self.root.after(0, lambda: self._launch_ollama_btn.config(state="normal"))
-            self.root.after(0, lambda: self.status_var.set(
-                "Error: 'ollama' command not found. Is Ollama installed?"))
-            return
-        except OSError as exc:
-            msg = str(exc)
-            self.root.after(0, lambda: self._launch_ollama_btn.config(state="normal"))
-            self.root.after(0, lambda: self.status_var.set(f"Error launching Ollama: {msg}"))
-            return
-        threading.Thread(target=self._fetch_models_after_launch, daemon=True).start()
+        self.root.after(0, lambda: self._launch_ollama_btn.config(state="normal"))
+        self.root.after(0, lambda: self.status_var.set(
+            "Ollama not running. Start it (ollama serve) and click Check again."
+        ))
 
     def _ask_on_remote_fail(self, host: str, port: int) -> None:
         """Show a dialog when a remote Ollama host is unreachable."""
@@ -574,17 +570,6 @@ class LauncherWindow:
         y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
         dialog.geometry(f"+{x}+{y}")
 
-    def _fetch_models_after_launch(self) -> None:
-        """Wait for Ollama to start, fetch downloaded models, then unlock Step 2."""
-        target = getattr(self, "_active_target", None) or get_config().target
-        time.sleep(2)
-        models = _fetch_ollama_models(target)
-        if not models:
-            self.root.after(0, lambda: self.status_var.set("Retrying model fetch..."))
-            time.sleep(3)
-            models = _fetch_ollama_models(target)
-        self.root.after(0, self._on_models_ready, models)
-
     def _on_models_ready(self, models: list) -> None:
         if models:
             self._model_cb["values"] = models
@@ -593,7 +578,7 @@ class LauncherWindow:
             self.model_var.set(initial)
             self.status_var.set(f"Ollama ready — {len(models)} model(s) available.")
         else:
-            self.status_var.set("Ollama launched (models unavailable — check Ollama manually).")
+            self.status_var.set("Ollama found (no models — pull one with 'ollama pull <model>').")
         self._set_step2_enabled(True)
 
     # ── Step 2: Client ──
@@ -613,13 +598,25 @@ class LauncherWindow:
         self._row_venv.pack_forget()
         self._row_envvar.pack_forget()
         self._row_ctx.pack_forget()
+        self._row_proxy_info.pack_forget()
         self._row_launch.pack_forget()
 
         name = self.client_var.get()
-        is_python = name == "Python App (Ollama)"
+        cmd_name = next((c for n, c in self._clients if n == name), "")
+        is_python = cmd_name == "__python_app__"
+        is_only_proxy = cmd_name == "__only_proxy__"
         field_state = "normal" if self._step2_enabled else "disabled"
 
-        if is_python:
+        if is_only_proxy:
+            try:
+                port = int(self.proxy_port_var.get().strip())
+            except ValueError:
+                port = get_config().proxy_port
+            self._proxy_url_var.set(f"http://localhost:{port}")
+            self._row_proxy_info.pack(fill="x", padx=20, pady=2)
+            self._row_launch.pack(fill="x", padx=20, pady=(2, 10))
+            self._launch_client_btn.config(text="Launch Proxy", state=field_state)
+        elif is_python:
             self._row_ctx.pack(fill="x", padx=20, pady=2)
             self._row_apppath.pack(fill="x", padx=20, pady=2)
             self._row_command.pack(fill="x", padx=20, pady=2)
@@ -632,7 +629,7 @@ class LauncherWindow:
             self._command_entry.config(state=field_state)
             self._venv_check.config(state=field_state)
             self._env_var_entry.config(state=field_state)
-            self._launch_client_btn.config(state=field_state)
+            self._launch_client_btn.config(text="Launch Client", state=field_state)
         else:
             self._row_model.pack(fill="x", padx=20, pady=2)
             self._row_workdir.pack(fill="x", padx=20, pady=2)
@@ -640,7 +637,7 @@ class LauncherWindow:
             self._model_cb.config(state="readonly" if self._step2_enabled else "disabled")
             self._work_dir_entry.config(state=field_state)
             self._browse_workdir_btn.config(state=field_state)
-            self._launch_client_btn.config(state=field_state)
+            self._launch_client_btn.config(text="Launch Client", state=field_state)
 
         self.root.geometry(f"540x{self._get_window_height()}")
 
@@ -665,6 +662,20 @@ class LauncherWindow:
         model = self.model_var.get().strip()
         proxy_url = f"http://localhost:{config.proxy_port}"
         env = os.environ.copy()
+
+        if cmd_name == "__only_proxy__":
+            if not self._servers_started:
+                self._servers_started = True
+                threading.Thread(target=_start_proxy_thread, daemon=True).start()
+                self.root.after(1500, self._reset_session)
+            if config.dashboard_enabled:
+                dashboard_port = config.dashboard_port
+                self.root.after(2000, lambda: webbrowser.open(
+                    f"http://localhost:{dashboard_port}"
+                ))
+            self.status_var.set(f"Proxy started. Point your client at {proxy_url}")
+            self.root.after(2500, self.root.iconify)
+            return
 
         try:
             if cmd_name == "claude":
