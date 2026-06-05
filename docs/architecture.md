@@ -2,11 +2,11 @@
 
 ## Overview
 
-PromptInterceptor sits between an AI client (Claude Code, Open Code) and an Ollama server, intercepting all HTTP traffic so that requests and responses can be inspected, modified, or paused for manual review.
+PromptInterceptor sits between an AI client (Open Code, a custom Python app, or any Ollama-compatible tool) and an Ollama server, intercepting all HTTP traffic so that requests and responses can be inspected, modified, or paused for manual review.
 
 ```mermaid
 graph LR
-    A["AI Client<br/>(Claude Code / Open Code)"] -- "HTTP :8080" --> B["PromptInterceptor Proxy<br/>(FastAPI + uvicorn)"]
+    A["AI Client<br/>(Open Code / Python App / any tool)"] -- "HTTP :8080" --> B["PromptInterceptor Proxy<br/>(FastAPI + uvicorn)"]
     B -- "HTTP :11434" --> C["Ollama Server"]
     C -- response --> B
     B -- response --> A
@@ -17,7 +17,7 @@ graph LR
 
 ```mermaid
 flowchart TD
-    A["1. AI Client sends POST /api/chat or /api/generate"] --> B["2. main.py receives the request"]
+    A["1. AI Client sends request to proxy"] --> B["2. main.py receives the request"]
     B --> C["3. RuleEngine.process_request()"]
     C --> D{"mode?"}
     D -- passthrough --> E["Skip rules / forward directly"]
@@ -40,8 +40,8 @@ flowchart TD
 | `proxy.py` | HTTP forwarding, streaming support, error handling |
 | `rules_engine.py` | JSONPath-based rule matching and value replacement |
 | `config.py` | Pydantic config model, load/save config.json |
-| `dashboard.py` | Web UI FastAPI app (port 9090), management API. Live Prompts table with a split-panel message detail modal (prompt left, thinking + response right). |
-| `launcher.py` | tkinter desktop launcher: 3-step sequential UI (Ollama → Client → Proxy), context size, model list from Ollama `/api/tags`, work-dir or Python app configuration |
+| `dashboard.py` | Web UI FastAPI app (port 9090), management API. Live Prompts table with a split-panel message detail modal (prompt left, thinking + response right). Raw toggle shows the complete JSON log entry. |
+| `launcher.py` | tkinter desktop launcher: 3-step sequential UI (Ollama → Client → Dashboard), model list from Ollama `/api/tags`, work-dir or Python app configuration |
 | `interceptor.py` | Async pause/resume of in-flight requests |
 | `logger.py` | Traffic logging to JSON files, rotation, stats |
 | `health.py` | Health check and status endpoints |
@@ -53,11 +53,11 @@ flowchart TD
 ## Proxy Modes
 
 ### `passthrough` (default)
-All requests are forwarded directly to Ollama. Rules are still applied.
+All requests are forwarded directly to Ollama. **Rules are not applied.**
 Traffic is logged. No manual intervention required.
 
 ### `intercept`
-Each request is paused before forwarding. The dashboard shows the pending
+Rules are applied to each request before forwarding. The dashboard shows the pending
 request and allows the user to:
 - **Forward** — send unchanged
 - **Edit & Forward** — modify the body JSON and send
@@ -69,29 +69,32 @@ Timeout: 30 seconds (auto-forward if no action taken).
 
 The desktop launcher (`python -m prompt_interceptor`) uses a sequential 3-step workflow — each step unlocks the next.
 
-### Step 1 — Ollama Server
+### Step 1 — Check Ollama
 
 | Field / Button | Behaviour |
 |----------------|-----------|
-| **Context Size** | Sets `OLLAMA_NUM_CTX` env var passed to `ollama serve` (4k–256k). Default: 32k. |
-| **Launch Ollama Server** | Checks if Ollama is already running. If yes, loads available models without opening a terminal. If no, opens a CMD terminal running `ollama serve`, waits ~2s, then fetches models. Unlocks Step 2 on success. |
+| **Ollama Host** | IP or hostname of the Ollama server (default: `127.0.0.1`). |
+| **Check Ollama** | Connects to Ollama, fetches the list of downloaded models, and unlocks Step 2. If the server is not running, start it manually with `ollama serve` and click again. |
 
 ### Step 2 — AI Client
 
 | Field / Button | Behaviour |
 |----------------|-----------|
-| **AI Client** | Detected at startup. Always includes *Python App (Ollama)* as a custom option. Available clients: **Claude Code** (if `claude` is in PATH), **Open Code (CLI)** (if `opencode` is in PATH), **Open Code (WSL)** (if WSL is available *and* `opencode` is installed inside WSL). |
+| **AI Client** | Detected at startup. Available options: **Only Proxy** (always), **Open Code (CLI)** (if `opencode` is in PATH), **Python App (Ollama)** (always). |
 | **Model** | Disabled until Ollama is ready. Populated from `GET /api/tags` (downloaded models only). |
-| **Work Dir** *(Claude Code / Open Code CLI / Open Code WSL)* | Working directory for the client terminal. For WSL, the Windows path is converted to a WSL path via `wslpath`. |
-| **App Path** *(Python App)* | Path to the Python app's entry point (`.py` or executable). |
-| **Ollama Env Var** *(Python App)* | Name of the environment variable the app uses for the Ollama host (e.g. `OLLAMA_HOST`). Set to `http://localhost:<proxy_port>` at launch. |
-| **Launch Client** | Opens a terminal with the correct command and environment. **Claude Code**: sets `ANTHROPIC_BASE_URL=http://localhost:<proxy_port>`, launches `claude --model <model>` in CMD. **Open Code (CLI)**: writes `~/.config/opencode/opencode.json` with the proxy URL, launches `opencode --model ollama/<model>` in CMD. **Open Code (WSL)**: writes `~/.config/opencode/opencode.json` inside WSL (using the Windows host IP detected from `/etc/resolv.conf`), launches `wsl -- bash -c "opencode --model ollama/<model>"` in CMD. **Python App**: sets the configured env var to the proxy URL. Unlocks Step 3. |
+| **Work Dir** *(Open Code CLI)* | Working directory where the client terminal opens. |
+| **App Dir** *(Python App)* | Working directory for the Python app. |
+| **Command** *(Python App)* | Command to run (default: `python main.py`). |
+| **Use venv** *(Python App)* | Checkbox: auto-detects `.venv` or `venv` in App Dir and uses that interpreter. |
+| **Ollama Env Var** *(Python App)* | Env var the app reads for the Ollama host (e.g. `OLLAMA_HOST`). Set to `http://localhost:<proxy_port>` at launch. |
+| **Context Size** *(Python App)* | Sets `OLLAMA_NUM_CTX` passed to Ollama (4k–256k, default 32k). |
+| **Launch Client** | Opens a terminal with the correct command and environment. **Open Code (CLI)**: writes `~/.config/opencode/opencode.json` with the proxy URL, launches `opencode` in a terminal. **Python App**: sets the configured env var to the proxy URL and runs the command. Unlocks Step 3. |
 
-### Step 3 — Proxy
+### Step 3 — Dashboard
 
 | Button | Behaviour |
 |--------|-----------|
-| **Start** | Saves config, starts the proxy + dashboard servers in background threads, opens the dashboard in the browser. Does **not** relaunch Ollama or the client. |
+| **Open Dashboard** | Saves config, starts the proxy + dashboard servers in background threads, opens the dashboard in the browser. Does **not** relaunch Ollama or the client. |
 
 ## Configuration
 
