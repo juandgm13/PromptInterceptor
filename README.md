@@ -177,6 +177,8 @@ See [docs/configuration.md](docs/configuration.md) for all available fields.
 | POST | `/api/generate` | Text generation |
 | POST | `/api/chat/stream` | Streaming chat |
 | POST | `/api/generate/stream` | Streaming generate |
+| POST | `/v1/messages` | Anthropic-compatible messages |
+| POST | `/v1/chat/completions` | OpenAI-compatible chat completions |
 | ANY | `/{path}` | Pass-through: any unmatched path is forwarded to Ollama and logged |
 
 ### Dashboard (port 9090)
@@ -184,11 +186,16 @@ See [docs/configuration.md](docs/configuration.md) for all available fields.
 | Method | Path | Description |
 |---|---|---|
 | GET | `/` | Dashboard UI |
+| GET | `/api/status` | Full system status |
+| GET | `/api/health` | Proxy health |
+| GET | `/api/target-health` | Ollama target health |
 | POST | `/api/mode` | Change proxy mode |
 | GET | `/api/rules` | List modifiers |
 | POST | `/api/rules` | Create modifier |
 | DELETE | `/api/rules/{index}` | Delete modifier |
 | GET | `/api/logs` | Recent traffic logs |
+| GET | `/api/raw-logs` | All logs (no limit) |
+| POST | `/api/reset` | Clear logs and reset session |
 | POST | `/api/intercept/{id}/forward` | Forward paused request |
 | POST | `/api/intercept/{id}/edit` | Edit and forward |
 | POST | `/api/intercept/{id}/drop` | Drop request |

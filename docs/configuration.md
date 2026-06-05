@@ -20,9 +20,14 @@ Configuration is stored in `prompt_interceptor/config.json`. All fields are opti
   "allow_headers": ["*"],
   "dashboard_enabled": true,
   "dashboard_port": 9090,
-  "model_names": ["llama3", "mistral", "deepseek-coder"],
+  "model_names": ["llama3", "mistral"],
   "context_size": 32768,
-  "default_model": "qwen3.5",
+  "default_model": "",
+  "client_work_dir": "",
+  "python_app_path": "",
+  "python_app_command": "python main.py",
+  "python_app_use_venv": false,
+  "python_app_env_var": "OLLAMA_HOST",
   "rules": []
 }
 ```
@@ -38,12 +43,13 @@ Configuration is stored in `prompt_interceptor/config.json`. All fields are opti
 | `target` | string | `"http://localhost:11434"` | Ollama server URL |
 | `target_port` | int | `11434` | Ollama port (informational) |
 | `timeout` | int | `120` | Request timeout in seconds |
+| `health_timeout` | float | `5.0` | Timeout for health-check requests to Ollama |
 
 ### Mode
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `mode` | string | `"passthrough"` | `"passthrough"` or `"intercept"` |
+| `mode` | string | `"passthrough"` | `"passthrough"` (no rules) or `"intercept"` (rules applied, requests can be paused) |
 
 ### Context Size
 
@@ -59,7 +65,7 @@ Available options: `4096`, `8192`, `16384`, `32768`, `65536`, `131072`, `262144`
 |-------|------|---------|-------------|
 | `log_dir` | string | `"logs"` | Directory for log files |
 | `log_size_limit` | int | `1048576` | Max log file size in bytes (1 MB) |
-| `max_log_files` | int | `10` | Max number of log files to keep |
+| `max_log_files` | int | `10` | Max number of log files to keep before rotating |
 
 ### CORS
 
@@ -80,8 +86,20 @@ Available options: `4096`, `8192`, `16384`, `32768`, `65536`, `131072`, `262144`
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `model_names` | list | `["llama3","mistral"]` | Known model names (used as fallback list in the launcher when Ollama is not reachable) |
-| `default_model` | string | `""` | Model pre-selected in the launcher. Saved automatically when you click Start. |
+| `model_names` | list | `["llama3","mistral"]` | Fallback model list used in the launcher when Ollama is not reachable |
+| `default_model` | string | `""` | Model pre-selected in the launcher. Saved automatically when you open the dashboard. |
+
+### Launcher — Python App
+
+These fields are saved by the desktop launcher when you configure a Python App client. You can also set them directly in `config.json`.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `client_work_dir` | string | `""` | Working directory for the Open Code client terminal |
+| `python_app_path` | string | `""` | Working directory for the Python app |
+| `python_app_command` | string | `"python main.py"` | Command used to launch the Python app |
+| `python_app_use_venv` | bool | `false` | If true, auto-detects `.venv` or `venv` in `python_app_path` and uses that interpreter |
+| `python_app_env_var` | string | `"OLLAMA_HOST"` | Env var name the app uses for the Ollama host URL |
 
 ### Rules
 
