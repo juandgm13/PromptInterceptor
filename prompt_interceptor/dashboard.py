@@ -267,7 +267,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 <div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal()">
   <div class="modal-box">
     <button class="modal-close" onclick="closeModal()">&#x2715;</button>
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;padding-right:36px">
       <h3 class="modal-title" id="modal-title" style="margin:0;flex:1">Message Detail</h3>
       <button id="modal-raw-btn" class="link-show" onclick="toggleModalRaw()" style="font-size:.85em;padding:3px 10px;border:1px solid #4fc3f7;border-radius:4px;background:transparent;white-space:nowrap;cursor:pointer">Raw</button>
     </div>
