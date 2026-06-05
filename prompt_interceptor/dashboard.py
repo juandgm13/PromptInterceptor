@@ -164,7 +164,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="stat-value" id="stat-requests">-</div>
       <div class="stat-label">Total Requests</div>
     </div>
-    <div class="stat">
+    <div class="stat" id="stat-modifiers-box" style="display:none">
       <div class="stat-value" id="stat-modifiers">-</div>
       <div class="stat-label">Active Modifiers</div>
     </div>
@@ -588,6 +588,7 @@ async function loadStatus() {
     document.getElementById('btn-passthrough').classList.toggle('active', mode === 'passthrough');
     document.getElementById('btn-intercept').classList.toggle('active', mode === 'intercept');
     document.getElementById('modifiers-section').style.display = mode === 'intercept' ? '' : 'none';
+    document.getElementById('stat-modifiers-box').style.display = mode === 'intercept' ? '' : 'none';
   } catch(e) { /* silent */ }
 }
 
@@ -621,7 +622,7 @@ function renderLogsTable(logs) {
     document.getElementById('ctx-warn-banner').style.display = 'none';
     return;
   }
-  let lastCtxPct = null;
+  let maxCtxPct = null;
   tbody.innerHTML = logs.slice().reverse().map((l, i) => {
     const cacheKey = l.request_id || i;
     _logsCache[cacheKey] = l;
@@ -701,7 +702,7 @@ function renderLogsTable(logs) {
       const totStr = tot >= 1000 ? (tot/1000).toFixed(1) + 'K' : String(tot);
       const pct = tu.context_utilization_pct;
       if (pct != null) {
-        if (lastCtxPct === null) lastCtxPct = pct;
+        if (maxCtxPct === null || pct > maxCtxPct) maxCtxPct = pct;
         const pctColor = pct >= 90 ? '#f55' : pct >= 70 ? '#ffa040' : '#4fc3f7';
         tokenCell = totStr + '<br><small style="color:' + pctColor + '">' + pct + '%</small>';
       } else {
@@ -720,13 +721,13 @@ function renderLogsTable(logs) {
       <td><button class="link-show" onclick="showRaw('${esc(String(cacheKey))}')">show</button></td>
     </tr>`;
   }).join('');
-  if (lastCtxPct !== null) {
+  if (maxCtxPct !== null) {
     const ctxEl = document.getElementById('stat-ctx');
-    const pctColor = lastCtxPct >= 90 ? '#f55' : lastCtxPct >= 70 ? '#ffa040' : '#4fc3f7';
-    ctxEl.textContent = lastCtxPct + '%';
+    const pctColor = maxCtxPct >= 90 ? '#f55' : maxCtxPct >= 70 ? '#ffa040' : '#4fc3f7';
+    ctxEl.textContent = maxCtxPct + '%';
     ctxEl.style.color = pctColor;
-    if (lastCtxPct >= 80) {
-      document.getElementById('ctx-warn-pct').textContent = lastCtxPct + '%';
+    if (maxCtxPct >= 80) {
+      document.getElementById('ctx-warn-pct').textContent = maxCtxPct + '%';
       document.getElementById('ctx-warn-banner').style.display = '';
     } else {
       document.getElementById('ctx-warn-banner').style.display = 'none';
