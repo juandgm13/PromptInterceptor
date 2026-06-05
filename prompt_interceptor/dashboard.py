@@ -242,7 +242,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
     <table>
       <thead><tr>
-        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Tokens / Ctx%</th><th>Prompt</th><th>Response</th><th>Status</th><th>Raw</th>
+        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Tokens / Ctx%</th><th>Prompt</th><th>Response</th><th>Status</th><th></th>
       </tr></thead>
       <tbody id="logs-body"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody>
     </table>
@@ -267,7 +267,10 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 <div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal()">
   <div class="modal-box">
     <button class="modal-close" onclick="closeModal()">&#x2715;</button>
-    <h3 class="modal-title" id="modal-title">Message Detail</h3>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+      <h3 class="modal-title" id="modal-title" style="margin:0;flex:1">Message Detail</h3>
+      <button id="modal-raw-btn" class="link-show" onclick="toggleModalRaw()" style="font-size:.85em;padding:3px 10px;border:1px solid #4fc3f7;border-radius:4px;background:transparent;white-space:nowrap;cursor:pointer">Raw</button>
+    </div>
     <div id="modal-correction-banner" style="display:none;background:#0a2a1a;border:1px solid #1a4a2a;border-radius:5px;padding:7px 12px;margin-bottom:12px;color:#5dba8a;font-size:.82em">
       &#x2714; Auto-corrected by proxy: <span id="modal-correction-text" style="font-weight:600"></span>
     </div>
@@ -299,6 +302,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         <pre class="modal-resp-pre" id="modal-response"></pre>
       </div>
     </div>
+    <div id="modal-raw-panel" style="display:none">
+      <pre id="modal-raw-pre" style="background:#0d1117;color:#c9d1d9;padding:16px;border-radius:6px;overflow:auto;max-height:70vh;font-size:.8em;white-space:pre-wrap;word-break:break-all;margin:0"></pre>
+    </div>
   </div>
 </div>
 
@@ -307,6 +313,9 @@ const _logsCache = {};
 let _proxyStatusData = null;
 let _fileMode = false;
 let _loadedLogs = null;
+let _currentModalLog = null;
+let _currentModalId = null;
+let _modalRawMode = false;
 
 function esc(s) {
   return String(s)
@@ -355,6 +364,12 @@ function stripEmbeddedToolCalls(text) {
 function showRaw(id) {
   const l = _logsCache[id];
   if (!l) return;
+  _currentModalLog = l;
+  _currentModalId = id;
+  _modalRawMode = false;
+  document.getElementById('modal-raw-panel').style.display = 'none';
+  document.getElementById('modal-raw-btn').textContent = 'Raw';
+  document.querySelector('.modal-split').style.display = '';
   document.getElementById('modal-title').textContent =
     (l.method || '') + ' ' + (l.path || '') + ' — ' + (l.timestamp || l.response_timestamp || '');
 
@@ -528,8 +543,34 @@ function showRaw(id) {
   document.getElementById('modal-overlay').style.display = 'block';
 }
 
+function toggleModalRaw() {
+  _modalRawMode = !_modalRawMode;
+  const split = document.querySelector('.modal-split');
+  const rawPanel = document.getElementById('modal-raw-panel');
+  const rawBtn = document.getElementById('modal-raw-btn');
+  const bannerIds = ['modal-correction-banner','modal-token-banner','modal-error-banner'];
+  if (_modalRawMode) {
+    split.style.display = 'none';
+    bannerIds.forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+    document.getElementById('modal-raw-pre').textContent = JSON.stringify(_currentModalLog, null, 2);
+    rawPanel.style.display = 'block';
+    rawBtn.textContent = 'Show';
+  } else {
+    rawPanel.style.display = 'none';
+    split.style.display = '';
+    rawBtn.textContent = 'Raw';
+    if (_currentModalId) showRaw(_currentModalId);
+  }
+}
+
 function closeModal() {
   document.getElementById('modal-overlay').style.display = 'none';
+  _modalRawMode = false;
+  _currentModalLog = null;
+  _currentModalId = null;
+  document.getElementById('modal-raw-panel').style.display = 'none';
+  document.getElementById('modal-raw-btn').textContent = 'Raw';
+  document.querySelector('.modal-split').style.display = '';
 }
 
 async function fetchJSON(url, opts) {
