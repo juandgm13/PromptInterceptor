@@ -74,7 +74,9 @@ If the check fails, start Ollama manually and click **Check Ollama** again.
 | **Work Dir** _(Open Code)_ | Directory where the client terminal opens. |
 | **App Dir** _(Python App)_ | Working directory for the Python app. |
 | **Command** _(Python App)_ | Command to run the app (default: `python main.py`). |
+| **Use venv** _(Python App)_ | Checkbox: auto-detects a `.venv` or `venv` folder in the App Dir and runs the command with that interpreter instead of the system Python. |
 | **Ollama Env Var** _(Python App)_ | Env var the app uses for the Ollama host (e.g. `OLLAMA_HOST`). Set automatically to the proxy URL. |
+| **Context Size** _(Python App)_ | Size of Ollama's context window passed as `OLLAMA_NUM_CTX` when launching Ollama. Options: 4k, 8k, 16k, 32k _(default)_, 64k, 128k, 256k. |
 
 ---
 
@@ -133,8 +135,13 @@ See [docs/rules.md](docs/rules.md) for the full modifier reference.
 1. Start Ollama: `ollama serve`
 2. Run `python -m prompt_interceptor`
 3. Step 1: click **Check Ollama**
-4. Step 2: select **Python App (Ollama)**, fill in **App Dir**, **Command**, and **Ollama Env Var** → click **Launch Client**
-5. Step 3: click **Open Dashboard**
+4. Step 2: select **Python App (Ollama)**, fill in:
+   - **App Dir** — root folder of your app
+   - **Command** — entry point (e.g. `python main.py`)
+   - **Use venv** — check this if your app has a `.venv` or `venv` folder; the launcher will use that interpreter automatically
+   - **Ollama Env Var** — the env var your app reads for the Ollama host (e.g. `OLLAMA_HOST`)
+   - **Context Size** — how large a context window to give Ollama (default 32k; increase for long conversations)
+5. Click **Launch Client**, then **Open Dashboard**
 6. The app sends all Ollama traffic through `http://localhost:8080`
 
 ---
