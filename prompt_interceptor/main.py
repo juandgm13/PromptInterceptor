@@ -11,7 +11,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from .config import get_config, save_config, reload_config
+from .config import get_config
 from .logger import TrafficLogger
 from .rules_engine import RuleEngine
 from .proxy import (
@@ -26,12 +26,6 @@ from .cors_middleware import add_cors_middleware
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
-    # Always start in passthrough mode regardless of what was persisted
-    _cfg = get_config()
-    if _cfg.mode != "passthrough":
-        _cfg.mode = "passthrough"
-        save_config(_cfg)
-        reload_config()
     config = get_config()
     logger = TrafficLogger()
     rule_engine = RuleEngine(logger)
