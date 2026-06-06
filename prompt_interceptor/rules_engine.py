@@ -136,6 +136,8 @@ class RuleEngine:
 
         config = get_config()
         if config.mode == "passthrough":
+            if config.debug_intercept:
+                _log.info("[PI][RULES] passthrough — skipping rules  %s %s  id=%s", method, path, request_id)
             return (False, body, request_id)
 
         current_body = copy.deepcopy(body) if body else {}
@@ -146,6 +148,9 @@ class RuleEngine:
                 continue
 
             if self._evaluate_match(rule, current_body, path):
+                if config.debug_intercept:
+                    _log.info("[PI][RULES] rule matched  path=%s  replace=%s → %s",
+                              path, rule.replace.get("jsonpath"), rule.replace.get("value"))
                 try:
                     before = copy.deepcopy(current_body)
                     self._apply_replacement(rule, current_body)

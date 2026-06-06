@@ -735,9 +735,13 @@ async def _apply_intercept(
     Returns:
         (should_drop: bool, body_json: dict|None)
     """
+    if get_config().debug_intercept:
+        print(f"[PromptInterceptor][INTERCEPT] → pausing  {method} {path}  id={request_id}")
     action, resolved_body = await interceptor.intercept(
         request_id, method, path, headers, body_json
     )
+    if get_config().debug_intercept:
+        print(f"[PromptInterceptor][INTERCEPT] ← {action}  id={request_id}")
     if action == "drop":
         return (True, None)
     return (False, resolved_body)
