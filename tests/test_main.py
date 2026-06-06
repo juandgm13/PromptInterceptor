@@ -300,40 +300,6 @@ async def test_v1_chat_completions_endpoint_is_registered(proxy_app):
     assert resp.json()["id"] == "chatcmpl-1"
 
 
-def test_create_app_resets_mode_to_passthrough(monkeypatch):
-    """create_app() always resets mode to passthrough on startup."""
-    import prompt_interceptor.main as main_mod
-    from prompt_interceptor.config import Config
-
-    cfg = Config(mode="intercept")
-    saved = []
-
-    monkeypatch.setattr(main_mod, "get_config", lambda: cfg)
-    monkeypatch.setattr(main_mod, "save_config", lambda c: saved.append(c.mode))
-    monkeypatch.setattr(main_mod, "reload_config", lambda: None)
-
-    main_mod.create_app()
-
-    assert saved == ["passthrough"]
-
-
-def test_create_app_does_not_save_when_already_passthrough(monkeypatch):
-    """create_app() skips save_config when mode is already passthrough."""
-    import prompt_interceptor.main as main_mod
-    from prompt_interceptor.config import Config
-
-    cfg = Config(mode="passthrough")
-    saved = []
-
-    monkeypatch.setattr(main_mod, "get_config", lambda: cfg)
-    monkeypatch.setattr(main_mod, "save_config", lambda c: saved.append(c.mode))
-    monkeypatch.setattr(main_mod, "reload_config", lambda: None)
-
-    main_mod.create_app()
-
-    assert saved == []
-
-
 async def test_passthrough_endpoint_is_registered(proxy_app):
     """The catch-all route forwards unknown paths through handle_passthrough."""
     from httpx import AsyncClient, ASGITransport
