@@ -204,3 +204,22 @@ def test_debug_intercept_loads_from_json(tmp_path):
     p.write_text('{"debug_intercept": true}')
     cfg = load_config(path=p)
     assert cfg.debug_intercept is True
+
+
+def test_intercept_timeout_default():
+    """intercept_timeout defaults to 30 seconds."""
+    assert Config().intercept_timeout == 30.0
+
+
+def test_intercept_timeout_configurable():
+    """intercept_timeout can be overridden."""
+    cfg = Config(intercept_timeout=120.0)
+    assert cfg.intercept_timeout == 120.0
+
+
+def test_intercept_timeout_loads_from_json(tmp_path):
+    """intercept_timeout is read from config.json when present."""
+    p = tmp_path / "config.json"
+    p.write_text('{"intercept_timeout": 60.0}')
+    cfg = load_config(path=p)
+    assert cfg.intercept_timeout == 60.0
