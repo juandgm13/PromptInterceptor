@@ -135,6 +135,11 @@ class RuleEngine:
         request_id = self.logger.log_request(method, path, headers, body)
 
         config = get_config()
+        if config.mode == "passthrough":
+            if config.debug_intercept:
+                _log.info("[PI][RULES] passthrough — skipping rules  %s %s  id=%s", method, path, request_id)
+            return (False, body, request_id)
+
         current_body = copy.deepcopy(body) if body else {}
         modified = False
 
