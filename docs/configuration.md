@@ -6,6 +6,8 @@ Configuration is stored in `prompt_interceptor/config.json`. All fields are opti
 
 ```json
 {
+  "debug": false,
+  "debug_intercept": false,
   "proxy_port": 8080,
   "proxy_host": "0.0.0.0",
   "target": "http://localhost:11434",
@@ -50,6 +52,13 @@ Configuration is stored in `prompt_interceptor/config.json`. All fields are opti
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `mode` | string | `"passthrough"` | `"passthrough"` (no rules) or `"intercept"` (rules applied, requests can be paused) |
+
+### Debug
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `debug` | bool | `false` | Enable uvicorn debug/reload mode and FastAPI debug output |
+| `debug_intercept` | bool | `false` | Enable detailed `INFO`-level traces for the intercept pipeline (mode checks, rule evaluation, pause/resolve events). Useful to verify that intercept mode is active and rules are being applied. |
 
 ### Context Size
 
