@@ -49,26 +49,41 @@ class InterceptedRequest:
         self._action: str = "forward"
         self._edited_body: Optional[Dict[str, Any]] = None
         self._event: asyncio.Event = asyncio.Event()
+        # Captured in intercept() so resolution from the dashboard thread is thread-safe
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     # ------------------------------------------------------------------
     # Resolution methods – called by dashboard API or CLI
     # ------------------------------------------------------------------
 
+    def _signal(self) -> None:
+        """Set the event in a thread-safe way.
+
+        The dashboard runs in a different OS thread (its own uvicorn event loop).
+        Plain event.set() from that thread does not wake up the proxy's event loop;
+        call_soon_threadsafe() both appends the callback and writes to the wakeup
+        pipe so the proxy loop exits its I/O poll immediately.
+        """
+        if self._loop is not None and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._event.set)
+        else:
+            self._event.set()
+
     def forward(self) -> None:
         """Forward the request unchanged."""
         self._action = "forward"
-        self._event.set()
+        self._signal()
 
     def edit(self, new_body: Dict[str, Any]) -> None:
         """Forward the request with a modified body."""
         self._action = "edit"
         self._edited_body = new_body
-        self._event.set()
+        self._signal()
 
     def drop(self) -> None:
         """Drop the request (return 204 to the client)."""
         self._action = "drop"
-        self._event.set()
+        self._signal()
 
     # ------------------------------------------------------------------
     # Awaitable by the proxy handler
@@ -115,9 +130,10 @@ class Interceptor:
     One global instance is shared between the proxy and the dashboard.
     """
 
-    def __init__(self, intercept_timeout: float = 30.0) -> None:
+    def __init__(self, intercept_timeout: Optional[float] = None) -> None:
         self._pending: Dict[str, InterceptedRequest] = {}
-        self.intercept_timeout = intercept_timeout
+        # None means "read from config.intercept_timeout at call time"; explicit value overrides (used in tests)
+        self._timeout_override = intercept_timeout
 
     # ------------------------------------------------------------------
     # Called by proxy handlers
@@ -137,13 +153,19 @@ class Interceptor:
         Returns:
             (action, body) – see InterceptedRequest.wait()
         """
+        timeout = (
+            self._timeout_override
+            if self._timeout_override is not None
+            else get_config().intercept_timeout
+        )
         req = InterceptedRequest(request_id, method, path, headers, body)
+        req._loop = asyncio.get_running_loop()  # capture proxy's loop for thread-safe signalling
         self._pending[request_id] = req
         if get_config().debug_intercept:
             _log.info("[PI][INTERCEPT] paused   %s %s  id=%s  queue=%d",
                       method, path, request_id, len(self._pending))
         try:
-            action, resolved_body = await req.wait(timeout=self.intercept_timeout)
+            action, resolved_body = await req.wait(timeout=timeout)
         finally:
             self._pending.pop(request_id, None)
         if get_config().debug_intercept:
