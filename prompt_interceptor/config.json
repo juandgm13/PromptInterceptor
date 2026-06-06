@@ -30,27 +30,14 @@
   "rules": [
     {
       "match": {
-        "path": "/api/chat",
         "jsonpath": "$.model",
         "value": [
-          "llama3",
-          "mistral",
-          "qwen2.5"
+          "qwen3:8b"
         ]
       },
       "replace": {
         "jsonpath": "$.model",
-        "value": "deepseek-coder"
-      }
-    },
-    {
-      "match": {
-        "path": "/api/chat",
-        "jsonpath": "$.options.temperature"
-      },
-      "replace": {
-        "jsonpath": "$.options.temperature",
-        "value": 0.5
+        "value": "qwen3.5:9b"
       }
     }
   ],
