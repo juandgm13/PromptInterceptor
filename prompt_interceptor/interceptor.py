@@ -14,8 +14,13 @@ and the dashboard API share the same in-flight request map.
 
 import asyncio
 import copy
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
+
+from .config import get_config
+
+_log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +85,8 @@ class InterceptedRequest:
         try:
             await asyncio.wait_for(self._event.wait(), timeout=timeout)
         except asyncio.TimeoutError:
+            if get_config().debug_intercept:
+                _log.info("[PI][INTERCEPT] timeout — auto-forward  id=%s", self.request_id)
             # Auto-forward on timeout so the client isn't left hanging
             self._action = "forward"
 
@@ -132,10 +139,16 @@ class Interceptor:
         """
         req = InterceptedRequest(request_id, method, path, headers, body)
         self._pending[request_id] = req
+        if get_config().debug_intercept:
+            _log.info("[PI][INTERCEPT] paused   %s %s  id=%s  queue=%d",
+                      method, path, request_id, len(self._pending))
         try:
-            return await req.wait(timeout=self.intercept_timeout)
+            action, resolved_body = await req.wait(timeout=self.intercept_timeout)
         finally:
             self._pending.pop(request_id, None)
+        if get_config().debug_intercept:
+            _log.info("[PI][INTERCEPT] resolved  id=%s  action=%s", request_id, action)
+        return action, resolved_body
 
     # ------------------------------------------------------------------
     # Called by dashboard / CLI
@@ -149,6 +162,8 @@ class Interceptor:
         """Forward a pending request unchanged."""
         req = self._pending.get(request_id)
         if req:
+            if get_config().debug_intercept:
+                _log.info("[PI][INTERCEPT] dashboard → forward  id=%s", request_id)
             req.forward()
             return True
         return False
@@ -157,6 +172,8 @@ class Interceptor:
         """Forward a pending request with *new_body*."""
         req = self._pending.get(request_id)
         if req:
+            if get_config().debug_intercept:
+                _log.info("[PI][INTERCEPT] dashboard → edit  id=%s", request_id)
             req.edit(new_body)
             return True
         return False
@@ -165,6 +182,8 @@ class Interceptor:
         """Drop a pending request."""
         req = self._pending.get(request_id)
         if req:
+            if get_config().debug_intercept:
+                _log.info("[PI][INTERCEPT] dashboard → drop  id=%s", request_id)
             req.drop()
             return True
         return False

@@ -16,6 +16,7 @@ class Config(BaseModel):
     project_description: str = "PromptInterceptor - Ollama Traffic Interceptor for AI Clients"
     project_version: str = "0.1.0"
     debug: bool = False
+    debug_intercept: bool = False  # Enable detailed tracing of the intercept pipeline to stdout
 
     # Server configuration
     proxy_port: int = 8080

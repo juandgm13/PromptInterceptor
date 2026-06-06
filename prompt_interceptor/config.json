@@ -3,6 +3,7 @@
   "project_description": "PromptInterceptor - Ollama Traffic Interceptor for AI Clients",
   "project_version": "0.1.0",
   "debug": false,
+  "debug_intercept": false,
   "proxy_port": 8080,
   "proxy_host": "0.0.0.0",
   "target": "http://127.0.0.1:11434",
