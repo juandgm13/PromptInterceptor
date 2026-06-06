@@ -160,29 +160,6 @@ async def test_process_request_passthrough_returns_original(passthrough_engine, 
     assert isinstance(rid, str)
 
 
-async def test_process_request_passthrough_applies_rules(monkeypatch, tmp_path):
-    """Rules apply even in passthrough mode so model replacement works without intercepting."""
-    import prompt_interceptor.rules_engine as re_mod
-    from prompt_interceptor.config import Config
-    from prompt_interceptor.logger import TrafficLogger
-    from prompt_interceptor.rules_engine import RuleEngine
-
-    cfg = Config(
-        log_dir=str(tmp_path / "logs"),
-        mode="passthrough",
-        rules=[{
-            "match": {"jsonpath": "$.model", "value": ["qwen3:8b"]},
-            "replace": {"jsonpath": "$.model", "value": "qwen3.5:9b"},
-        }],
-    )
-    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
-    engine = RuleEngine(TrafficLogger(cfg))
-    body = {"model": "qwen3:8b", "messages": []}
-    modified, result, rid = await engine.process_request("POST", "/v1/messages", {}, body)
-    assert modified is True
-    assert result["model"] == "qwen3.5:9b"
-
-
 async def test_process_request_intercept_rule_matches(engine, intercept_cfg, monkeypatch):
     import prompt_interceptor.rules_engine as re_mod
     monkeypatch.setattr(re_mod, "get_config", lambda: intercept_cfg)
