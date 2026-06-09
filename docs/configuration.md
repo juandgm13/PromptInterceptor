@@ -30,7 +30,6 @@ Configuration is stored in `prompt_interceptor/config.json`. All fields are opti
   "python_app_command": "python main.py",
   "python_app_use_venv": false,
   "python_app_env_var": "OLLAMA_HOST",
-  "windows_bash_mode": false,
   "rules": []
 }
 ```
@@ -111,17 +110,9 @@ These fields are saved by the desktop launcher when you configure a Python App c
 | `python_app_use_venv` | bool | `false` | If true, auto-detects `.venv` or `venv` in `python_app_path` and uses that interpreter |
 | `python_app_env_var` | string | `"OLLAMA_HOST"` | Env var name the app uses for the Ollama host URL |
 
-### Windows Compatibility
+### Windows
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `windows_bash_mode` | bool | `false` | Force bash wrapping on non-Windows platforms. On Windows this is **always enabled automatically** — no config needed. When active, every Bash tool call emitted by the LLM is rewritten as `bash -c "<command>"` before forwarding to the client. A warning popup is shown at startup if `bash` is not found in `PATH`. |
-
-**Auto-detection**: bash wrapping activates automatically when the proxy runs on Windows (`sys.platform == 'win32'`). Set `windows_bash_mode: true` only if you want to enable it on Linux or macOS (e.g. for testing).
-
-**Requirements**: Git Bash ([https://gitforwindows.org/](https://gitforwindows.org/)) or WSL must be installed and `bash` must be available in `PATH`.
-
-**Supported formats**: Anthropic (`/v1/messages`), OpenAI (`/v1/chat/completions`).
+Bash wrapping is applied automatically when the proxy runs on Windows — no configuration needed. Every `Bash` tool call emitted by the LLM is rewritten as `bash -c "<command>"` before forwarding to the client. Requires Git Bash ([https://gitforwindows.org/](https://gitforwindows.org/)) or WSL. A warning popup appears at startup if `bash` is not found in `PATH`.
 
 ### Rules
 
