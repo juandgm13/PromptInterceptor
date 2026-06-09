@@ -185,3 +185,41 @@ def test_save_config_os_error_raises(monkeypatch):
     monkeypatch.setattr("builtins.open", lambda *a, **kw: (_ for _ in ()).throw(OSError("no space left")))
     with pytest.raises(OSError):
         save_config(Config())
+
+
+def test_debug_intercept_default_false():
+    """debug_intercept defaults to False."""
+    assert Config().debug_intercept is False
+
+
+def test_debug_intercept_can_be_enabled():
+    """debug_intercept can be set to True via config."""
+    cfg = Config(debug_intercept=True)
+    assert cfg.debug_intercept is True
+
+
+def test_debug_intercept_loads_from_json(tmp_path):
+    """debug_intercept is read from config.json when present."""
+    p = tmp_path / "config.json"
+    p.write_text('{"debug_intercept": true}')
+    cfg = load_config(path=p)
+    assert cfg.debug_intercept is True
+
+
+def test_intercept_timeout_default():
+    """intercept_timeout defaults to 30 seconds."""
+    assert Config().intercept_timeout == 30.0
+
+
+def test_intercept_timeout_configurable():
+    """intercept_timeout can be overridden."""
+    cfg = Config(intercept_timeout=120.0)
+    assert cfg.intercept_timeout == 120.0
+
+
+def test_intercept_timeout_loads_from_json(tmp_path):
+    """intercept_timeout is read from config.json when present."""
+    p = tmp_path / "config.json"
+    p.write_text('{"intercept_timeout": 60.0}')
+    cfg = load_config(path=p)
+    assert cfg.intercept_timeout == 60.0

@@ -110,18 +110,25 @@ Edit `prompt_interceptor/config.json`:
 - `/api/generate` - Text generation
 - `/api/chat/stream` - Stream chat
 - `/api/generate/stream` - Stream generate
+- `/v1/messages` - Anthropic-compatible messages
+- `/v1/chat/completions` - OpenAI-compatible chat completions
 - `/health` - Health check
 - `/status` - Get status
 - `/dashboard` - Redirect to dashboard
 
 ### Dashboard (port 9090)
 - `/` - Web UI
+- `/api/status` - Full status JSON
+- `/api/health` - Proxy health
+- `/api/target-health` - Ollama target health
 - `/api/mode` - Change proxy mode (POST)
 - `/api/rules` - List/create modifiers
 - `/api/rules/{index}` - Delete modifier (DELETE)
 - `/api/enable-rule/{index}` - Enable modifier
 - `/api/disable-rule/{index}` - Disable modifier
 - `/api/logs` - Recent traffic logs
+- `/api/raw-logs` - All logs (no limit)
+- `/api/reset` - Clear logs and reset session (POST)
 - `/api/intercept/pending` - Pending intercepts
 - `/api/intercept/{id}/forward|edit|drop` - Resolve intercept
 

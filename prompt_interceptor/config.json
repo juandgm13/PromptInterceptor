@@ -3,12 +3,14 @@
   "project_description": "PromptInterceptor - Ollama Traffic Interceptor for AI Clients",
   "project_version": "0.1.0",
   "debug": false,
+  "debug_intercept": false,
   "proxy_port": 8080,
   "proxy_host": "0.0.0.0",
   "target": "http://127.0.0.1:11434",
   "target_port": 11434,
   "mode": "passthrough",
   "timeout": 120,
+  "intercept_timeout": 30.0,
   "health_timeout": 5.0,
   "log_dir": "logs",
   "log_size_limit": 1048576,
@@ -29,27 +31,14 @@
   "rules": [
     {
       "match": {
-        "path": "/api/chat",
         "jsonpath": "$.model",
         "value": [
-          "llama3",
-          "mistral",
-          "qwen2.5"
+          "qwen3:8b"
         ]
       },
       "replace": {
         "jsonpath": "$.model",
-        "value": "deepseek-coder"
-      }
-    },
-    {
-      "match": {
-        "path": "/api/chat",
-        "jsonpath": "$.options.temperature"
-      },
-      "replace": {
-        "jsonpath": "$.options.temperature",
-        "value": 0.5
+        "value": "qwen3.5:9b"
       }
     }
   ],

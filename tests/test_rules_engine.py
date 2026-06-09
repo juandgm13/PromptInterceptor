@@ -155,7 +155,7 @@ async def test_process_request_passthrough_returns_original(passthrough_engine, 
     monkeypatch.setattr(re_mod, "get_config", lambda: passthrough_engine.logger.config)
     body = {"model": "llama3"}
     modified, result, rid = await passthrough_engine.process_request("POST", "/api/chat", {}, body)
-    assert modified is False
+    assert modified is False  # passthrough_engine has rules=[], so nothing changes
     assert result is body
     assert isinstance(rid, str)
 

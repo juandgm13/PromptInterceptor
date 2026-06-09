@@ -12,6 +12,7 @@ import httpx
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from .bash_wrapper import patch_anthropic_body, patch_openai_body, is_windows_bash_mode
 from .config import get_config
 from .interceptor import interceptor
 from .logger import TrafficLogger, _get_ollama_ps_info
@@ -483,6 +484,11 @@ async def handle_v1_messages(
             corrected, was_corrected, fix_desc = (
                 normalize_anthropic_messages(parsed) if isinstance(parsed, dict) else (parsed, False, '')
             )
+            if is_windows_bash_mode() and isinstance(corrected, dict):
+                corrected, bash_changed = patch_anthropic_body(corrected)
+                if bash_changed:
+                    was_corrected = True
+                    fix_desc = (fix_desc + ', bash→bash -c') if fix_desc else 'bash→bash -c'
             if was_corrected:
                 yield emit_anthropic_sse(corrected)
                 logger.log_response(request_id, 200, {}, corrected, correction_applied=fix_desc)
@@ -504,6 +510,11 @@ async def handle_v1_messages(
             response_json = None
         if isinstance(response_json, dict):
             response_json, was_corrected, fix_desc = normalize_anthropic_messages(response_json)
+            if is_windows_bash_mode():
+                response_json, bash_changed = patch_anthropic_body(response_json)
+                if bash_changed:
+                    was_corrected = True
+                    fix_desc = (fix_desc + ', bash→bash -c') if fix_desc else 'bash→bash -c'
             if was_corrected:
                 response_body = json.dumps(response_json).encode("utf-8")
                 logger.log_response(request_id, status_code, response_headers, response_json, correction_applied=fix_desc)
@@ -610,6 +621,11 @@ async def handle_v1_chat_completions(
             corrected, was_corrected, fix_desc = (
                 normalize_openai_chat(parsed) if isinstance(parsed, dict) else (parsed, False, '')
             )
+            if is_windows_bash_mode() and isinstance(corrected, dict):
+                corrected, bash_changed = patch_openai_body(corrected)
+                if bash_changed:
+                    was_corrected = True
+                    fix_desc = (fix_desc + ', bash→bash -c') if fix_desc else 'bash→bash -c'
             if was_corrected:
                 yield emit_openai_sse(corrected)
                 logger.log_response(request_id, 200, {}, corrected, correction_applied=fix_desc)
@@ -638,6 +654,11 @@ async def handle_v1_chat_completions(
                 logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG}, token_source_body=response_json)
                 return _error_response(413, _CONTEXT_OVERFLOW_MSG)
             response_json, was_corrected, fix_desc = normalize_openai_chat(response_json)
+            if is_windows_bash_mode():
+                response_json, bash_changed = patch_openai_body(response_json)
+                if bash_changed:
+                    was_corrected = True
+                    fix_desc = (fix_desc + ', bash→bash -c') if fix_desc else 'bash→bash -c'
             if was_corrected:
                 response_body = json.dumps(response_json).encode("utf-8")
                 logger.log_response(request_id, status_code, response_headers, response_json, correction_applied=fix_desc)
@@ -735,9 +756,13 @@ async def _apply_intercept(
     Returns:
         (should_drop: bool, body_json: dict|None)
     """
+    if get_config().debug_intercept:
+        print(f"[PromptInterceptor][INTERCEPT] → pausing  {method} {path}  id={request_id}")
     action, resolved_body = await interceptor.intercept(
         request_id, method, path, headers, body_json
     )
+    if get_config().debug_intercept:
+        print(f"[PromptInterceptor][INTERCEPT] ← {action}  id={request_id}")
     if action == "drop":
         return (True, None)
     return (False, resolved_body)
@@ -945,6 +970,7 @@ async def handle_stream_chat(
             async for chunk in resp.aiter_bytes():
                 if chunk:
                     accumulated.append(chunk)
+                    yield chunk  # stream to client immediately; accumulate for post-processing
         except Exception as exc:
             error_str = str(exc)
         finally:
@@ -972,11 +998,8 @@ async def handle_stream_chat(
             normalize_ollama_chat(parsed) if isinstance(parsed, dict) else (parsed, False, '')
         )
         if was_corrected:
-            yield json.dumps(corrected).encode() + b"\n"
             logger.log_response(request_id, 200, {}, corrected, correction_applied=fix_desc)
         else:
-            for chunk in accumulated:
-                yield chunk
             logger.log_response(request_id, 200, {}, parsed)
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
@@ -1040,6 +1063,7 @@ async def handle_stream_generate(
             async for chunk in resp.aiter_bytes():
                 if chunk:
                     accumulated.append(chunk)
+                    yield chunk  # stream to client immediately; accumulate for post-processing
         except Exception as exc:
             error_str = str(exc)
         finally:
@@ -1067,11 +1091,8 @@ async def handle_stream_generate(
             normalize_ollama_chat(parsed) if isinstance(parsed, dict) else (parsed, False, '')
         )
         if was_corrected:
-            yield json.dumps(corrected).encode() + b"\n"
             logger.log_response(request_id, 200, {}, corrected, correction_applied=fix_desc)
         else:
-            for chunk in accumulated:
-                yield chunk
             logger.log_response(request_id, 200, {}, parsed)
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")

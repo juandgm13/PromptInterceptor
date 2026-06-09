@@ -4,6 +4,7 @@ PromptInterceptor - Ollama Traffic Interceptor for AI Clients
 Main entry point for the proxy application.
 """
 
+import shutil
 import time
 import threading
 
@@ -11,7 +12,8 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from .config import get_config
+from .bash_wrapper import is_windows_bash_mode
+from .config import get_config, save_config
 from .logger import TrafficLogger
 from .rules_engine import RuleEngine
 from .proxy import (
@@ -27,6 +29,9 @@ from .cors_middleware import add_cors_middleware
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     config = get_config()
+    if config.mode != "passthrough":
+        config.mode = "passthrough"
+        save_config(config)
     logger = TrafficLogger()
     rule_engine = RuleEngine(logger)
 
@@ -112,9 +117,37 @@ def create_app() -> FastAPI:
 app = create_app()
 
 
+def _warn_if_bash_missing() -> None:
+    """Show a warning popup if bash wrapping is active but bash is not in PATH."""
+    if not is_windows_bash_mode():
+        return
+    if shutil.which('bash'):
+        return
+    msg = (
+        "Bash no encontrado en el sistema.\n\n"
+        "El proxy está ejecutándose en Windows y necesita bash para envolver los "
+        "comandos generados por el LLM.\n\n"
+        "El comportamiento de los comandos bash puede ser incorrecto.\n\n"
+        "Se recomienda instalar Git Bash (https://gitforwindows.org/) o habilitar WSL."
+    )
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showwarning("PromptInterceptor — Bash no encontrado", msg)
+        root.destroy()
+    except Exception:
+        print(
+            "[PromptInterceptor] WARNING: bash no encontrado. "
+            "Se recomienda instalar Git Bash o WSL para que los comandos funcionen en Windows."
+        )
+
+
 def main() -> None:
     """Main entry point."""
     config = get_config()
+    _warn_if_bash_missing()
 
     if config.dashboard_enabled:
         def _run_dashboard():
