@@ -5,11 +5,40 @@ Bash wrapping is applied automatically when running on Windows. Every Bash
 tool call command is wrapped as ``bash -c "<command>"`` before forwarding to
 the client, so AI clients can execute Unix commands on Windows as long as
 bash is available (Git Bash, WSL, Cygwin, etc.).
+
+PowerShell cmdlets (Verb-Noun pattern, e.g. Get-ChildItem, get-childitem) are
+detected and left unchanged so they continue to work natively.
 """
 
 import json
 import sys
 from typing import Tuple
+
+# PowerShell approved verbs (case-insensitive). Commands whose first token is
+# <verb>-<anything> with a verb in this set are treated as PS cmdlets and not wrapped.
+_PS_VERBS = frozenset({
+    'add', 'clear', 'close', 'compress', 'complete', 'confirm', 'connect',
+    'convert', 'convertfrom', 'convertto', 'copy', 'debug', 'deny',
+    'disable', 'dismount', 'edit', 'enable', 'enter', 'exit', 'expand',
+    'export', 'find', 'format', 'get', 'group', 'hide', 'import',
+    'initialize', 'install', 'invoke', 'join', 'limit', 'lock', 'measure',
+    'mount', 'move', 'new', 'open', 'optimize', 'out', 'pop', 'protect',
+    'push', 'read', 'receive', 'redo', 'register', 'remove', 'rename',
+    'repair', 'request', 'reset', 'resize', 'resolve', 'restart', 'restore',
+    'save', 'search', 'select', 'send', 'set', 'show', 'skip', 'sort',
+    'split', 'start', 'stop', 'submit', 'suspend', 'switch', 'sync',
+    'test', 'trace', 'undo', 'unlock', 'uninstall', 'unprotect',
+    'unregister', 'update', 'use', 'wait', 'watch', 'write',
+})
+
+
+def _is_powershell_command(command: str) -> bool:
+    """Return True if the command looks like a PowerShell cmdlet (Verb-Noun)."""
+    first_token = command.strip().split()[0] if command.strip() else ''
+    if '-' not in first_token:
+        return False
+    verb = first_token.split('-')[0].lower()
+    return verb in _PS_VERBS
 
 
 def is_windows_bash_mode() -> bool:
@@ -18,13 +47,14 @@ def is_windows_bash_mode() -> bool:
 
 
 def wrap_bash_command(command: str) -> str:
-    """
-    Wrap a bash command so it runs via ``bash -c "..."``.
+    """Wrap a Unix command so it runs via ``bash -c "..."``.
 
-    Already-wrapped commands (starting with 'bash ') are returned unchanged
-    to avoid double-wrapping.
+    Returns the command unchanged if it is already wrapped, empty, or looks
+    like a PowerShell cmdlet (Verb-Noun pattern).
     """
     if not command or command.startswith('bash '):
+        return command
+    if _is_powershell_command(command):
         return command
     # Escape backslashes first, then double-quotes, so the shell sees them correctly
     escaped = command.replace('\\', '\\\\').replace('"', '\\"')

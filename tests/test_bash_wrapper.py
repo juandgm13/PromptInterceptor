@@ -33,6 +33,37 @@ class TestWrapBashCommand:
         assert result.startswith('bash -c "')
         assert result.endswith('"')
 
+    # PowerShell cmdlets — must NOT be wrapped
+    def test_powershell_capitalized_not_wrapped(self):
+        assert wrap_bash_command("Get-ChildItem") == "Get-ChildItem"
+
+    def test_powershell_lowercase_not_wrapped(self):
+        assert wrap_bash_command("get-childitem") == "get-childitem"
+
+    def test_powershell_with_args_not_wrapped(self):
+        assert wrap_bash_command("Get-ChildItem -Path C:\\Users") == "Get-ChildItem -Path C:\\Users"
+
+    def test_powershell_set_location_not_wrapped(self):
+        assert wrap_bash_command("Set-Location C:\\Projects") == "Set-Location C:\\Projects"
+
+    def test_powershell_new_item_not_wrapped(self):
+        assert wrap_bash_command("New-Item -ItemType Directory -Path .\\output") == \
+               "New-Item -ItemType Directory -Path .\\output"
+
+    def test_powershell_remove_item_not_wrapped(self):
+        assert wrap_bash_command("Remove-Item -Recurse -Force .\\dist") == \
+               "Remove-Item -Recurse -Force .\\dist"
+
+    def test_powershell_write_host_not_wrapped(self):
+        assert wrap_bash_command("Write-Host 'hello'") == "Write-Host 'hello'"
+
+    def test_powershell_invoke_expression_not_wrapped(self):
+        assert wrap_bash_command("Invoke-Expression $cmd") == "Invoke-Expression $cmd"
+
+    def test_powershell_select_object_not_wrapped(self):
+        assert wrap_bash_command("Select-Object -Property Name, Size") == \
+               "Select-Object -Property Name, Size"
+
 
 class TestPatchAnthropicBody:
     def _make_body(self, command: str, name: str = "Bash"):
