@@ -79,6 +79,9 @@ class Config(BaseModel):
     # Launcher: environment variable name the Python app uses to configure the Ollama host
     python_app_env_var: str = "OLLAMA_HOST"
 
+    # Windows compatibility: translate bash commands in Bash tool calls to Windows CMD equivalents
+    windows_cmd_mode: bool = False
+
 
 def load_config(path: Optional[Path] = None) -> Config:
     """Load configuration from JSON file."""
