@@ -55,6 +55,5 @@
   "python_app_path": "C:/Users/juand/Documents/Repositorios/RiggingAgent",
   "python_app_command": "python.exe .\\main.py --object \"Mesh_0\" --debug --no-export --ui",
   "python_app_use_venv": true,
-  "python_app_env_var": "OLLAMA_HOST",
-  "windows_cmd_mode": false
+  "python_app_env_var": "OLLAMA_HOST"
 }
