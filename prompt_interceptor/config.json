@@ -4,13 +4,13 @@
   "project_version": "0.1.0",
   "debug": false,
   "debug_intercept": false,
-  "intercept_timeout": 30.0,
   "proxy_port": 8080,
   "proxy_host": "0.0.0.0",
   "target": "http://127.0.0.1:11434",
   "target_port": 11434,
   "mode": "passthrough",
   "timeout": 120,
+  "intercept_timeout": 30.0,
   "health_timeout": 5.0,
   "log_dir": "logs",
   "log_size_limit": 1048576,
@@ -55,5 +55,6 @@
   "python_app_path": "C:/Users/juand/Documents/Repositorios/RiggingAgent",
   "python_app_command": "python.exe .\\main.py --object \"Mesh_0\" --debug --no-export --ui",
   "python_app_use_venv": true,
-  "python_app_env_var": "OLLAMA_HOST"
+  "python_app_env_var": "OLLAMA_HOST",
+  "windows_cmd_mode": false
 }
