@@ -172,28 +172,10 @@ class TestIsWindowsBashMode:
         with patch.object(sys, 'platform', 'win32'):
             assert is_windows_bash_mode() is True
 
-    def test_false_on_linux_without_config(self):
+    def test_false_on_linux(self):
         with patch.object(sys, 'platform', 'linux'):
-            with patch('prompt_interceptor.bash_wrapper.get_config') as mock_cfg:
-                mock_cfg.return_value.windows_bash_mode = False
-                assert is_windows_bash_mode() is False
+            assert is_windows_bash_mode() is False
 
-    def test_true_on_linux_with_config_enabled(self):
-        with patch.object(sys, 'platform', 'linux'):
-            with patch('prompt_interceptor.bash_wrapper.get_config') as mock_cfg:
-                mock_cfg.return_value.windows_bash_mode = True
-                assert is_windows_bash_mode() is True
-
-    def test_true_on_darwin_with_config_enabled(self):
+    def test_false_on_darwin(self):
         with patch.object(sys, 'platform', 'darwin'):
-            with patch('prompt_interceptor.bash_wrapper.get_config') as mock_cfg:
-                mock_cfg.return_value.windows_bash_mode = True
-                assert is_windows_bash_mode() is True
-
-    def test_windows_does_not_check_config(self):
-        """On Windows, config is irrelevant — always True."""
-        with patch.object(sys, 'platform', 'win32'):
-            with patch('prompt_interceptor.bash_wrapper.get_config') as mock_cfg:
-                mock_cfg.return_value.windows_bash_mode = False
-                assert is_windows_bash_mode() is True
-                mock_cfg.assert_not_called()
+            assert is_windows_bash_mode() is False
