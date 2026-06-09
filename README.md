@@ -21,6 +21,7 @@ PromptInterceptor sits between your client and Ollama and can rewrite any field 
 - **Live prompt viewer** — see every request and response as it flows through the proxy
 - **Intercept mode** — pause any request, edit the JSON body by hand, then forward or drop it
 - **Modifier management** — create, enable, disable and delete rules from the dashboard without restarting
+- **Windows bash mode** — automatically detects Windows and wraps LLM-generated Bash commands as `bash -c "..."`, so they run via Git Bash or WSL without any configuration
 - **Only Proxy mode** — launch just the proxy and point any client at it manually
 - **Open Code support** — auto-configures `~/.config/opencode/opencode.json` to point at the proxy
 - **Python app support** — connect any Python app that uses Ollama by setting its host env var
@@ -74,7 +75,9 @@ If the check fails, start Ollama manually and click **Check Ollama** again.
 | **Work Dir** _(Open Code)_ | Directory where the client terminal opens. |
 | **App Dir** _(Python App)_ | Working directory for the Python app. |
 | **Command** _(Python App)_ | Command to run the app (default: `python main.py`). |
+| **Use venv** _(Python App)_ | Checkbox: auto-detects a `.venv` or `venv` folder in the App Dir and runs the command with that interpreter instead of the system Python. |
 | **Ollama Env Var** _(Python App)_ | Env var the app uses for the Ollama host (e.g. `OLLAMA_HOST`). Set automatically to the proxy URL. |
+| **Context Size** _(Python App)_ | Size of Ollama's context window passed as `OLLAMA_NUM_CTX` when launching Ollama. Options: 4k, 8k, 16k, 32k _(default)_, 64k, 128k, 256k. |
 
 ---
 
@@ -119,6 +122,14 @@ Example — override temperature to reduce randomness:
 
 See [docs/rules.md](docs/rules.md) for the full modifier reference.
 
+### Ollama + Open Code on Windows
+
+Running Open Code on Windows with a local model? **No configuration needed** — the proxy detects Windows automatically and wraps every Bash tool call as `bash -c "..."` before it reaches Open Code.
+
+1. Install [Git Bash](https://gitforwindows.org/) or enable WSL so that `bash` is available in `PATH`.
+2. Start the proxy normally.
+3. The proxy wraps commands like `ls -la` → `bash -c "ls -la"` transparently, without any changes to Open Code or the model. If `bash` is not found in `PATH`, a warning popup appears at startup.
+
 ### Ollama + Open Code
 
 1. Start Ollama: `ollama serve`
@@ -133,8 +144,13 @@ See [docs/rules.md](docs/rules.md) for the full modifier reference.
 1. Start Ollama: `ollama serve`
 2. Run `python -m prompt_interceptor`
 3. Step 1: click **Check Ollama**
-4. Step 2: select **Python App (Ollama)**, fill in **App Dir**, **Command**, and **Ollama Env Var** → click **Launch Client**
-5. Step 3: click **Open Dashboard**
+4. Step 2: select **Python App (Ollama)**, fill in:
+   - **App Dir** — root folder of your app
+   - **Command** — entry point (e.g. `python main.py`)
+   - **Use venv** — check this if your app has a `.venv` or `venv` folder; the launcher will use that interpreter automatically
+   - **Ollama Env Var** — the env var your app reads for the Ollama host (e.g. `OLLAMA_HOST`)
+   - **Context Size** — how large a context window to give Ollama (default 32k; increase for long conversations)
+5. Click **Launch Client**, then **Open Dashboard**
 6. The app sends all Ollama traffic through `http://localhost:8080`
 
 ---
@@ -170,6 +186,8 @@ See [docs/configuration.md](docs/configuration.md) for all available fields.
 | POST | `/api/generate` | Text generation |
 | POST | `/api/chat/stream` | Streaming chat |
 | POST | `/api/generate/stream` | Streaming generate |
+| POST | `/v1/messages` | Anthropic-compatible messages |
+| POST | `/v1/chat/completions` | OpenAI-compatible chat completions |
 | ANY | `/{path}` | Pass-through: any unmatched path is forwarded to Ollama and logged |
 
 ### Dashboard (port 9090)
@@ -177,11 +195,16 @@ See [docs/configuration.md](docs/configuration.md) for all available fields.
 | Method | Path | Description |
 |---|---|---|
 | GET | `/` | Dashboard UI |
+| GET | `/api/status` | Full system status |
+| GET | `/api/health` | Proxy health |
+| GET | `/api/target-health` | Ollama target health |
 | POST | `/api/mode` | Change proxy mode |
 | GET | `/api/rules` | List modifiers |
 | POST | `/api/rules` | Create modifier |
 | DELETE | `/api/rules/{index}` | Delete modifier |
 | GET | `/api/logs` | Recent traffic logs |
+| GET | `/api/raw-logs` | All logs (no limit) |
+| POST | `/api/reset` | Clear logs and reset session |
 | POST | `/api/intercept/{id}/forward` | Forward paused request |
 | POST | `/api/intercept/{id}/edit` | Edit and forward |
 | POST | `/api/intercept/{id}/drop` | Drop request |

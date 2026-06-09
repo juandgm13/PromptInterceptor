@@ -91,12 +91,13 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .form-grid label{color:#888;font-size:.8em;display:block;margin-bottom:4px}
   .btn-add{padding:7px 14px;background:#0d3b66;color:#4fc3f7;border:1px solid #4fc3f7;
            border-radius:4px;cursor:pointer;font-size:.85em;white-space:nowrap}
-  .pending-card{background:#0d0d1e;border:1px solid #2a2a4e;border-radius:6px;
-                padding:16px;margin-bottom:12px}
-  .pending-card h3{color:#4fc3f7;font-size:.95em;margin-bottom:8px}
+  .pending-card{background:#0d0d1e;border:1px solid #6a4a1a;border-left:4px solid #ffa040;
+                border-radius:6px;padding:16px;margin-bottom:12px}
+  .pending-card h3{color:#ffa040;font-size:.95em;margin-bottom:8px}
   .pending-meta{color:#888;font-size:.8em;margin-bottom:8px}
   .pending-actions{display:flex;gap:8px;margin-top:10px}
   #pending-section{display:none}
+  #pending-section h2{color:#ffa040}
   .header-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
   .mode-controls{display:flex;align-items:center;gap:8px}
   .mode-label{color:#888;font-size:.85em;margin-right:4px}
@@ -164,7 +165,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="stat-value" id="stat-requests">-</div>
       <div class="stat-label">Total Requests</div>
     </div>
-    <div class="stat">
+    <div class="stat" id="stat-modifiers-box" style="display:none">
       <div class="stat-value" id="stat-modifiers">-</div>
       <div class="stat-label">Active Modifiers</div>
     </div>
@@ -242,7 +243,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
     <table>
       <thead><tr>
-        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Tokens / Ctx%</th><th>Prompt</th><th>Response</th><th>Status</th><th>Raw</th>
+        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Tokens / Ctx%</th><th>Prompt</th><th>Response</th><th>Status</th><th></th>
       </tr></thead>
       <tbody id="logs-body"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody>
     </table>
@@ -267,7 +268,10 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 <div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal()">
   <div class="modal-box">
     <button class="modal-close" onclick="closeModal()">&#x2715;</button>
-    <h3 class="modal-title" id="modal-title">Message Detail</h3>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;padding-right:36px">
+      <h3 class="modal-title" id="modal-title" style="margin:0;flex:1">Message Detail</h3>
+      <button id="modal-raw-btn" class="link-show" onclick="toggleModalRaw()" style="font-size:.85em;padding:3px 10px;border:1px solid #4fc3f7;border-radius:4px;background:transparent;white-space:nowrap;cursor:pointer">Raw</button>
+    </div>
     <div id="modal-correction-banner" style="display:none;background:#0a2a1a;border:1px solid #1a4a2a;border-radius:5px;padding:7px 12px;margin-bottom:12px;color:#5dba8a;font-size:.82em">
       &#x2714; Auto-corrected by proxy: <span id="modal-correction-text" style="font-weight:600"></span>
     </div>
@@ -299,6 +303,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         <pre class="modal-resp-pre" id="modal-response"></pre>
       </div>
     </div>
+    <div id="modal-raw-panel" style="display:none">
+      <pre id="modal-raw-pre" style="background:#0d1117;color:#c9d1d9;padding:16px;border-radius:6px;overflow:auto;max-height:70vh;font-size:.8em;white-space:pre-wrap;word-break:break-all;margin:0"></pre>
+    </div>
   </div>
 </div>
 
@@ -307,6 +314,9 @@ const _logsCache = {};
 let _proxyStatusData = null;
 let _fileMode = false;
 let _loadedLogs = null;
+let _currentModalLog = null;
+let _currentModalId = null;
+let _modalRawMode = false;
 
 function esc(s) {
   return String(s)
@@ -355,6 +365,12 @@ function stripEmbeddedToolCalls(text) {
 function showRaw(id) {
   const l = _logsCache[id];
   if (!l) return;
+  _currentModalLog = l;
+  _currentModalId = id;
+  _modalRawMode = false;
+  document.getElementById('modal-raw-panel').style.display = 'none';
+  document.getElementById('modal-raw-btn').textContent = 'Raw';
+  document.querySelector('.modal-split').style.display = '';
   document.getElementById('modal-title').textContent =
     (l.method || '') + ' ' + (l.path || '') + ' — ' + (l.timestamp || l.response_timestamp || '');
 
@@ -528,8 +544,34 @@ function showRaw(id) {
   document.getElementById('modal-overlay').style.display = 'block';
 }
 
+function toggleModalRaw() {
+  _modalRawMode = !_modalRawMode;
+  const split = document.querySelector('.modal-split');
+  const rawPanel = document.getElementById('modal-raw-panel');
+  const rawBtn = document.getElementById('modal-raw-btn');
+  const bannerIds = ['modal-correction-banner','modal-token-banner','modal-error-banner'];
+  if (_modalRawMode) {
+    split.style.display = 'none';
+    bannerIds.forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+    document.getElementById('modal-raw-pre').textContent = JSON.stringify(_currentModalLog, null, 2).replace(/\\\\n/g, '\\n').replace(/\\\\t/g, '\\t');
+    rawPanel.style.display = 'block';
+    rawBtn.textContent = 'Show';
+  } else {
+    rawPanel.style.display = 'none';
+    split.style.display = '';
+    rawBtn.textContent = 'Raw';
+    if (_currentModalId) showRaw(_currentModalId);
+  }
+}
+
 function closeModal() {
   document.getElementById('modal-overlay').style.display = 'none';
+  _modalRawMode = false;
+  _currentModalLog = null;
+  _currentModalId = null;
+  document.getElementById('modal-raw-panel').style.display = 'none';
+  document.getElementById('modal-raw-btn').textContent = 'Raw';
+  document.querySelector('.modal-split').style.display = '';
 }
 
 async function fetchJSON(url, opts) {
@@ -547,6 +589,7 @@ async function loadStatus() {
     document.getElementById('btn-passthrough').classList.toggle('active', mode === 'passthrough');
     document.getElementById('btn-intercept').classList.toggle('active', mode === 'intercept');
     document.getElementById('modifiers-section').style.display = mode === 'intercept' ? '' : 'none';
+    document.getElementById('stat-modifiers-box').style.display = mode === 'intercept' ? '' : 'none';
   } catch(e) { /* silent */ }
 }
 
@@ -580,7 +623,7 @@ function renderLogsTable(logs) {
     document.getElementById('ctx-warn-banner').style.display = 'none';
     return;
   }
-  let lastCtxPct = null;
+  let maxCtxPct = null;
   tbody.innerHTML = logs.slice().reverse().map((l, i) => {
     const cacheKey = l.request_id || i;
     _logsCache[cacheKey] = l;
@@ -660,7 +703,7 @@ function renderLogsTable(logs) {
       const totStr = tot >= 1000 ? (tot/1000).toFixed(1) + 'K' : String(tot);
       const pct = tu.context_utilization_pct;
       if (pct != null) {
-        if (lastCtxPct === null) lastCtxPct = pct;
+        if (maxCtxPct === null || pct > maxCtxPct) maxCtxPct = pct;
         const pctColor = pct >= 90 ? '#f55' : pct >= 70 ? '#ffa040' : '#4fc3f7';
         tokenCell = totStr + '<br><small style="color:' + pctColor + '">' + pct + '%</small>';
       } else {
@@ -679,13 +722,13 @@ function renderLogsTable(logs) {
       <td><button class="link-show" onclick="showRaw('${esc(String(cacheKey))}')">show</button></td>
     </tr>`;
   }).join('');
-  if (lastCtxPct !== null) {
+  if (maxCtxPct !== null) {
     const ctxEl = document.getElementById('stat-ctx');
-    const pctColor = lastCtxPct >= 90 ? '#f55' : lastCtxPct >= 70 ? '#ffa040' : '#4fc3f7';
-    ctxEl.textContent = lastCtxPct + '%';
+    const pctColor = maxCtxPct >= 90 ? '#f55' : maxCtxPct >= 70 ? '#ffa040' : '#4fc3f7';
+    ctxEl.textContent = maxCtxPct + '%';
     ctxEl.style.color = pctColor;
-    if (lastCtxPct >= 80) {
-      document.getElementById('ctx-warn-pct').textContent = lastCtxPct + '%';
+    if (maxCtxPct >= 80) {
+      document.getElementById('ctx-warn-pct').textContent = maxCtxPct + '%';
       document.getElementById('ctx-warn-banner').style.display = '';
     } else {
       document.getElementById('ctx-warn-banner').style.display = 'none';
@@ -751,18 +794,22 @@ async function loadPending() {
       section.style.display = 'none';
       return;
     }
-    section.style.display = '';
-    list.innerHTML = (data.pending || []).map(p => `
+    section.style.display = 'block';
+    list.innerHTML = (data.pending || []).map(p => {
+      const ts = p.created_at ? new Date(p.created_at).toLocaleTimeString() : '';
+      const meta = [ts ? `received ${ts}` : '', `id: ${esc(p.request_id)}`].filter(Boolean).join(' · ');
+      return `
       <div class="pending-card">
-        <h3>${esc(p.method)} ${esc(p.path)}</h3>
-        <div class="pending-meta">ID: ${esc(p.request_id)}</div>
-        <textarea id="ta-${esc(p.request_id)}" rows="6">${esc(JSON.stringify(p.body, null, 2))}</textarea>
+        <h3>&#9654; ${esc(p.method)} ${esc(p.path)}</h3>
+        <div class="pending-meta">${meta}</div>
+        <textarea id="ta-${esc(p.request_id)}" rows="8">${esc(JSON.stringify(p.body, null, 2))}</textarea>
         <div class="pending-actions">
-          <button class="btn-forward" onclick="forwardRequest('${esc(p.request_id)}')">Forward</button>
-          <button class="btn-forward" onclick="editRequest('${esc(p.request_id)}')">Edit &amp; Forward</button>
-          <button class="btn-drop" onclick="dropRequest('${esc(p.request_id)}')">Drop</button>
+          <button class="btn-forward" onclick="forwardRequest('${esc(p.request_id)}')">&#x2713; Forward</button>
+          <button class="btn-forward" onclick="editRequest('${esc(p.request_id)}')">&#x270E; Edit &amp; Forward</button>
+          <button class="btn-drop" onclick="dropRequest('${esc(p.request_id)}')">&#x2715; Drop</button>
         </div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
   } catch(e) { /* silent */ }
 }
 
@@ -900,12 +947,11 @@ function exitFileMode() {
   loadLogs();
 }
 
-function refreshAll() { loadStatus(); loadRules(); loadLogs(); }
-function refreshPending() { loadPending(); }
+function refreshAll() { loadStatus(); loadRules(); loadLogs(); loadPending(); }
 
 refreshAll();
 setInterval(refreshAll, 5000);
-setInterval(refreshPending, 3000);
+setInterval(loadPending, 1000);
 </script>
 </body>
 </html>"""

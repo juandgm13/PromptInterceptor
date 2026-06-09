@@ -136,38 +136,54 @@ class RuleEngine:
 
         config = get_config()
         if config.mode == "passthrough":
+            if config.debug_intercept:
+                _log.info("[PI][RULES] passthrough — skipping rules  %s %s  id=%s", method, path, request_id)
             return (False, body, request_id)
 
         current_body = copy.deepcopy(body) if body else {}
         modified = False
+        active_rules = [r for r in self.rules if r.enabled]
 
-        for rule in self.rules:
-            if not rule.enabled:
-                continue
-
+        for rule in active_rules:
+            jp = rule.replace.get("jsonpath", "")
+            match_val = rule.match.get("value")
             if self._evaluate_match(rule, current_body, path):
+                if config.debug_intercept:
+                    _log.info("[PI][RULES] rule matched  path=%s  replace=%s → %s",
+                              path, jp, rule.replace.get("value"))
                 try:
                     before = copy.deepcopy(current_body)
+                    before_val = _jsonpath_get(before, jp)
                     self._apply_replacement(rule, current_body)
                     if current_body != before:
                         modified = True
+                        after_val = _jsonpath_get(current_body, jp)
+                        print(f"[PI][RULES] ✓ {method} {path}  {jp}: {before_val} → {after_val}")
                         self.logger.log_response(
                             request_id=request_id,
                             status_code=200,
                             headers={},
                             body={
                                 "action": "rule_applied",
-                                "jsonpath": rule.replace.get("jsonpath"),
+                                "jsonpath": jp,
                                 "new_value": rule.replace.get("value"),
                             },
                         )
                 except Exception as e:
+                    print(f"[PI][RULES] ✗ {method} {path}  rule error: {e}")
                     self.logger.log_response(
                         request_id=request_id,
                         status_code=500,
                         headers={},
                         body={"action": "rule_error", "error": str(e)},
                     )
+            else:
+                found_val = _jsonpath_get(current_body, rule.match.get("jsonpath", ""))
+                print(f"[PI][RULES] ✗ {method} {path}  {jp}: "
+                      f"looking for {match_val}, found {found_val}")
+
+        if not active_rules:
+            print(f"[PI][RULES] {method} {path}  no active rules")
 
         return (modified, current_body if modified else body, request_id)
 

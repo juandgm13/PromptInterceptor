@@ -164,3 +164,72 @@ async def test_pending_cleaned_after_resolution(interceptor):
     interceptor.resolve_forward("r6")
     await t
     assert len(interceptor) == 0
+
+
+# ---------------------------------------------------------------------------
+# debug_intercept tracing
+# ---------------------------------------------------------------------------
+
+async def test_intercept_logs_when_debug_enabled(interceptor, monkeypatch):
+    """intercept() emits info logs when debug_intercept is True."""
+    from unittest.mock import MagicMock, patch
+    from prompt_interceptor import interceptor as interceptor_mod
+
+    cfg = MagicMock()
+    cfg.debug_intercept = True
+    monkeypatch.setattr(interceptor_mod, "get_config", lambda: cfg)
+
+    log_calls = []
+    with patch.object(interceptor_mod._log, "info", side_effect=lambda *a, **kw: log_calls.append(a[0] % a[1:])):
+        async def _intercept():
+            return await interceptor.intercept("dbg1", "POST", "/api/chat", {}, {})
+
+        t = asyncio.create_task(_intercept())
+        await asyncio.sleep(0.01)
+        interceptor.resolve_forward("dbg1")
+        await t
+
+    assert any("paused" in c for c in log_calls)
+    assert any("resolved" in c for c in log_calls)
+
+
+def test_resolve_forward_logs_when_debug_enabled(monkeypatch):
+    """resolve_forward() logs the action when debug_intercept is True."""
+    from unittest.mock import MagicMock, patch
+    from prompt_interceptor import interceptor as interceptor_mod
+    from prompt_interceptor.interceptor import Interceptor, InterceptedRequest
+
+    cfg = MagicMock()
+    cfg.debug_intercept = True
+    monkeypatch.setattr(interceptor_mod, "get_config", lambda: cfg)
+
+    ic = Interceptor()
+    req = InterceptedRequest("dbg2", "POST", "/", {}, {})
+    ic._pending["dbg2"] = req
+
+    log_calls = []
+    with patch.object(interceptor_mod._log, "info", side_effect=lambda *a, **kw: log_calls.append(a[0] % a[1:])):
+        ic.resolve_forward("dbg2")
+
+    assert any("forward" in c for c in log_calls)
+
+
+def test_resolve_drop_logs_when_debug_enabled(monkeypatch):
+    """resolve_drop() logs the action when debug_intercept is True."""
+    from unittest.mock import MagicMock, patch
+    from prompt_interceptor import interceptor as interceptor_mod
+    from prompt_interceptor.interceptor import Interceptor, InterceptedRequest
+
+    cfg = MagicMock()
+    cfg.debug_intercept = True
+    monkeypatch.setattr(interceptor_mod, "get_config", lambda: cfg)
+
+    ic = Interceptor()
+    req = InterceptedRequest("dbg3", "POST", "/", {}, {})
+    ic._pending["dbg3"] = req
+
+    log_calls = []
+    with patch.object(interceptor_mod._log, "info", side_effect=lambda *a, **kw: log_calls.append(a[0] % a[1:])):
+        ic.resolve_drop("dbg3")
+
+    assert any("drop" in c for c in log_calls)

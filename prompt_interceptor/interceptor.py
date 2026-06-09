@@ -14,8 +14,13 @@ and the dashboard API share the same in-flight request map.
 
 import asyncio
 import copy
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
+
+from .config import get_config
+
+_log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -44,26 +49,41 @@ class InterceptedRequest:
         self._action: str = "forward"
         self._edited_body: Optional[Dict[str, Any]] = None
         self._event: asyncio.Event = asyncio.Event()
+        # Captured in intercept() so resolution from the dashboard thread is thread-safe
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     # ------------------------------------------------------------------
     # Resolution methods – called by dashboard API or CLI
     # ------------------------------------------------------------------
 
+    def _signal(self) -> None:
+        """Set the event in a thread-safe way.
+
+        The dashboard runs in a different OS thread (its own uvicorn event loop).
+        Plain event.set() from that thread does not wake up the proxy's event loop;
+        call_soon_threadsafe() both appends the callback and writes to the wakeup
+        pipe so the proxy loop exits its I/O poll immediately.
+        """
+        if self._loop is not None and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._event.set)
+        else:
+            self._event.set()
+
     def forward(self) -> None:
         """Forward the request unchanged."""
         self._action = "forward"
-        self._event.set()
+        self._signal()
 
     def edit(self, new_body: Dict[str, Any]) -> None:
         """Forward the request with a modified body."""
         self._action = "edit"
         self._edited_body = new_body
-        self._event.set()
+        self._signal()
 
     def drop(self) -> None:
         """Drop the request (return 204 to the client)."""
         self._action = "drop"
-        self._event.set()
+        self._signal()
 
     # ------------------------------------------------------------------
     # Awaitable by the proxy handler
@@ -80,6 +100,8 @@ class InterceptedRequest:
         try:
             await asyncio.wait_for(self._event.wait(), timeout=timeout)
         except asyncio.TimeoutError:
+            if get_config().debug_intercept:
+                _log.info("[PI][INTERCEPT] timeout — auto-forward  id=%s", self.request_id)
             # Auto-forward on timeout so the client isn't left hanging
             self._action = "forward"
 
@@ -108,9 +130,10 @@ class Interceptor:
     One global instance is shared between the proxy and the dashboard.
     """
 
-    def __init__(self, intercept_timeout: float = 30.0) -> None:
+    def __init__(self, intercept_timeout: Optional[float] = None) -> None:
         self._pending: Dict[str, InterceptedRequest] = {}
-        self.intercept_timeout = intercept_timeout
+        # None means "read from config.intercept_timeout at call time"; explicit value overrides (used in tests)
+        self._timeout_override = intercept_timeout
 
     # ------------------------------------------------------------------
     # Called by proxy handlers
@@ -130,12 +153,24 @@ class Interceptor:
         Returns:
             (action, body) – see InterceptedRequest.wait()
         """
+        timeout = (
+            self._timeout_override
+            if self._timeout_override is not None
+            else get_config().intercept_timeout
+        )
         req = InterceptedRequest(request_id, method, path, headers, body)
+        req._loop = asyncio.get_running_loop()  # capture proxy's loop for thread-safe signalling
         self._pending[request_id] = req
+        if get_config().debug_intercept:
+            _log.info("[PI][INTERCEPT] paused   %s %s  id=%s  queue=%d",
+                      method, path, request_id, len(self._pending))
         try:
-            return await req.wait(timeout=self.intercept_timeout)
+            action, resolved_body = await req.wait(timeout=timeout)
         finally:
             self._pending.pop(request_id, None)
+        if get_config().debug_intercept:
+            _log.info("[PI][INTERCEPT] resolved  id=%s  action=%s", request_id, action)
+        return action, resolved_body
 
     # ------------------------------------------------------------------
     # Called by dashboard / CLI
@@ -149,6 +184,8 @@ class Interceptor:
         """Forward a pending request unchanged."""
         req = self._pending.get(request_id)
         if req:
+            if get_config().debug_intercept:
+                _log.info("[PI][INTERCEPT] dashboard → forward  id=%s", request_id)
             req.forward()
             return True
         return False
@@ -157,6 +194,8 @@ class Interceptor:
         """Forward a pending request with *new_body*."""
         req = self._pending.get(request_id)
         if req:
+            if get_config().debug_intercept:
+                _log.info("[PI][INTERCEPT] dashboard → edit  id=%s", request_id)
             req.edit(new_body)
             return True
         return False
@@ -165,6 +204,8 @@ class Interceptor:
         """Drop a pending request."""
         req = self._pending.get(request_id)
         if req:
+            if get_config().debug_intercept:
+                _log.info("[PI][INTERCEPT] dashboard → drop  id=%s", request_id)
             req.drop()
             return True
         return False

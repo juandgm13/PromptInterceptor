@@ -10,11 +10,13 @@ These endpoints replicate the Ollama API. Point your AI client to `http://localh
 | `GET` | `/status` | Full system status (proxy + target + rules) |
 | `GET` | `/dashboard` | Redirect to dashboard UI |
 | `GET` | `/api/models` | List available models from Ollama |
-| `POST` | `/api/chat` | Chat completion (non-streaming) — intercepted by rules engine |
-| `POST` | `/api/generate` | Text generation (non-streaming) — intercepted by rules engine |
-| `POST` | `/api/chat/stream` | Chat completion with streaming — intercepted by rules engine |
-| `POST` | `/api/generate/stream` | Text generation with streaming — intercepted by rules engine |
-| `ANY` | `/{path}` | Pass-through: any other path (e.g. `/v1/messages`, `/api/tags`) is forwarded to Ollama as-is and logged to stdout |
+| `POST` | `/api/chat` | Chat completion (non-streaming) — rules applied in intercept mode |
+| `POST` | `/api/generate` | Text generation (non-streaming) — rules applied in intercept mode |
+| `POST` | `/api/chat/stream` | Chat completion with streaming — rules applied in intercept mode |
+| `POST` | `/api/generate/stream` | Text generation with streaming — rules applied in intercept mode |
+| `POST` | `/v1/messages` | Anthropic-compatible messages endpoint — forwarded to Ollama |
+| `POST` | `/v1/chat/completions` | OpenAI-compatible chat completions — forwarded to Ollama |
+| `ANY` | `/{path}` | Pass-through: any other path (e.g. `/api/tags`, `/api/ps`) is forwarded to Ollama as-is and logged to disk |
 
 ### Example: Chat Request
 
@@ -102,8 +104,9 @@ Content-Type: application/json
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/logs?limit=20` | Recent traffic logs |
-| `GET` | `/api/raw-logs` | All available logs |
+| `GET` | `/api/logs?limit=20` | Recent traffic logs (default limit: 20) |
+| `GET` | `/api/raw-logs` | All available logs (no limit) |
+| `POST` | `/api/reset` | Clear all logs and reset session statistics |
 
 ### Intercept
 

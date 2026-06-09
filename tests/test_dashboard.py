@@ -893,3 +893,35 @@ async def test_dashboard_html_file_mode_flag_variables(client):
     html = resp.text
     assert "_fileMode" in html
     assert "_loadedLogs" in html
+
+
+async def test_dashboard_html_modifiers_stat_box_starts_hidden(client):
+    """Active Modifiers stat box starts hidden; only shown in intercept mode."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert 'id="stat-modifiers-box" style="display:none"' in resp.text
+
+
+async def test_dashboard_html_modifiers_stat_box_toggled_with_mode(client):
+    """JS sets stat-modifiers-box display based on mode === 'intercept'."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    assert 'stat-modifiers-box' in html
+    assert "mode === 'intercept'" in html
+
+
+async def test_dashboard_html_ctx_uses_max_not_last(client):
+    """Context Used stat tracks the maximum utilisation across all logs, not just the latest."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "maxCtxPct" in html
+    assert "lastCtxPct" not in html
+
+
+async def test_dashboard_html_ctx_max_accumulates(client):
+    """maxCtxPct is updated when a higher value is found (pct > maxCtxPct)."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "pct > maxCtxPct" in resp.text
