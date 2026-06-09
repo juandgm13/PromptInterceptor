@@ -1,14 +1,30 @@
 """
 Bash command wrapper for Windows compatibility.
 
-When windows_bash_mode is enabled in config.json, the proxy wraps every Bash
-tool call command as ``bash -c "<command>"`` before forwarding to the client.
-This lets Open Code (or any AI client) execute Unix commands on Windows as long
-as bash is available (Git Bash, WSL, Cygwin, etc.).
+Bash wrapping is applied automatically when running on Windows, or when
+windows_bash_mode is set to true in config.json (useful for testing on
+non-Windows platforms). Every Bash tool call command is wrapped as
+``bash -c "<command>"`` before forwarding to the client, so AI clients
+can execute Unix commands on Windows as long as bash is available
+(Git Bash, WSL, Cygwin, etc.).
 """
 
 import json
-from typing import Dict, Tuple
+import sys
+from typing import Tuple
+
+from .config import get_config
+
+
+def is_windows_bash_mode() -> bool:
+    """Return True if bash wrapping should be applied.
+
+    Automatically enabled when running on Windows (sys.platform == 'win32').
+    Can also be forced on any platform via windows_bash_mode in config.json.
+    """
+    if sys.platform == 'win32':
+        return True
+    return get_config().windows_bash_mode
 
 
 def wrap_bash_command(command: str) -> str:

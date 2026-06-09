@@ -12,6 +12,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
+from .bash_wrapper import is_windows_bash_mode
 from .config import get_config
 from .logger import TrafficLogger
 from .rules_engine import RuleEngine
@@ -114,14 +115,15 @@ app = create_app()
 
 
 def _warn_if_bash_missing() -> None:
-    """Show a warning popup if windows_bash_mode is enabled but bash is not in PATH."""
-    if not get_config().windows_bash_mode:
+    """Show a warning popup if bash wrapping is active but bash is not in PATH."""
+    if not is_windows_bash_mode():
         return
     if shutil.which('bash'):
         return
     msg = (
         "Bash no encontrado en el sistema.\n\n"
-        "windows_bash_mode está activado pero bash no está disponible en PATH.\n\n"
+        "El proxy está ejecutándose en Windows y necesita bash para envolver los "
+        "comandos generados por el LLM.\n\n"
         "El comportamiento de los comandos bash puede ser incorrecto.\n\n"
         "Se recomienda instalar Git Bash (https://gitforwindows.org/) o habilitar WSL."
     )
@@ -134,8 +136,8 @@ def _warn_if_bash_missing() -> None:
         root.destroy()
     except Exception:
         print(
-            "[PromptInterceptor] WARNING: windows_bash_mode activo pero bash no encontrado. "
-            "Se recomienda instalar Git Bash o WSL."
+            "[PromptInterceptor] WARNING: bash no encontrado. "
+            "Se recomienda instalar Git Bash o WSL para que los comandos funcionen en Windows."
         )
 
 

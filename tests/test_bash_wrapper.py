@@ -1,7 +1,9 @@
 """Tests for bash_wrapper module."""
 import json
+import sys
+from unittest.mock import patch
 import pytest
-from prompt_interceptor.bash_wrapper import wrap_bash_command, patch_anthropic_body, patch_openai_body
+from prompt_interceptor.bash_wrapper import wrap_bash_command, patch_anthropic_body, patch_openai_body, is_windows_bash_mode
 
 
 class TestWrapBashCommand:
@@ -163,3 +165,35 @@ class TestPatchOpenAIBody:
         body = self._make_body("pwd", name="bash")
         _, changed = patch_openai_body(body)
         assert changed is True
+
+
+class TestIsWindowsBashMode:
+    def test_true_on_windows_platform(self):
+        with patch.object(sys, 'platform', 'win32'):
+            assert is_windows_bash_mode() is True
+
+    def test_false_on_linux_without_config(self):
+        with patch.object(sys, 'platform', 'linux'):
+            with patch('prompt_interceptor.bash_wrapper.get_config') as mock_cfg:
+                mock_cfg.return_value.windows_bash_mode = False
+                assert is_windows_bash_mode() is False
+
+    def test_true_on_linux_with_config_enabled(self):
+        with patch.object(sys, 'platform', 'linux'):
+            with patch('prompt_interceptor.bash_wrapper.get_config') as mock_cfg:
+                mock_cfg.return_value.windows_bash_mode = True
+                assert is_windows_bash_mode() is True
+
+    def test_true_on_darwin_with_config_enabled(self):
+        with patch.object(sys, 'platform', 'darwin'):
+            with patch('prompt_interceptor.bash_wrapper.get_config') as mock_cfg:
+                mock_cfg.return_value.windows_bash_mode = True
+                assert is_windows_bash_mode() is True
+
+    def test_windows_does_not_check_config(self):
+        """On Windows, config is irrelevant — always True."""
+        with patch.object(sys, 'platform', 'win32'):
+            with patch('prompt_interceptor.bash_wrapper.get_config') as mock_cfg:
+                mock_cfg.return_value.windows_bash_mode = False
+                assert is_windows_bash_mode() is True
+                mock_cfg.assert_not_called()
