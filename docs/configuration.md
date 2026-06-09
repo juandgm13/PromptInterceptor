@@ -30,7 +30,7 @@ Configuration is stored in `prompt_interceptor/config.json`. All fields are opti
   "python_app_command": "python main.py",
   "python_app_use_venv": false,
   "python_app_env_var": "OLLAMA_HOST",
-  "windows_cmd_mode": false,
+  "windows_bash_mode": false,
   "rules": []
 }
 ```
@@ -111,45 +111,15 @@ These fields are saved by the desktop launcher when you configure a Python App c
 | `python_app_use_venv` | bool | `false` | If true, auto-detects `.venv` or `venv` in `python_app_path` and uses that interpreter |
 | `python_app_env_var` | string | `"OLLAMA_HOST"` | Env var name the app uses for the Ollama host URL |
 
-### Windows CMD mode
+### Windows Compatibility
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `windows_cmd_mode` | bool | `false` | Translate Unix bash commands in LLM tool calls to Windows CMD equivalents before forwarding to the client |
+| `windows_bash_mode` | bool | `false` | When `true`, the proxy rewrites every Bash tool call emitted by the LLM as `bash -c "<command>"` before forwarding the response to the client. This lets AI clients execute standard Unix commands on Windows through Git Bash, WSL, or any `bash` installation. A warning popup is shown at startup if `bash` is not found in `PATH`. |
 
-When `windows_cmd_mode` is `true`, the proxy intercepts every `Bash` tool call in LLM responses and rewrites the `command` field so it runs on Windows CMD. The translation is transparent — neither the model nor the AI client needs any changes.
+**Requirements**: Git Bash ([https://gitforwindows.org/](https://gitforwindows.org/)) or WSL must be installed and `bash` must be available in `PATH`.
 
-#### Command translation table
-
-| Bash | Windows CMD |
-|------|-------------|
-| `ls` | `dir` |
-| `ls -l` | `dir` |
-| `ls -la` / `ls -al` | `dir /a` |
-| `ls -a path/` | `dir /a path/` |
-| `pwd` | `cd` |
-| `clear` | `cls` |
-| `which cmd` | `where cmd` |
-| `cat file` | `type file` |
-| `touch file` | `type nul > file` |
-| `rm file` | `del file` |
-| `rm -rf dir/` | `rd /s /q dir/` |
-| `rm -r dir/` | `rd /s /q dir/` |
-| `cp src dst` | `copy src dst` |
-| `mv src dst` | `move src dst` |
-| `mkdir -p a/b/c` | `mkdir a/b/c` |
-| `grep pattern file` | `findstr pattern file` |
-| `grep -r pattern dir/` | `findstr /s pattern dir/` |
-| `grep -i pattern file` | `findstr /i pattern file` |
-| `find . -name '*.py'` | `dir /s /b *.py` |
-| `export VAR=val` | `set VAR=val` |
-| `echo $VAR` | `echo %VAR%` |
-| `python3 script.py` | `python script.py` |
-| `pip3 install pkg` | `pip install pkg` |
-| `sudo <cmd>` | `<cmd>` (prefix stripped) |
-| `chmod …` / `chown …` | `rem chmod …` (commented out) |
-
-Compound operators (`&&`, `\|\|`, `\|`) are preserved as-is. The semicolon separator (`;`) is converted to `&&`. Multi-line commands are joined with `&&`.
+**Supported formats**: Anthropic (`/v1/messages`), OpenAI (`/v1/chat/completions`).
 
 ### Rules
 

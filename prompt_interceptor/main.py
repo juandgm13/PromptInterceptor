@@ -4,6 +4,7 @@ PromptInterceptor - Ollama Traffic Interceptor for AI Clients
 Main entry point for the proxy application.
 """
 
+import shutil
 import time
 import threading
 
@@ -112,9 +113,36 @@ def create_app() -> FastAPI:
 app = create_app()
 
 
+def _warn_if_bash_missing() -> None:
+    """Show a warning popup if windows_bash_mode is enabled but bash is not in PATH."""
+    if not get_config().windows_bash_mode:
+        return
+    if shutil.which('bash'):
+        return
+    msg = (
+        "Bash no encontrado en el sistema.\n\n"
+        "windows_bash_mode está activado pero bash no está disponible en PATH.\n\n"
+        "El comportamiento de los comandos bash puede ser incorrecto.\n\n"
+        "Se recomienda instalar Git Bash (https://gitforwindows.org/) o habilitar WSL."
+    )
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showwarning("PromptInterceptor — Bash no encontrado", msg)
+        root.destroy()
+    except Exception:
+        print(
+            "[PromptInterceptor] WARNING: windows_bash_mode activo pero bash no encontrado. "
+            "Se recomienda instalar Git Bash o WSL."
+        )
+
+
 def main() -> None:
     """Main entry point."""
     config = get_config()
+    _warn_if_bash_missing()
 
     if config.dashboard_enabled:
         def _run_dashboard():

@@ -12,10 +12,10 @@ import httpx
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from .bash_wrapper import patch_anthropic_body, patch_openai_body
 from .config import get_config
 from .interceptor import interceptor
 from .logger import TrafficLogger, _get_ollama_ps_info
-from .cmd_translator import patch_anthropic_body, patch_openai_body
 from .response_normalizer import (
     normalize_ollama_chat,
     normalize_openai_chat,
@@ -484,11 +484,11 @@ async def handle_v1_messages(
             corrected, was_corrected, fix_desc = (
                 normalize_anthropic_messages(parsed) if isinstance(parsed, dict) else (parsed, False, '')
             )
-            if get_config().windows_cmd_mode and isinstance(corrected, dict):
-                corrected, cmd_changed = patch_anthropic_body(corrected)
-                if cmd_changed:
+            if get_config().windows_bash_mode and isinstance(corrected, dict):
+                corrected, bash_changed = patch_anthropic_body(corrected)
+                if bash_changed:
                     was_corrected = True
-                    fix_desc = (fix_desc + ', bash→cmd') if fix_desc else 'bash→cmd'
+                    fix_desc = (fix_desc + ', bash→bash -c') if fix_desc else 'bash→bash -c'
             if was_corrected:
                 yield emit_anthropic_sse(corrected)
                 logger.log_response(request_id, 200, {}, corrected, correction_applied=fix_desc)
@@ -510,11 +510,11 @@ async def handle_v1_messages(
             response_json = None
         if isinstance(response_json, dict):
             response_json, was_corrected, fix_desc = normalize_anthropic_messages(response_json)
-            if get_config().windows_cmd_mode:
-                response_json, cmd_changed = patch_anthropic_body(response_json)
-                if cmd_changed:
+            if get_config().windows_bash_mode:
+                response_json, bash_changed = patch_anthropic_body(response_json)
+                if bash_changed:
                     was_corrected = True
-                    fix_desc = (fix_desc + ', bash→cmd') if fix_desc else 'bash→cmd'
+                    fix_desc = (fix_desc + ', bash→bash -c') if fix_desc else 'bash→bash -c'
             if was_corrected:
                 response_body = json.dumps(response_json).encode("utf-8")
                 logger.log_response(request_id, status_code, response_headers, response_json, correction_applied=fix_desc)
@@ -621,11 +621,11 @@ async def handle_v1_chat_completions(
             corrected, was_corrected, fix_desc = (
                 normalize_openai_chat(parsed) if isinstance(parsed, dict) else (parsed, False, '')
             )
-            if get_config().windows_cmd_mode and isinstance(corrected, dict):
-                corrected, cmd_changed = patch_openai_body(corrected)
-                if cmd_changed:
+            if get_config().windows_bash_mode and isinstance(corrected, dict):
+                corrected, bash_changed = patch_openai_body(corrected)
+                if bash_changed:
                     was_corrected = True
-                    fix_desc = (fix_desc + ', bash→cmd') if fix_desc else 'bash→cmd'
+                    fix_desc = (fix_desc + ', bash→bash -c') if fix_desc else 'bash→bash -c'
             if was_corrected:
                 yield emit_openai_sse(corrected)
                 logger.log_response(request_id, 200, {}, corrected, correction_applied=fix_desc)
@@ -654,11 +654,11 @@ async def handle_v1_chat_completions(
                 logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG}, token_source_body=response_json)
                 return _error_response(413, _CONTEXT_OVERFLOW_MSG)
             response_json, was_corrected, fix_desc = normalize_openai_chat(response_json)
-            if get_config().windows_cmd_mode:
-                response_json, cmd_changed = patch_openai_body(response_json)
-                if cmd_changed:
+            if get_config().windows_bash_mode:
+                response_json, bash_changed = patch_openai_body(response_json)
+                if bash_changed:
                     was_corrected = True
-                    fix_desc = (fix_desc + ', bash→cmd') if fix_desc else 'bash→cmd'
+                    fix_desc = (fix_desc + ', bash→bash -c') if fix_desc else 'bash→bash -c'
             if was_corrected:
                 response_body = json.dumps(response_json).encode("utf-8")
                 logger.log_response(request_id, status_code, response_headers, response_json, correction_applied=fix_desc)
