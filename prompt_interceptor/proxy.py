@@ -462,6 +462,7 @@ async def handle_v1_messages(
                 async for chunk in resp.aiter_bytes():
                     if chunk:
                         accumulated.append(chunk)
+                        yield chunk
             except Exception as exc:
                 error_str = str(exc)
             finally:
@@ -581,6 +582,7 @@ async def handle_v1_chat_completions(
                 async for chunk in resp.aiter_bytes():
                     if chunk:
                         accumulated.append(chunk)
+                        yield chunk
             except Exception as exc:
                 error_str = str(exc)
             finally:
