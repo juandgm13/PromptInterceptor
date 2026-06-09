@@ -552,7 +552,7 @@ function toggleModalRaw() {
   if (_modalRawMode) {
     split.style.display = 'none';
     bannerIds.forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
-    document.getElementById('modal-raw-pre').textContent = JSON.stringify(_currentModalLog, null, 2);
+    document.getElementById('modal-raw-pre').textContent = JSON.stringify(_currentModalLog, null, 2).replace(/\\n/g, '\n').replace(/\\t/g, '\t');
     rawPanel.style.display = 'block';
     rawBtn.textContent = 'Show';
   } else {
