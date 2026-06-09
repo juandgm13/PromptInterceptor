@@ -91,12 +91,13 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .form-grid label{color:#888;font-size:.8em;display:block;margin-bottom:4px}
   .btn-add{padding:7px 14px;background:#0d3b66;color:#4fc3f7;border:1px solid #4fc3f7;
            border-radius:4px;cursor:pointer;font-size:.85em;white-space:nowrap}
-  .pending-card{background:#0d0d1e;border:1px solid #2a2a4e;border-radius:6px;
-                padding:16px;margin-bottom:12px}
-  .pending-card h3{color:#4fc3f7;font-size:.95em;margin-bottom:8px}
+  .pending-card{background:#0d0d1e;border:1px solid #6a4a1a;border-left:4px solid #ffa040;
+                border-radius:6px;padding:16px;margin-bottom:12px}
+  .pending-card h3{color:#ffa040;font-size:.95em;margin-bottom:8px}
   .pending-meta{color:#888;font-size:.8em;margin-bottom:8px}
   .pending-actions{display:flex;gap:8px;margin-top:10px}
   #pending-section{display:none}
+  #pending-section h2{color:#ffa040}
   .header-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
   .mode-controls{display:flex;align-items:center;gap:8px}
   .mode-label{color:#888;font-size:.85em;margin-right:4px}
@@ -793,18 +794,22 @@ async function loadPending() {
       section.style.display = 'none';
       return;
     }
-    section.style.display = '';
-    list.innerHTML = (data.pending || []).map(p => `
+    section.style.display = 'block';
+    list.innerHTML = (data.pending || []).map(p => {
+      const ts = p.created_at ? new Date(p.created_at).toLocaleTimeString() : '';
+      const meta = [ts ? `received ${ts}` : '', `id: ${esc(p.request_id)}`].filter(Boolean).join(' · ');
+      return `
       <div class="pending-card">
-        <h3>${esc(p.method)} ${esc(p.path)}</h3>
-        <div class="pending-meta">ID: ${esc(p.request_id)}</div>
-        <textarea id="ta-${esc(p.request_id)}" rows="6">${esc(JSON.stringify(p.body, null, 2))}</textarea>
+        <h3>&#9654; ${esc(p.method)} ${esc(p.path)}</h3>
+        <div class="pending-meta">${meta}</div>
+        <textarea id="ta-${esc(p.request_id)}" rows="8">${esc(JSON.stringify(p.body, null, 2))}</textarea>
         <div class="pending-actions">
-          <button class="btn-forward" onclick="forwardRequest('${esc(p.request_id)}')">Forward</button>
-          <button class="btn-forward" onclick="editRequest('${esc(p.request_id)}')">Edit &amp; Forward</button>
-          <button class="btn-drop" onclick="dropRequest('${esc(p.request_id)}')">Drop</button>
+          <button class="btn-forward" onclick="forwardRequest('${esc(p.request_id)}')">&#x2713; Forward</button>
+          <button class="btn-forward" onclick="editRequest('${esc(p.request_id)}')">&#x270E; Edit &amp; Forward</button>
+          <button class="btn-drop" onclick="dropRequest('${esc(p.request_id)}')">&#x2715; Drop</button>
         </div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
   } catch(e) { /* silent */ }
 }
 
@@ -942,12 +947,11 @@ function exitFileMode() {
   loadLogs();
 }
 
-function refreshAll() { loadStatus(); loadRules(); loadLogs(); }
-function refreshPending() { loadPending(); }
+function refreshAll() { loadStatus(); loadRules(); loadLogs(); loadPending(); }
 
 refreshAll();
 setInterval(refreshAll, 5000);
-setInterval(refreshPending, 3000);
+setInterval(loadPending, 1000);
 </script>
 </body>
 </html>"""
