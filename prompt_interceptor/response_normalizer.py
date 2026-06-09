@@ -147,6 +147,19 @@ def normalize_ollama_chat(body: Dict) -> Tuple[Dict, bool, str]:
             tool_calls = [_to_ollama_tc(tc) for tc in calls]
             fixes.append('content→tool_calls')
 
+    # Fix 4: bash tool_calls missing description in arguments
+    fixed_tcs = []
+    for tc in tool_calls:
+        fn = tc.get('function', {})
+        if fn.get('name', '').lower() == 'bash':
+            args = dict(fn.get('arguments') or {})
+            if 'description' not in args:
+                args['description'] = ''
+                tc = {**tc, 'function': {**fn, 'arguments': args}}
+                fixes.append('bash:description')
+        fixed_tcs.append(tc)
+    tool_calls = fixed_tcs
+
     if not fixes:
         return body, False, ''
 
@@ -200,6 +213,22 @@ def normalize_openai_chat(body: Dict) -> Tuple[Dict, bool, str]:
             content = clean
             tool_calls = [_to_openai_tc(tc, i) for i, tc in enumerate(calls)]
             fixes.append('content→tool_calls')
+
+    fixed_tcs = []
+    for tc in tool_calls:
+        fn = tc.get('function', {})
+        if fn.get('name', '').lower() == 'bash':
+            args_str = fn.get('arguments', '{}')
+            try:
+                args = json.loads(args_str) if isinstance(args_str, str) else (args_str or {})
+                if isinstance(args, dict) and 'description' not in args:
+                    args['description'] = ''
+                    tc = {**tc, 'function': {**fn, 'arguments': json.dumps(args)}}
+                    fixes.append('bash:description')
+            except (json.JSONDecodeError, ValueError):
+                pass
+        fixed_tcs.append(tc)
+    tool_calls = fixed_tcs
 
     if not fixes:
         return body, False, ''
@@ -261,6 +290,13 @@ def normalize_anthropic_messages(body: Dict) -> Tuple[Dict, bool, str]:
                     fixes.append('text→tool_use')
                     modified = True
             new_blocks.append({**block, 'text': text} if modified else block)
+        elif btype == 'tool_use':
+            inp = dict(block.get('input') or {})
+            if block.get('name', '').lower() == 'bash' and 'description' not in inp:
+                inp['description'] = ''
+                block = {**block, 'input': inp}
+                fixes.append('bash:description')
+            new_blocks.append(block)
         else:
             new_blocks.append(block)
 

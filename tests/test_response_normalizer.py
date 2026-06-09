@@ -521,3 +521,122 @@ def test_malformed_tool_call_skipped():
     }
     corrected, was_corrected, _ = normalize_ollama_chat(body)
     assert not was_corrected
+
+
+# ---------------------------------------------------------------------------
+# Bash description injection
+# ---------------------------------------------------------------------------
+
+def test_anthropic_bash_tool_use_missing_description_added():
+    """tool_use block for Bash without description in input gets description='' injected."""
+    body = {
+        "content": [
+            {"type": "tool_use", "id": "toolu_001", "name": "Bash", "input": {"command": "ls -la"}},
+        ]
+    }
+    corrected, was_corrected, desc = normalize_anthropic_messages(body)
+    assert was_corrected
+    assert "bash:description" in desc
+    block = corrected["content"][0]
+    assert block["input"]["description"] == ""
+    assert block["input"]["command"] == "ls -la"
+
+
+def test_anthropic_bash_tool_use_with_description_unchanged():
+    """tool_use block for Bash that already has description is not modified."""
+    body = {
+        "content": [
+            {"type": "tool_use", "id": "toolu_001", "name": "Bash", "input": {"command": "ls", "description": "List files"}},
+        ]
+    }
+    corrected, was_corrected, _ = normalize_anthropic_messages(body)
+    assert not was_corrected
+
+
+def test_anthropic_non_bash_tool_use_not_modified():
+    """tool_use block for a non-Bash tool is not modified."""
+    body = {
+        "content": [
+            {"type": "tool_use", "id": "toolu_001", "name": "Read", "input": {"file_path": "/tmp/x"}},
+        ]
+    }
+    corrected, was_corrected, _ = normalize_anthropic_messages(body)
+    assert not was_corrected
+
+
+def test_openai_bash_tool_call_missing_description_added():
+    """tool_calls entry for bash without description in arguments gets description='' injected."""
+    body = {
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_001",
+                    "type": "function",
+                    "function": {"name": "Bash", "arguments": '{"command": "pwd"}'},
+                }],
+            },
+            "finish_reason": "tool_calls",
+        }]
+    }
+    corrected, was_corrected, desc = normalize_openai_chat(body)
+    assert was_corrected
+    assert "bash:description" in desc
+    args = json.loads(corrected["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
+    assert args["description"] == ""
+    assert args["command"] == "pwd"
+
+
+def test_openai_bash_tool_call_with_description_unchanged():
+    """tool_calls entry for bash that already has description is not modified."""
+    body = {
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_001",
+                    "type": "function",
+                    "function": {"name": "Bash", "arguments": '{"command": "pwd", "description": "Print dir"}'},
+                }],
+            },
+            "finish_reason": "tool_calls",
+        }]
+    }
+    corrected, was_corrected, _ = normalize_openai_chat(body)
+    assert not was_corrected
+
+
+def test_ollama_bash_tool_call_missing_description_added():
+    """Ollama tool_call for bash without description gets description='' injected."""
+    body = {
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"function": {"name": "Bash", "arguments": {"command": "echo hi"}}},
+            ],
+        },
+        "done": True,
+    }
+    corrected, was_corrected, desc = normalize_ollama_chat(body)
+    assert was_corrected
+    assert "bash:description" in desc
+    assert corrected["message"]["tool_calls"][0]["function"]["arguments"]["description"] == ""
+
+
+def test_ollama_bash_tool_call_with_description_unchanged():
+    """Ollama tool_call for bash that already has description is not modified."""
+    body = {
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"function": {"name": "Bash", "arguments": {"command": "echo hi", "description": "Say hi"}}},
+            ],
+        },
+        "done": True,
+    }
+    corrected, was_corrected, _ = normalize_ollama_chat(body)
+    assert not was_corrected
