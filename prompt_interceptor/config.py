@@ -79,8 +79,9 @@ class Config(BaseModel):
     # Launcher: environment variable name the Python app uses to configure the Ollama host
     python_app_env_var: str = "OLLAMA_HOST"
 
-    # Windows compatibility: translate bash commands in Bash tool calls to Windows CMD equivalents
-    windows_cmd_mode: bool = False
+    # Windows compatibility: wrap Bash tool call commands as `bash -c "..."` so they run on Windows
+    # via Git Bash, WSL, or any other bash installation. A startup warning is shown if bash is not found.
+    windows_bash_mode: bool = False
 
 
 def load_config(path: Optional[Path] = None) -> Config:

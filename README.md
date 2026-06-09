@@ -21,7 +21,7 @@ PromptInterceptor sits between your client and Ollama and can rewrite any field 
 - **Live prompt viewer** — see every request and response as it flows through the proxy
 - **Intercept mode** — pause any request, edit the JSON body by hand, then forward or drop it
 - **Modifier management** — create, enable, disable and delete rules from the dashboard without restarting
-- **Windows CMD mode** — automatically translates Unix bash commands in LLM tool calls to Windows CMD equivalents before they reach the client; transparent to both the model and the AI client
+- **Windows bash mode** — automatically wraps LLM-generated Bash commands as `bash -c "..."` so they run on Windows via Git Bash or WSL without any changes to the AI client
 - **Only Proxy mode** — launch just the proxy and point any client at it manually
 - **Open Code support** — auto-configures `~/.config/opencode/opencode.json` to point at the proxy
 - **Python app support** — connect any Python app that uses Ollama by setting its host env var
@@ -124,14 +124,14 @@ See [docs/rules.md](docs/rules.md) for the full modifier reference.
 
 ### Ollama + Open Code on Windows
 
-Running Open Code on Windows with a local model? The LLM generates Unix bash commands that don't work in CMD. Enable **Windows CMD mode** so the proxy rewrites every bash tool call before it reaches Open Code:
+Running Open Code on Windows with a local model? Enable **Windows bash mode** so the proxy wraps every Bash tool call as `bash -c "..."` before it reaches Open Code. This requires Git Bash or WSL to be installed.
 
 1. Open `prompt_interceptor/config.json` and add:
    ```json
-   "windows_cmd_mode": true
+   "windows_bash_mode": true
    ```
 2. Start the proxy normally.
-3. The proxy now translates commands like `ls -la` → `dir /a`, `cat file` → `type file`, `rm -rf dir/` → `rd /s /q dir/`, `grep -r pattern src/` → `findstr /s pattern src/`, and [many more](docs/configuration.md#windows-cmd-mode) — transparently, without any changes to Open Code or the model.
+3. The proxy now wraps commands like `ls -la` → `bash -c "ls -la"` transparently, without any changes to Open Code or the model. If `bash` is not found in `PATH`, a warning popup appears at startup.
 
 ### Ollama + Open Code
 
