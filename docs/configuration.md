@@ -115,7 +115,9 @@ These fields are saved by the desktop launcher when you configure a Python App c
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `windows_bash_mode` | bool | `false` | When `true`, the proxy rewrites every Bash tool call emitted by the LLM as `bash -c "<command>"` before forwarding the response to the client. This lets AI clients execute standard Unix commands on Windows through Git Bash, WSL, or any `bash` installation. A warning popup is shown at startup if `bash` is not found in `PATH`. |
+| `windows_bash_mode` | bool | `false` | Force bash wrapping on non-Windows platforms. On Windows this is **always enabled automatically** — no config needed. When active, every Bash tool call emitted by the LLM is rewritten as `bash -c "<command>"` before forwarding to the client. A warning popup is shown at startup if `bash` is not found in `PATH`. |
+
+**Auto-detection**: bash wrapping activates automatically when the proxy runs on Windows (`sys.platform == 'win32'`). Set `windows_bash_mode: true` only if you want to enable it on Linux or macOS (e.g. for testing).
 
 **Requirements**: Git Bash ([https://gitforwindows.org/](https://gitforwindows.org/)) or WSL must be installed and `bash` must be available in `PATH`.
 

@@ -21,7 +21,7 @@ PromptInterceptor sits between your client and Ollama and can rewrite any field 
 - **Live prompt viewer** — see every request and response as it flows through the proxy
 - **Intercept mode** — pause any request, edit the JSON body by hand, then forward or drop it
 - **Modifier management** — create, enable, disable and delete rules from the dashboard without restarting
-- **Windows bash mode** — automatically wraps LLM-generated Bash commands as `bash -c "..."` so they run on Windows via Git Bash or WSL without any changes to the AI client
+- **Windows bash mode** — automatically detects Windows and wraps LLM-generated Bash commands as `bash -c "..."`, so they run via Git Bash or WSL without any configuration
 - **Only Proxy mode** — launch just the proxy and point any client at it manually
 - **Open Code support** — auto-configures `~/.config/opencode/opencode.json` to point at the proxy
 - **Python app support** — connect any Python app that uses Ollama by setting its host env var
@@ -124,14 +124,11 @@ See [docs/rules.md](docs/rules.md) for the full modifier reference.
 
 ### Ollama + Open Code on Windows
 
-Running Open Code on Windows with a local model? Enable **Windows bash mode** so the proxy wraps every Bash tool call as `bash -c "..."` before it reaches Open Code. This requires Git Bash or WSL to be installed.
+Running Open Code on Windows with a local model? **No configuration needed** — the proxy detects Windows automatically and wraps every Bash tool call as `bash -c "..."` before it reaches Open Code.
 
-1. Open `prompt_interceptor/config.json` and add:
-   ```json
-   "windows_bash_mode": true
-   ```
+1. Install [Git Bash](https://gitforwindows.org/) or enable WSL so that `bash` is available in `PATH`.
 2. Start the proxy normally.
-3. The proxy now wraps commands like `ls -la` → `bash -c "ls -la"` transparently, without any changes to Open Code or the model. If `bash` is not found in `PATH`, a warning popup appears at startup.
+3. The proxy wraps commands like `ls -la` → `bash -c "ls -la"` transparently, without any changes to Open Code or the model. If `bash` is not found in `PATH`, a warning popup appears at startup.
 
 ### Ollama + Open Code
 
