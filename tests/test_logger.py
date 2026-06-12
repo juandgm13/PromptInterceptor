@@ -566,3 +566,34 @@ def test_log_response_model_from_request_body_used_for_ctx(tl, cfg):
     data = json.loads(list(Path(cfg.log_dir).rglob("req_*.json"))[0].read_text())
     assert data["_tokens_usage"]["context_size"] == 16384
     assert data["_tokens_usage"]["offload"] == "gpu"
+
+
+# ---------------------------------------------------------------------------
+# update_request_body — additional coverage paths  (lines 307-308, 316)
+# ---------------------------------------------------------------------------
+
+def test_update_request_body_corrupt_existing_file(tl, cfg):
+    """Lines 307-308: update_request_body silently recovers when the existing log has corrupt JSON."""
+    rid = tl.log_request("POST", "/api/chat", {}, {"model": "llama3"})
+    date_dir = tl._get_date_dir()
+    filepath = date_dir / f"req_{rid}.json"
+    # Overwrite the log file with invalid JSON to trigger the JSONDecodeError branch
+    filepath.write_text("{ this is not valid json {{{{", encoding="utf-8")
+
+    # Must not raise; starts from empty dict when corrupt
+    tl.update_request_body(rid, {"model": "qwen3"})
+
+    data = json.loads(filepath.read_text(encoding="utf-8"))
+    assert data["body"]["model"] == "qwen3"
+
+
+def test_update_request_body_intercepted_modified_flag(tl, cfg):
+    """Line 316: update_request_body with intercepted_modified=True sets _intercepted_modified in the log."""
+    rid = tl.log_request("POST", "/api/chat", {}, {"model": "llama3"})
+
+    tl.update_request_body(rid, {"model": "qwen3"}, intercepted_modified=True)
+
+    date_dir = tl._get_date_dir()
+    filepath = date_dir / f"req_{rid}.json"
+    data = json.loads(filepath.read_text(encoding="utf-8"))
+    assert data.get("_intercepted_modified") is True

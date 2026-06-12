@@ -640,3 +640,37 @@ def test_ollama_bash_tool_call_with_description_unchanged():
     }
     corrected, was_corrected, _ = normalize_ollama_chat(body)
     assert not was_corrected
+
+
+# ---------------------------------------------------------------------------
+# Additional coverage: normalize_openai_chat bash tool_call invalid JSON args
+# ---------------------------------------------------------------------------
+
+def test_openai_bash_tool_call_invalid_json_arguments_skipped():
+    """Lines 228-229: JSONDecodeError in normalize_openai_chat bash fix is caught silently.
+
+    When arguments is an invalid JSON string, the except branch is taken and the
+    tool_call is left untouched (no description injected, no crash).
+    The overall normalisation still needs a fix to trigger (think tags here).
+    """
+    body = {
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "<think>reason</think>answer",
+                "tool_calls": [{
+                    "id": "call_001",
+                    "type": "function",
+                    "function": {"name": "Bash", "arguments": "not-valid-json"},
+                }],
+            },
+            "finish_reason": "tool_calls",
+        }]
+    }
+    # normalize_openai_chat must not raise; the bash fix is silently skipped
+    corrected, was_corrected, desc = normalize_openai_chat(body)
+    # The think-tag fix still fires, so was_corrected is True
+    assert was_corrected
+    # The bash tool_call arguments remain unchanged (still the invalid string)
+    tc_fn = corrected["choices"][0]["message"]["tool_calls"][0]["function"]
+    assert tc_fn["arguments"] == "not-valid-json"

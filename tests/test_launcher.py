@@ -37,8 +37,8 @@ def test_detect_clients_no_system_clients(monkeypatch):
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
     clients = launcher._detect_clients()
-    assert len(clients) == 1
-    assert clients[0] == ("Python App (Ollama)", "__python_app__")
+    assert len(clients) == 2
+    assert clients[-1] == ("Python App (Ollama)", "__python_app__")
 
 
 @pytest.mark.skip(reason="Claude Code client deshabilitado en el launcher")
@@ -57,8 +57,8 @@ def test_detect_clients_opencode_only(monkeypatch):
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
     clients = launcher._detect_clients()
-    assert len(clients) == 2
-    assert clients[0] == ("Open Code (CLI)", "opencode")
+    assert len(clients) == 3
+    assert clients[1] == ("Open Code (CLI)", "opencode")
     assert clients[-1] == ("Python App (Ollama)", "__python_app__")
 
 
@@ -362,6 +362,7 @@ def test_launcher_window_set_icon_missing(tmp_path, monkeypatch):
 # Step 1: _on_launch_ollama
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skip(reason="Ollama auto-launch via Popen was removed; user must start ollama manually")
 def test_on_launch_ollama_opens_process_and_thread(tmp_path, monkeypatch):
     """When Ollama is not running, _check_or_launch_ollama opens a CMD process and starts a background thread."""
     cfg = Config(log_dir=str(tmp_path / "logs"), context_size=8192)
@@ -425,9 +426,10 @@ def test_check_or_launch_ollama_already_running(tmp_path, monkeypatch):
 
     mock_popen.assert_not_called()
     mock_models_ready.assert_called_once_with(["llama3"])
-    win.status_var.set.assert_called_with("Ollama already running.")
+    win.status_var.set.assert_called_with("Ollama running.")
 
 
+@pytest.mark.skip(reason="Ollama auto-launch via Popen was removed; user must start ollama manually")
 def test_on_launch_ollama_uses_selected_ctx(tmp_path, monkeypatch):
     """_check_or_launch_ollama lanza Ollama con 'ollama serve' (context_size se aplica en el paso Python App)."""
     cfg = Config(log_dir=str(tmp_path / "logs"), context_size=32768)
@@ -456,6 +458,7 @@ def test_on_launch_ollama_uses_selected_ctx(tmp_path, monkeypatch):
 # Step 1: _fetch_models_after_launch / _on_models_ready
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skip(reason="_fetch_models_after_launch method was removed from LauncherWindow")
 def test_fetch_models_after_launch_calls_root_after(tmp_path, monkeypatch):
     """_fetch_models_after_launch sleeps, fetches models, then schedules _on_models_ready."""
     cfg = Config(log_dir=str(tmp_path / "logs"), target="http://localhost:11434")
@@ -472,6 +475,7 @@ def test_fetch_models_after_launch_calls_root_after(tmp_path, monkeypatch):
     assert args[1] == win._on_models_ready
 
 
+@pytest.mark.skip(reason="_fetch_models_after_launch method was removed from LauncherWindow")
 def test_fetch_models_retries_when_empty(tmp_path, monkeypatch):
     """_fetch_models_after_launch retries once if first fetch returns no models."""
     cfg = Config(log_dir=str(tmp_path / "logs"), target="http://localhost:11434")
@@ -607,7 +611,7 @@ def test_refresh_client_rows_python_app_shows_app_fields(tmp_path):
     win._app_path_entry.config.assert_called_with(state="normal")
     win._command_entry.config.assert_called_with(state="normal")
     win._env_var_entry.config.assert_called_with(state="normal")
-    win._launch_client_btn.config.assert_called_with(state="normal")
+    win._launch_client_btn.config.assert_called_with(text="Launch Client", state="normal")
 
 
 def test_refresh_client_rows_claude_shows_workdir(tmp_path):
@@ -1141,6 +1145,141 @@ def test_warn_wsl_firewall_calls_showwarning():
     _, msg = mock_warn.call_args[0]
     assert "172.28.0.1" in msg
     assert "8080" in msg
+
+
+# ---------------------------------------------------------------------------
+# _get_window_height — Only Proxy branch (line 308)
+# ---------------------------------------------------------------------------
+
+def test_get_window_height_only_proxy(tmp_path):
+    """_get_window_height returns 400 when the selected client is 'Only Proxy'."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, _ = _make_headless_win(cfg, clients=[("Only Proxy", "__only_proxy__"),
+                                               ("Python App (Ollama)", "__python_app__")])
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Only Proxy"
+    assert win._get_window_height() == 400
+
+
+# ---------------------------------------------------------------------------
+# _refresh_client_rows — Only Proxy branch (lines 629-636)
+# ---------------------------------------------------------------------------
+
+def test_refresh_client_rows_only_proxy(tmp_path):
+    """_refresh_client_rows packs proxy info row and sets Launch Proxy button for Only Proxy."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
+    win, mock_root = _make_headless_win(cfg, clients=[("Only Proxy", "__only_proxy__"),
+                                                       ("Python App (Ollama)", "__python_app__")])
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Only Proxy"
+    win._clients = [("Only Proxy", "__only_proxy__"), ("Python App (Ollama)", "__python_app__")]
+    win.proxy_port_var = MagicMock()
+    win.proxy_port_var.get.return_value = "8080"
+    win._proxy_url_var = MagicMock()
+    win._step2_enabled = True
+    for attr in ("_row_model", "_row_workdir", "_row_apppath", "_row_command",
+                 "_row_venv", "_row_envvar", "_row_launch", "_row_proxy_info",
+                 "_app_path_entry", "_browse_app_btn", "_command_entry",
+                 "_venv_check", "_env_var_entry", "_launch_client_btn",
+                 "_work_dir_entry", "_browse_workdir_btn", "_model_cb"):
+        setattr(win, attr, MagicMock())
+
+    win._refresh_client_rows()
+
+    win._row_proxy_info.pack.assert_called()
+    win._launch_client_btn.config.assert_called()
+    # Verify the button text was set to "Launch Proxy"
+    config_calls = win._launch_client_btn.config.call_args_list
+    assert any(call.kwargs.get("text") == "Launch Proxy" or
+               (call.args and "Launch Proxy" in str(call.args))
+               for call in config_calls)
+
+
+def test_refresh_client_rows_only_proxy_invalid_port(tmp_path):
+    """_refresh_client_rows falls back to config port when proxy_port_var is non-numeric."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
+    win, mock_root = _make_headless_win(cfg, clients=[("Only Proxy", "__only_proxy__"),
+                                                       ("Python App (Ollama)", "__python_app__")])
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Only Proxy"
+    win._clients = [("Only Proxy", "__only_proxy__"), ("Python App (Ollama)", "__python_app__")]
+    win.proxy_port_var = MagicMock()
+    win.proxy_port_var.get.return_value = "not-a-number"
+    win._proxy_url_var = MagicMock()
+    win._step2_enabled = True
+    for attr in ("_row_model", "_row_workdir", "_row_apppath", "_row_command",
+                 "_row_venv", "_row_envvar", "_row_launch", "_row_proxy_info",
+                 "_app_path_entry", "_browse_app_btn", "_command_entry",
+                 "_venv_check", "_env_var_entry", "_launch_client_btn",
+                 "_work_dir_entry", "_browse_workdir_btn", "_model_cb"):
+        setattr(win, attr, MagicMock())
+
+    # Should not raise, falls back to config.proxy_port
+    win._refresh_client_rows()
+    win._proxy_url_var.set.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# _on_launch_client — Only Proxy branch (lines 685-696)
+# ---------------------------------------------------------------------------
+
+def test_on_launch_client_only_proxy(tmp_path, monkeypatch):
+    """Only Proxy mode starts proxy thread and opens dashboard in browser."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080,
+                 dashboard_enabled=True, dashboard_port=9090)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, mock_root = _make_headless_win(cfg, clients=[("Only Proxy", "__only_proxy__"),
+                                                       ("Python App (Ollama)", "__python_app__")])
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Only Proxy"
+    win._clients = [("Only Proxy", "__only_proxy__"), ("Python App (Ollama)", "__python_app__")]
+    win.work_dir_var = MagicMock()
+    win.work_dir_var.get.return_value = ""
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = ""
+    win.status_var = MagicMock()
+    win._servers_started = False
+
+    after_calls = []
+    mock_root.after.side_effect = lambda delay, fn, *args: after_calls.append((delay, fn))
+
+    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread, \
+         patch("prompt_interceptor.launcher.webbrowser.open"):
+        mock_thread.return_value = MagicMock()
+        win._on_launch_client()
+
+    # Proxy thread must have been started
+    mock_thread.assert_called()
+    assert win._servers_started is True
+    # Dashboard open and iconify are scheduled via root.after
+    delays = [d for d, _ in after_calls]
+    assert 2500 in delays
+
+
+def test_on_launch_client_only_proxy_already_started(tmp_path, monkeypatch):
+    """Only Proxy mode does NOT start a second proxy thread when already running."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080,
+                 dashboard_enabled=False)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, mock_root = _make_headless_win(cfg, clients=[("Only Proxy", "__only_proxy__"),
+                                                       ("Python App (Ollama)", "__python_app__")])
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Only Proxy"
+    win._clients = [("Only Proxy", "__only_proxy__"), ("Python App (Ollama)", "__python_app__")]
+    win.work_dir_var = MagicMock()
+    win.work_dir_var.get.return_value = ""
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = ""
+    win.status_var = MagicMock()
+    win._servers_started = True  # Already started
+
+    with patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+        win._on_launch_client()
+
+    # Thread must NOT be started again
+    mock_thread.assert_not_called()
 
 
 def test_write_opencode_config_wsl_creates_config():
@@ -1741,6 +1880,7 @@ def test_on_launch_ollama_file_not_found_shows_error(tmp_path, monkeypatch):
     mock_thread.assert_not_called()
 
 
+@pytest.mark.skip(reason="Ollama auto-launch via Popen was removed; this OSError path no longer exists")
 def test_on_launch_ollama_os_error_shows_error(tmp_path, monkeypatch):
     """An OSError from Popen is caught and shown in the status label."""
     cfg = Config(log_dir=str(tmp_path / "logs"))
@@ -1870,6 +2010,57 @@ def test_start_proxy_thread_generic_error(tmp_path, monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert "unexpected crash" in captured.out
+
+
+def test_start_proxy_thread_system_exit(tmp_path, monkeypatch):
+    """SystemExit from uvicorn.run (sys.exit(1) on port bind failure) is silently caught."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), dashboard_enabled=False)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    import uvicorn
+    with patch.object(uvicorn, "run", side_effect=SystemExit(1)):
+        from prompt_interceptor.launcher import _start_proxy_thread
+        _start_proxy_thread()  # must not raise
+
+
+def test_start_proxy_thread_dashboard_system_exit(tmp_path, monkeypatch):
+    """SystemExit inside the _run_dashboard closure is silently caught."""
+    import asyncio
+    cfg = Config(log_dir=str(tmp_path / "logs"), dashboard_enabled=True, dashboard_port=9090)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    started = []
+
+    class _MockThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+        def start(self):
+            started.append(self._target)
+
+    import uvicorn
+    with patch.object(uvicorn, "run", MagicMock()), \
+         patch("prompt_interceptor.launcher.threading.Thread", side_effect=_MockThread):
+        from prompt_interceptor.launcher import _start_proxy_thread
+        _start_proxy_thread()
+
+    with patch.object(uvicorn, "run", side_effect=SystemExit(1)), \
+         patch.object(asyncio, "set_event_loop"), \
+         patch.object(asyncio, "new_event_loop", return_value=MagicMock()):
+        started[0]()  # must not raise
+
+
+def test_start_dashboard_thread_system_exit(tmp_path, monkeypatch):
+    """SystemExit from uvicorn.run is silently caught in _start_dashboard_thread."""
+    import asyncio
+    cfg = Config(log_dir=str(tmp_path / "logs"), dashboard_enabled=True, dashboard_port=9090)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    import uvicorn
+    with patch.object(uvicorn, "run", side_effect=SystemExit(1)), \
+         patch.object(asyncio, "set_event_loop"), \
+         patch.object(asyncio, "new_event_loop", return_value=MagicMock()):
+        from prompt_interceptor.launcher import _start_dashboard_thread
+        _start_dashboard_thread()  # must not raise
 
 
 # ---------------------------------------------------------------------------

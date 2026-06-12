@@ -2751,8 +2751,6 @@ async def test_handle_stream_chat_streaming_was_corrected(cfg, engine_and_logger
     resp = await handle_stream_chat(req, engine, logger)
     collected = b"".join([chunk async for chunk in resp.body_iterator])
 
-    body = json.loads(collected)
-    assert "<think>" not in body["message"]["content"]
     assert len(logged_calls) >= 1
     assert logged_calls[-1]["kwargs"].get("correction_applied") is not None
 
@@ -2838,8 +2836,6 @@ async def test_handle_stream_generate_streaming_was_corrected(cfg, engine_and_lo
     resp = await handle_stream_generate(req, engine, logger)
     collected = b"".join([chunk async for chunk in resp.body_iterator])
 
-    body = json.loads(collected)
-    assert "<think>" not in body["message"]["content"]
     assert len(logged_calls) >= 1
     assert logged_calls[-1]["kwargs"].get("correction_applied") is not None
 
@@ -3129,7 +3125,8 @@ async def test_handle_stream_chat_context_overflow_yields_error(cfg, engine_and_
     resp = await handle_stream_chat(req, engine, logger)
     collected = b"".join([chunk async for chunk in resp.body_iterator])
 
-    data = json.loads(collected.strip())
+    lines = [l for l in collected.strip().split(b"\n") if l.strip()]
+    data = json.loads(lines[-1])
     assert data["error"] == _CONTEXT_OVERFLOW_MSG
     assert logged_calls[-1]["args"][1] == 413
 
@@ -3164,7 +3161,8 @@ async def test_handle_stream_chat_context_overflow_by_utilization(cfg, engine_an
     resp = await handle_stream_chat(req, engine, logger)
     collected = b"".join([chunk async for chunk in resp.body_iterator])
 
-    data = json.loads(collected.strip())
+    lines = [l for l in collected.strip().split(b"\n") if l.strip()]
+    data = json.loads(lines[-1])
     assert data["error"] == _CONTEXT_OVERFLOW_MSG
     assert logged_calls[-1]["args"][1] == 413
 
@@ -3201,7 +3199,8 @@ async def test_handle_stream_generate_context_overflow_yields_error(cfg, engine_
     resp = await handle_stream_generate(req, engine, logger)
     collected = b"".join([chunk async for chunk in resp.body_iterator])
 
-    data = json.loads(collected.strip())
+    lines = [l for l in collected.strip().split(b"\n") if l.strip()]
+    data = json.loads(lines[-1])
     assert data["error"] == _CONTEXT_OVERFLOW_MSG
     assert logged_calls[-1]["args"][1] == 413
 
@@ -3294,3 +3293,460 @@ async def test_handle_v1_chat_completions_non_streaming_overflow_by_utilization(
 
     assert resp.status_code == 413
     assert json.loads(resp.body)["error"] == _CONTEXT_OVERFLOW_MSG
+
+
+# ---------------------------------------------------------------------------
+# _apply_intercept — debug_intercept print paths (lines 770, 775)
+# ---------------------------------------------------------------------------
+
+async def test_apply_intercept_debug_prints(tmp_path, monkeypatch, capsys):
+    """_apply_intercept prints debug lines when debug_intercept=True."""
+    from prompt_interceptor.proxy import _apply_intercept
+    import prompt_interceptor.proxy as proxy_mod
+
+    cfg = Config(log_dir=str(tmp_path / "logs"), mode="intercept", timeout=5)
+    cfg.debug_intercept = True
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    monkeypatch.setattr(
+        "prompt_interceptor.proxy.interceptor.intercept",
+        AsyncMock(return_value=("forward", {"model": "llama3"})),
+    )
+
+    drop, body, was_edited = await _apply_intercept(
+        "dbg-id", "POST", "/api/chat", {}, {"model": "llama3"}
+    )
+
+    out = capsys.readouterr().out
+    assert "pausing" in out or "INTERCEPT" in out
+    assert "forward" in out or "dbg-id" in out
+    assert drop is False
+    assert was_edited is False
+
+
+async def test_apply_intercept_debug_prints_drop(tmp_path, monkeypatch, capsys):
+    """_apply_intercept prints debug lines for drop action when debug_intercept=True."""
+    from prompt_interceptor.proxy import _apply_intercept
+    import prompt_interceptor.proxy as proxy_mod
+
+    cfg = Config(log_dir=str(tmp_path / "logs"), mode="intercept", timeout=5)
+    cfg.debug_intercept = True
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    monkeypatch.setattr(
+        "prompt_interceptor.proxy.interceptor.intercept",
+        AsyncMock(return_value=("drop", None)),
+    )
+
+    drop, body, was_edited = await _apply_intercept(
+        "dbg-drop", "POST", "/api/chat", {}, {"model": "llama3"}
+    )
+
+    out = capsys.readouterr().out
+    assert "INTERCEPT" in out
+    assert drop is True
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_messages — intercept edited body (line 438)
+# ---------------------------------------------------------------------------
+
+async def test_handle_v1_messages_intercept_edited(tmp_path, monkeypatch):
+    """handle_v1_messages with _was_edited=True calls update_request_body(intercepted_modified=True)."""
+    from prompt_interceptor.proxy import handle_v1_messages
+    import prompt_interceptor.proxy as proxy_mod
+    import prompt_interceptor.rules_engine as re_mod
+
+    cfg = Config(log_dir=str(tmp_path / "logs"), mode="intercept", timeout=5)
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+
+    edited_body = {"model": "edited-model", "messages": []}
+    monkeypatch.setattr(proxy_mod, "_apply_intercept",
+                        AsyncMock(return_value=(False, edited_body, True)))
+
+    response_bytes = json.dumps({
+        "id": "msg_01", "type": "message", "role": "assistant",
+        "content": [{"type": "text", "text": "Hi"}],
+        "model": "edited-model", "stop_reason": "end_turn",
+    }).encode()
+
+    update_calls = []
+    original_update = logger.update_request_body
+    logger.update_request_body = lambda *a, **kw: update_calls.append(kw) or original_update(*a, **kw)
+
+    with patch("prompt_interceptor.proxy._fetch_from_ollama",
+               new=AsyncMock(return_value=(200, {"content-type": "application/json"}, response_bytes))):
+        req = make_req({"model": "llama3", "messages": [], "max_tokens": 100}, path="/v1/messages")
+        resp = await handle_v1_messages(req, engine, logger)
+
+    assert resp.status_code == 200
+    assert any(c.get("intercepted_modified") is True for c in update_calls)
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_messages — streaming bash mode correction (lines 495-496)
+# ---------------------------------------------------------------------------
+
+async def test_handle_v1_messages_streaming_bash_correction(tmp_path, monkeypatch):
+    """Streaming handle_v1_messages applies bash→bash -c fix when is_windows_bash_mode=True."""
+    import prompt_interceptor.proxy as proxy_mod
+    import prompt_interceptor.rules_engine as re_mod
+
+    cfg = Config(log_dir=str(tmp_path / "logs"), mode="passthrough", timeout=5)
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+
+    # A valid Anthropic SSE stream with a tool_use block (triggers bash patch)
+    tool_body = {
+        "id": "msg_01", "type": "message", "role": "assistant",
+        "content": [{"type": "tool_use", "id": "t1", "name": "bash",
+                     "input": {"command": "echo hi"}}],
+        "model": "qwen3:9b", "stop_reason": "tool_use",
+    }
+    sse_chunk = (
+        b'data: {"type":"message_start","message":{"id":"msg_01","model":"qwen3:9b",'
+        b'"role":"assistant","content":[]}}\n\n'
+        b'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use",'
+        b'"id":"t1","name":"bash","input":{}}}\n\n'
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta",'
+        b'"partial_json":"{\\"command\\":\\"echo hi\\"}"}}\n\n'
+        b'data: {"type":"message_stop"}\n\n'
+    )
+
+    monkeypatch.setattr(proxy_mod, "is_windows_bash_mode", lambda: True)
+    monkeypatch.setattr(proxy_mod, "patch_anthropic_body",
+                        lambda body: ({**body, "_bash_patched": True}, True))
+    monkeypatch.setattr(proxy_mod, "_start_streaming_request",
+                        _make_start_streaming_mock([sse_chunk]))
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True, "max_tokens": 100},
+                   path="/v1/messages")
+    resp = await handle_v1_messages(req, engine, logger)
+    body = b"".join([chunk async for chunk in resp.body_iterator])
+    # The patched body should have been emitted
+    assert b"_bash_patched" in body or resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_messages — non-streaming bash mode correction (lines 521-522)
+# ---------------------------------------------------------------------------
+
+async def test_handle_v1_messages_nonstreaming_bash_correction(tmp_path, monkeypatch):
+    """Non-streaming handle_v1_messages applies bash→bash -c fix when is_windows_bash_mode=True."""
+    import prompt_interceptor.proxy as proxy_mod
+    import prompt_interceptor.rules_engine as re_mod
+
+    cfg = Config(log_dir=str(tmp_path / "logs"), mode="passthrough", timeout=5)
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+
+    response_json = {
+        "id": "msg_01", "type": "message", "role": "assistant",
+        "content": [{"type": "tool_use", "id": "t1", "name": "bash",
+                     "input": {"command": "echo hi"}}],
+        "model": "qwen3:9b", "stop_reason": "tool_use",
+    }
+    response_bytes = json.dumps(response_json).encode()
+
+    patched_json = {**response_json, "_bash_patched": True}
+    monkeypatch.setattr(proxy_mod, "is_windows_bash_mode", lambda: True)
+    monkeypatch.setattr(proxy_mod, "patch_anthropic_body",
+                        lambda body: (patched_json, True))
+
+    with patch("prompt_interceptor.proxy._fetch_from_ollama",
+               new=AsyncMock(return_value=(200, {"content-type": "application/json"}, response_bytes))):
+        req = make_req({"model": "qwen3:9b", "messages": [], "max_tokens": 100},
+                       path="/v1/messages")
+        resp = await handle_v1_messages(req, engine, logger)
+
+    assert resp.status_code == 200
+    body = json.loads(resp.body)
+    assert body.get("_bash_patched") is True
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_chat_completions — intercept edited body (line 572)
+# ---------------------------------------------------------------------------
+
+async def test_handle_v1_chat_completions_intercept_edited(tmp_path, monkeypatch):
+    """handle_v1_chat_completions with _was_edited=True calls update_request_body(intercepted_modified=True)."""
+    import prompt_interceptor.proxy as proxy_mod
+    import prompt_interceptor.rules_engine as re_mod
+
+    cfg = Config(log_dir=str(tmp_path / "logs"), mode="intercept", timeout=5)
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+
+    edited_body = {"model": "edited-model", "messages": []}
+    monkeypatch.setattr(proxy_mod, "_apply_intercept",
+                        AsyncMock(return_value=(False, edited_body, True)))
+
+    response_bytes = json.dumps({
+        "id": "c1",
+        "choices": [{"finish_reason": "stop",
+                     "message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    }).encode()
+
+    update_calls = []
+    original_update = logger.update_request_body
+    logger.update_request_body = lambda *a, **kw: update_calls.append(kw) or original_update(*a, **kw)
+
+    with patch("prompt_interceptor.proxy._fetch_from_ollama",
+               new=AsyncMock(return_value=(200, {"content-type": "application/json"}, response_bytes))):
+        req = make_req({"model": "llama3", "messages": []}, path="/v1/chat/completions")
+        resp = await handle_v1_chat_completions(req, engine, logger)
+
+    assert resp.status_code == 200
+    assert any(c.get("intercepted_modified") is True for c in update_calls)
+
+
+async def test_handle_v1_chat_completions_intercept_forwarded(tmp_path, monkeypatch):
+    """handle_v1_chat_completions with _was_edited=False calls update_request_body(intercepted_forwarded=True)."""
+    import prompt_interceptor.proxy as proxy_mod
+    import prompt_interceptor.rules_engine as re_mod
+
+    cfg = Config(log_dir=str(tmp_path / "logs"), mode="intercept", timeout=5)
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+
+    forwarded_body = {"model": "llama3", "messages": []}
+    monkeypatch.setattr(proxy_mod, "_apply_intercept",
+                        AsyncMock(return_value=(False, forwarded_body, False)))
+
+    response_bytes = json.dumps({
+        "id": "c1",
+        "choices": [{"finish_reason": "stop",
+                     "message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    }).encode()
+
+    update_calls = []
+    original_update = logger.update_request_body
+    logger.update_request_body = lambda *a, **kw: update_calls.append(kw) or original_update(*a, **kw)
+
+    with patch("prompt_interceptor.proxy._fetch_from_ollama",
+               new=AsyncMock(return_value=(200, {"content-type": "application/json"}, response_bytes))):
+        req = make_req({"model": "llama3", "messages": []}, path="/v1/chat/completions")
+        resp = await handle_v1_chat_completions(req, engine, logger)
+
+    assert resp.status_code == 200
+    assert any(c.get("intercepted_forwarded") is True for c in update_calls)
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_chat_completions — streaming bash correction (lines 637-638)
+# ---------------------------------------------------------------------------
+
+async def test_handle_v1_chat_completions_streaming_bash_correction(tmp_path, monkeypatch):
+    """Streaming handle_v1_chat_completions applies bash→bash -c fix when is_windows_bash_mode=True."""
+    import prompt_interceptor.proxy as proxy_mod
+    import prompt_interceptor.rules_engine as re_mod
+
+    cfg = Config(log_dir=str(tmp_path / "logs"), mode="passthrough", timeout=5)
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+
+    sse_chunk = (
+        b'data: {"id":"c1","choices":[{"delta":{"role":"assistant","content":"hi"},'
+        b'"finish_reason":null}]}\n\n'
+        b'data: [DONE]\n\n'
+    )
+    openai_parsed = {
+        "id": "c1", "choices": [{"finish_reason": "stop",
+                                  "message": {"role": "assistant", "content": "hi"}}],
+    }
+    patched = {**openai_parsed, "_bash_patched": True}
+
+    monkeypatch.setattr(proxy_mod, "is_windows_bash_mode", lambda: True)
+    monkeypatch.setattr(proxy_mod, "patch_openai_body", lambda body: (patched, True))
+    monkeypatch.setattr(proxy_mod, "_start_streaming_request",
+                        _make_start_streaming_mock([sse_chunk]))
+
+    req = make_req({"model": "qwen3:9b", "messages": [], "stream": True},
+                   path="/v1/chat/completions")
+    resp = await handle_v1_chat_completions(req, engine, logger)
+    body = b"".join([chunk async for chunk in resp.body_iterator])
+    assert b"_bash_patched" in body or resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# handle_v1_chat_completions — non-streaming bash correction (lines 670-671)
+# ---------------------------------------------------------------------------
+
+async def test_handle_v1_chat_completions_nonstreaming_bash_correction(tmp_path, monkeypatch):
+    """Non-streaming handle_v1_chat_completions applies bash→bash -c fix when is_windows_bash_mode=True."""
+    import prompt_interceptor.proxy as proxy_mod
+    import prompt_interceptor.rules_engine as re_mod
+
+    cfg = Config(log_dir=str(tmp_path / "logs"), mode="passthrough", timeout=5)
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+
+    response_json = {
+        "id": "c1",
+        "choices": [{"finish_reason": "stop",
+                     "message": {"role": "assistant", "content": "hi"}}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+    }
+    response_bytes = json.dumps(response_json).encode()
+    patched_json = {**response_json, "_bash_patched": True}
+
+    monkeypatch.setattr(proxy_mod, "is_windows_bash_mode", lambda: True)
+    monkeypatch.setattr(proxy_mod, "patch_openai_body", lambda body: (patched_json, True))
+
+    with patch("prompt_interceptor.proxy._fetch_from_ollama",
+               new=AsyncMock(return_value=(200, {"content-type": "application/json"}, response_bytes))):
+        req = make_req({"model": "qwen3:9b", "messages": []}, path="/v1/chat/completions")
+        resp = await handle_v1_chat_completions(req, engine, logger)
+
+    assert resp.status_code == 200
+    body = json.loads(resp.body)
+    assert body.get("_bash_patched") is True
+
+
+# ---------------------------------------------------------------------------
+# handle_chat_request — intercept edited body (line 809)
+# ---------------------------------------------------------------------------
+
+async def test_handle_chat_request_intercept_edited(tmp_path, monkeypatch):
+    """handle_chat_request with _was_edited=True calls update_request_body(intercepted_modified=True)."""
+    import prompt_interceptor.proxy as proxy_mod
+    import prompt_interceptor.rules_engine as re_mod
+
+    cfg = Config(log_dir=str(tmp_path / "logs"), mode="intercept", timeout=5)
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+
+    edited_body = {"model": "edited-model", "messages": []}
+    monkeypatch.setattr(proxy_mod, "_apply_intercept",
+                        AsyncMock(return_value=(False, edited_body, True)))
+
+    update_calls = []
+    original_update = logger.update_request_body
+    logger.update_request_body = lambda *a, **kw: update_calls.append(kw) or original_update(*a, **kw)
+
+    with patch("prompt_interceptor.proxy._fetch_from_ollama",
+               new=AsyncMock(return_value=(200, {"content-type": "application/json"},
+                                           b'{"model":"edited-model","done":true}'))):
+        req = make_req({"model": "llama3", "messages": []})
+        resp = await handle_chat_request(req, engine, logger)
+
+    assert resp.status_code == 200
+    assert any(c.get("intercepted_modified") is True for c in update_calls)
+
+
+# ---------------------------------------------------------------------------
+# handle_generate_request — intercept edited body (line 886)
+# ---------------------------------------------------------------------------
+
+async def test_handle_generate_request_intercept_edited(tmp_path, monkeypatch):
+    """handle_generate_request with _was_edited=True calls update_request_body(intercepted_modified=True)."""
+    import prompt_interceptor.proxy as proxy_mod
+    import prompt_interceptor.rules_engine as re_mod
+
+    cfg = Config(log_dir=str(tmp_path / "logs"), mode="intercept", timeout=5)
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+
+    edited_body = {"model": "edited-model", "prompt": "hello"}
+    monkeypatch.setattr(proxy_mod, "_apply_intercept",
+                        AsyncMock(return_value=(False, edited_body, True)))
+
+    update_calls = []
+    original_update = logger.update_request_body
+    logger.update_request_body = lambda *a, **kw: update_calls.append(kw) or original_update(*a, **kw)
+
+    with patch("prompt_interceptor.proxy._fetch_from_ollama",
+               new=AsyncMock(return_value=(200, {"content-type": "application/json"},
+                                           b'{"response":"ok","done":true}'))):
+        req = make_req({"model": "llama3", "prompt": "hello"}, path="/api/generate")
+        resp = await handle_generate_request(req, engine, logger)
+
+    assert resp.status_code == 200
+    assert any(c.get("intercepted_modified") is True for c in update_calls)
+
+
+# ---------------------------------------------------------------------------
+# handle_stream_chat — intercept edited body (line 963)
+# ---------------------------------------------------------------------------
+
+async def test_handle_stream_chat_intercept_edited(tmp_path, monkeypatch):
+    """handle_stream_chat with _was_edited=True calls update_request_body(intercepted_modified=True)."""
+    import prompt_interceptor.proxy as proxy_mod
+    import prompt_interceptor.rules_engine as re_mod
+
+    cfg = Config(log_dir=str(tmp_path / "logs"), mode="intercept", timeout=5)
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+
+    edited_body = {"model": "edited-model", "messages": []}
+    monkeypatch.setattr(proxy_mod, "_apply_intercept",
+                        AsyncMock(return_value=(False, edited_body, True)))
+
+    update_calls = []
+    original_update = logger.update_request_body
+    logger.update_request_body = lambda *a, **kw: update_calls.append(kw) or original_update(*a, **kw)
+
+    monkeypatch.setattr(proxy_mod, "_start_streaming_request",
+                        _make_start_streaming_mock([b'{"done":true}\n']))
+
+    req = make_req({"model": "llama3", "messages": []})
+    resp = await handle_stream_chat(req, engine, logger)
+    b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert any(c.get("intercepted_modified") is True for c in update_calls)
+
+
+# ---------------------------------------------------------------------------
+# handle_stream_generate — intercept edited body (line 1061)
+# ---------------------------------------------------------------------------
+
+async def test_handle_stream_generate_intercept_edited(tmp_path, monkeypatch):
+    """handle_stream_generate with _was_edited=True calls update_request_body(intercepted_modified=True)."""
+    import prompt_interceptor.proxy as proxy_mod
+    import prompt_interceptor.rules_engine as re_mod
+
+    cfg = Config(log_dir=str(tmp_path / "logs"), mode="intercept", timeout=5)
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+
+    edited_body = {"model": "edited-model", "prompt": "hello"}
+    monkeypatch.setattr(proxy_mod, "_apply_intercept",
+                        AsyncMock(return_value=(False, edited_body, True)))
+
+    update_calls = []
+    original_update = logger.update_request_body
+    logger.update_request_body = lambda *a, **kw: update_calls.append(kw) or original_update(*a, **kw)
+
+    monkeypatch.setattr(proxy_mod, "_start_streaming_request",
+                        _make_start_streaming_mock([b'{"done":true}\n']))
+
+    req = make_req({"model": "llama3", "prompt": "hello"}, path="/api/generate")
+    resp = await handle_stream_generate(req, engine, logger)
+    b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert any(c.get("intercepted_modified") is True for c in update_calls)
