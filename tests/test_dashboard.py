@@ -925,3 +925,88 @@ async def test_dashboard_html_ctx_max_accumulates(client):
     resp = await client.get("/")
     assert resp.status_code == 200
     assert "pct > maxCtxPct" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# POST /intercept/{request_id}/pause  (lines 1174-1176)
+# ---------------------------------------------------------------------------
+
+async def test_intercept_pause_existing_request(client):
+    """POST /api/intercept/{id}/pause with a live request returns 200 status=paused."""
+    from prompt_interceptor.interceptor import Interceptor, InterceptedRequest
+    import prompt_interceptor.dashboard as dash_mod
+
+    local_interceptor = Interceptor(intercept_timeout=5.0)
+    original = dash_mod.interceptor
+    dash_mod.interceptor = local_interceptor
+
+    try:
+        req = InterceptedRequest("pause-id-1", "POST", "/api/chat", {}, {"model": "x"})
+        local_interceptor._pending["pause-id-1"] = req
+
+        resp = await client.post("/api/intercept/pause-id-1/pause")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "paused"
+        assert req._paused is True
+    finally:
+        dash_mod.interceptor = original
+
+
+async def test_intercept_pause_nonexistent_request(client):
+    """POST /api/intercept/{id}/pause with unknown id returns 404."""
+    from prompt_interceptor.interceptor import Interceptor
+    import prompt_interceptor.dashboard as dash_mod
+
+    local_interceptor = Interceptor(intercept_timeout=5.0)
+    original = dash_mod.interceptor
+    dash_mod.interceptor = local_interceptor
+
+    try:
+        resp = await client.post("/api/intercept/does-not-exist/pause")
+        assert resp.status_code == 404
+        assert resp.json()["status"] == "not_found"
+    finally:
+        dash_mod.interceptor = original
+
+
+# ---------------------------------------------------------------------------
+# POST /intercept/{request_id}/resume  (lines 1182-1184)
+# ---------------------------------------------------------------------------
+
+async def test_intercept_resume_existing_request(client):
+    """POST /api/intercept/{id}/resume with a paused request returns 200 status=resumed."""
+    from prompt_interceptor.interceptor import Interceptor, InterceptedRequest
+    import prompt_interceptor.dashboard as dash_mod
+
+    local_interceptor = Interceptor(intercept_timeout=5.0)
+    original = dash_mod.interceptor
+    dash_mod.interceptor = local_interceptor
+
+    try:
+        req = InterceptedRequest("resume-id-1", "POST", "/api/chat", {}, {"model": "y"})
+        req._paused = True
+        local_interceptor._pending["resume-id-1"] = req
+
+        resp = await client.post("/api/intercept/resume-id-1/resume")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "resumed"
+        assert req._paused is False
+    finally:
+        dash_mod.interceptor = original
+
+
+async def test_intercept_resume_nonexistent_request(client):
+    """POST /api/intercept/{id}/resume with unknown id returns 404."""
+    from prompt_interceptor.interceptor import Interceptor
+    import prompt_interceptor.dashboard as dash_mod
+
+    local_interceptor = Interceptor(intercept_timeout=5.0)
+    original = dash_mod.interceptor
+    dash_mod.interceptor = local_interceptor
+
+    try:
+        resp = await client.post("/api/intercept/does-not-exist/resume")
+        assert resp.status_code == 404
+        assert resp.json()["status"] == "not_found"
+    finally:
+        dash_mod.interceptor = original

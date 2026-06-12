@@ -224,6 +224,28 @@ def test_main_with_dashboard_enabled():
         threads_started[0]()
 
 
+def test_main_with_dashboard_system_exit():
+    """SystemExit inside _run_dashboard (from uvicorn port bind failure) is silently caught."""
+    import prompt_interceptor.main as main_mod
+    import uvicorn
+
+    threads_started = []
+
+    class _MockThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+        def start(self):
+            threads_started.append(self._target)
+
+    with patch.object(uvicorn, "run", MagicMock()), \
+         patch.object(main_mod.threading, "Thread", side_effect=_MockThread):
+        from prompt_interceptor.main import main
+        main()
+
+    with patch.object(uvicorn, "run", side_effect=SystemExit(1)):
+        threads_started[0]()  # must not raise
+
+
 def test_main_with_dashboard_disabled():
     """main() skips dashboard thread when dashboard_enabled=False."""
     import prompt_interceptor.main as main_mod
@@ -322,5 +344,77 @@ async def test_passthrough_endpoint_is_registered(proxy_app):
             resp = await c.get("/v1/models")
 
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# _warn_if_bash_missing  (lines 120, 123-138)
+# ---------------------------------------------------------------------------
+
+def test_warn_if_bash_missing_returns_early_when_not_windows_bash_mode():
+    """Line 120: _warn_if_bash_missing returns immediately when is_windows_bash_mode() is False."""
+    import prompt_interceptor.main as main_mod
+
+    with patch("prompt_interceptor.main.is_windows_bash_mode", return_value=False) as mock_check, \
+         patch("prompt_interceptor.main.shutil.which") as mock_which:
+        main_mod._warn_if_bash_missing()
+
+    mock_check.assert_called_once()
+    # shutil.which must NOT have been called — the function returned early
+    mock_which.assert_not_called()
+
+
+def test_warn_if_bash_missing_shows_tkinter_messagebox_when_bash_absent(monkeypatch):
+    """Lines 123-136: when windows_bash_mode=True and bash not in PATH, shows a tkinter warning."""
+    import prompt_interceptor.main as main_mod
+
+    mock_root = MagicMock()
+    mock_messagebox = MagicMock()
+    mock_tk_module = MagicMock()
+    mock_tk_module.Tk.return_value = mock_root
+    mock_tk_module.messagebox = mock_messagebox
+
+    with patch("prompt_interceptor.main.is_windows_bash_mode", return_value=True), \
+         patch("prompt_interceptor.main.shutil.which", return_value=None), \
+         patch.dict("sys.modules", {"tkinter": mock_tk_module, "tkinter.messagebox": mock_messagebox}):
+        # Re-import so the patched modules are used inside the try block
+        import importlib
+        import sys
+        # Patch tkinter inside the function's try block via builtins import
+        import builtins
+        original_import = builtins.__import__
+
+        def _mock_import(name, *args, **kwargs):
+            if name == "tkinter":
+                return mock_tk_module
+            if name == "tkinter.messagebox" or (name == "messagebox"):
+                return mock_messagebox
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=_mock_import):
+            main_mod._warn_if_bash_missing()
+
+    # The warning dialog should have been triggered
+    mock_messagebox.showwarning.assert_called_once()
+
+
+def test_warn_if_bash_missing_prints_when_tkinter_unavailable(capsys):
+    """Lines 137-141: when tkinter import fails, a print warning is emitted instead."""
+    import prompt_interceptor.main as main_mod
+
+    import builtins
+    original_import = builtins.__import__
+
+    def _fail_tkinter(name, *args, **kwargs):
+        if name == "tkinter" or (isinstance(name, str) and name.startswith("tkinter")):
+            raise ImportError("no display")
+        return original_import(name, *args, **kwargs)
+
+    with patch("prompt_interceptor.main.is_windows_bash_mode", return_value=True), \
+         patch("prompt_interceptor.main.shutil.which", return_value=None), \
+         patch("builtins.__import__", side_effect=_fail_tkinter):
+        main_mod._warn_if_bash_missing()
+
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.out or "bash" in captured.out.lower()
 
 

@@ -148,12 +148,15 @@ def main() -> None:
 
     if config.dashboard_enabled:
         def _run_dashboard():
-            uvicorn.run(
-                "prompt_interceptor.dashboard:app",
-                host="0.0.0.0",
-                port=config.dashboard_port,
-                log_level="warning",
-            )
+            try:
+                uvicorn.run(
+                    "prompt_interceptor.dashboard:app",
+                    host="0.0.0.0",
+                    port=config.dashboard_port,
+                    log_level="warning",
+                )
+            except SystemExit:
+                pass
 
         threading.Thread(target=_run_dashboard, daemon=True).start()
 

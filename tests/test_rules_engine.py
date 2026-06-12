@@ -408,3 +408,57 @@ def test_jsonpath_set_invalid_expression_logs_warning(caplog):
     assert data["model"] == "llama3"
     assert any("$$$$invalid" in r.message for r in caplog.records)
     assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# debug_intercept logging paths  (lines 140 and 152)
+# ---------------------------------------------------------------------------
+
+async def test_process_request_passthrough_debug_intercept_logged(tmp_path, monkeypatch, caplog):
+    """Line 140: debug_intercept=True in passthrough mode emits an INFO log."""
+    import prompt_interceptor.rules_engine as re_mod
+
+    cfg = Config(
+        log_dir=str(tmp_path / "logs"),
+        mode="passthrough",
+        rules=[],
+        debug_intercept=True,
+    )
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+
+    with caplog.at_level(logging.INFO, logger="prompt_interceptor.rules_engine"):
+        modified, result, rid = await engine.process_request("POST", "/api/chat", {}, {"model": "llama3"})
+
+    assert modified is False
+    assert any("passthrough" in r.message for r in caplog.records)
+
+
+async def test_process_request_intercept_debug_rule_matched_logged(tmp_path, monkeypatch, caplog):
+    """Line 152: debug_intercept=True in intercept mode logs when a rule matches."""
+    import prompt_interceptor.rules_engine as re_mod
+
+    cfg = Config(
+        log_dir=str(tmp_path / "logs"),
+        mode="intercept",
+        rules=[
+            {
+                "match": {"path": "/api/chat", "jsonpath": "$.model", "value": ["llama3"]},
+                "replace": {"jsonpath": "$.model", "value": "deepseek-coder"},
+            }
+        ],
+        debug_intercept=True,
+    )
+    monkeypatch.setattr(re_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+    engine = RuleEngine(logger)
+
+    with caplog.at_level(logging.INFO, logger="prompt_interceptor.rules_engine"):
+        modified, result, rid = await engine.process_request(
+            "POST", "/api/chat", {}, {"model": "llama3", "messages": []}
+        )
+
+    assert modified is True
+    assert result["model"] == "deepseek-coder"
+    assert any("rule matched" in r.message for r in caplog.records)

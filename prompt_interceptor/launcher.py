@@ -190,13 +190,16 @@ def _start_proxy_thread():
 
         if config.dashboard_enabled:
             def _run_dashboard():
-                asyncio.set_event_loop(asyncio.new_event_loop())
-                uvicorn.run(
-                    "prompt_interceptor.dashboard:app",
-                    host="0.0.0.0",
-                    port=config.dashboard_port,
-                    log_level="warning",
-                )
+                try:
+                    asyncio.set_event_loop(asyncio.new_event_loop())
+                    uvicorn.run(
+                        "prompt_interceptor.dashboard:app",
+                        host="0.0.0.0",
+                        port=config.dashboard_port,
+                        log_level="warning",
+                    )
+                except SystemExit:
+                    pass
             threading.Thread(target=_run_dashboard, daemon=True).start()
 
         uvicorn.run(
@@ -209,6 +212,8 @@ def _start_proxy_thread():
         print(f"[PromptInterceptor] Missing dependency for proxy server: {exc}")
     except OSError as exc:
         print(f"[PromptInterceptor] Failed to start proxy server (port in use?): {exc}")
+    except SystemExit:
+        pass
     except Exception as exc:
         print(f"[PromptInterceptor] Proxy thread error: {exc}")
 
@@ -233,6 +238,8 @@ def _start_dashboard_thread():
         print(f"[PromptInterceptor] Missing dependency for dashboard: {exc}")
     except OSError as exc:
         print(f"[PromptInterceptor] Failed to start dashboard (port in use?): {exc}")
+    except SystemExit:
+        pass
     except Exception as exc:
         print(f"[PromptInterceptor] Dashboard thread error: {exc}")
 
