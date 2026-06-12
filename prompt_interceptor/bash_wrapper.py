@@ -11,6 +11,7 @@ detected and left unchanged so they continue to work natively.
 """
 
 import json
+import re
 import sys
 from typing import Tuple
 
@@ -32,6 +33,33 @@ _PS_VERBS = frozenset({
 })
 
 
+# Compiled regexes for Windows-specific bash fixes
+_WIN_PATH_DQ_RE = re.compile(r'"([A-Za-z]:\\{1,2}[^"]*)"')
+_WIN_PATH_SQ_RE = re.compile(r"'([A-Za-z]:\\{1,2}[^']*)'")
+_WIN_PATH_RE    = re.compile(r'[A-Za-z]:\\{1,2}[^\s"\'&|;<>]*')
+_NULL_REDIR_RE  = re.compile(r'([\d&]?>>?)\s*/?nul\b', re.IGNORECASE)
+
+
+def _norm_win_path(s: str) -> str:
+    return s.replace('\\\\', '/').replace('\\', '/')
+
+
+def _fix_windows_command(command: str) -> str:
+    """Fix Windows-specific patterns so they work in bash (Git Bash / WSL).
+
+    - Backslash paths:  C:\\foo\\bar  →  C:/foo/bar  (quoted and unquoted)
+    - Windows null device:  2>/nul  →  2>/dev/null
+    """
+    # Double-quoted paths first so spaces inside quotes are preserved
+    command = _WIN_PATH_DQ_RE.sub(lambda m: '"' + _norm_win_path(m.group(1)) + '"', command)
+    command = _WIN_PATH_SQ_RE.sub(lambda m: "'" + _norm_win_path(m.group(1)) + "'", command)
+    # Unquoted paths (stop at whitespace / shell metacharacters)
+    command = _WIN_PATH_RE.sub(lambda m: _norm_win_path(m.group(0)), command)
+    # Null device redirect
+    command = _NULL_REDIR_RE.sub(r'\1/dev/null', command)
+    return command
+
+
 def _is_powershell_command(command: str) -> bool:
     """Return True if the command looks like a PowerShell cmdlet (Verb-Noun)."""
     first_token = command.strip().split()[0] if command.strip() else ''
@@ -51,10 +79,17 @@ def wrap_bash_command(command: str) -> str:
 
     Returns the command unchanged if it is already wrapped, empty, or looks
     like a PowerShell cmdlet (Verb-Noun pattern).
+
+    Windows-specific fixes (path backslashes, /nul redirects) are applied
+    before wrapping, and also to already-wrapped ``bash -c "..."`` commands
+    so that inner paths are corrected regardless.
     """
-    if not command or command.startswith('bash '):
+    if not command:
         return command
     if _is_powershell_command(command):
+        return command
+    command = _fix_windows_command(command)
+    if command.startswith('bash '):
         return command
     # Escape backslashes first, then double-quotes, so the shell sees them correctly
     escaped = command.replace('\\', '\\\\').replace('"', '\\"')

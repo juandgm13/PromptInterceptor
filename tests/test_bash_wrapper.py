@@ -3,7 +3,10 @@ import json
 import sys
 from unittest.mock import patch
 import pytest
-from prompt_interceptor.bash_wrapper import wrap_bash_command, patch_anthropic_body, patch_openai_body, is_windows_bash_mode
+from prompt_interceptor.bash_wrapper import (
+    wrap_bash_command, patch_anthropic_body, patch_openai_body,
+    is_windows_bash_mode, _fix_windows_command,
+)
 
 
 class TestWrapBashCommand:
@@ -24,9 +27,10 @@ class TestWrapBashCommand:
         result = wrap_bash_command('echo "hello world"')
         assert result == 'bash -c "echo \\"hello world\\""'
 
-    def test_backslash_escaped(self):
+    def test_backslash_path_converted(self):
+        # Windows path backslashes are converted to forward slashes before wrapping
         result = wrap_bash_command("cat C:\\path\\file.txt")
-        assert result == 'bash -c "cat C:\\\\path\\\\file.txt"'
+        assert result == 'bash -c "cat C:/path/file.txt"'
 
     def test_complex_command(self):
         result = wrap_bash_command("grep -r 'pattern' ./src | head -10")
@@ -63,6 +67,66 @@ class TestWrapBashCommand:
     def test_powershell_select_object_not_wrapped(self):
         assert wrap_bash_command("Select-Object -Property Name, Size") == \
                "Select-Object -Property Name, Size"
+
+
+class TestFixWindowsCommand:
+    """Unit tests for _fix_windows_command independently of wrapping."""
+
+    def test_unquoted_path_backslashes(self):
+        assert _fix_windows_command("ls C:\\Users\\juand") == "ls C:/Users/juand"
+
+    def test_unquoted_path_double_backslashes(self):
+        # LLMs sometimes double-escape: C:\\\\Users → C:/Users in actual string
+        assert _fix_windows_command("ls C:\\\\Users\\\\juand") == "ls C:/Users/juand"
+
+    def test_quoted_path_with_spaces(self):
+        assert _fix_windows_command('ls "C:\\Program Files\\app"') == 'ls "C:/Program Files/app"'
+
+    def test_single_quoted_path(self):
+        assert _fix_windows_command("ls 'C:\\Users\\juand'") == "ls 'C:/Users/juand'"
+
+    def test_null_redirect_2(self):
+        assert _fix_windows_command("ls 2>/nul") == "ls 2>/dev/null"
+
+    def test_null_redirect_plain(self):
+        assert _fix_windows_command("ls >/nul") == "ls >/dev/null"
+
+    def test_null_redirect_no_slash(self):
+        assert _fix_windows_command("ls >nul") == "ls >/dev/null"
+
+    def test_null_redirect_append(self):
+        assert _fix_windows_command("ls 2>>/nul") == "ls 2>>/dev/null"
+
+    def test_combined_error_case_1(self):
+        # Exact pattern from reported error #1
+        cmd = "ls -la C:\\Users\\juand\\Documents\\Repositorios\\MyUtils/"
+        result = _fix_windows_command(cmd)
+        assert result == "ls -la C:/Users/juand/Documents/Repositorios/MyUtils/"
+
+    def test_combined_error_case_2(self):
+        # Exact pattern from reported error #2
+        cmd = 'dir /b "C:\\Users\\juand\\Documents\\Repositorios\\MyUtils" 2>/nul'
+        result = _fix_windows_command(cmd)
+        # dir /b is intentionally NOT translated; only path and /nul are fixed
+        assert result == 'dir /b "C:/Users/juand/Documents/Repositorios/MyUtils" 2>/dev/null'
+
+    def test_no_change_for_unix_paths(self):
+        cmd = "ls /home/user/docs"
+        assert _fix_windows_command(cmd) == cmd
+
+    def test_no_change_for_relative_paths(self):
+        cmd = "ls ./src/main.py"
+        assert _fix_windows_command(cmd) == cmd
+
+    def test_wrap_integrates_fixes(self):
+        result = wrap_bash_command("ls C:\\Users\\juand 2>/nul")
+        assert result == 'bash -c "ls C:/Users/juand 2>/dev/null"'
+
+    def test_already_wrapped_bash_c_gets_path_fixed(self):
+        # Commands already wrapped as bash -c should also get inner paths fixed
+        cmd = 'bash -c "ls C:\\Users\\juand"'
+        result = wrap_bash_command(cmd)
+        assert result == 'bash -c "ls C:/Users/juand"'
 
 
 class TestPatchAnthropicBody:
