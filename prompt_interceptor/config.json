@@ -50,8 +50,8 @@
     "deepseek-coder"
   ],
   "context_size": 32768,
-  "default_model": "qwen3.5:9b",
-  "client_work_dir": "C:/Users/juand/Documents/Repositorios/Stellar_Veil/stellar_veil_dominate_the_void",
+  "default_model": "qwen3:8b",
+  "client_work_dir": "C:/Users/juand/Documents/Repositorios/MyUtils",
   "python_app_path": "C:/Users/juand/Documents/Repositorios/RiggingAgent",
   "python_app_command": "python.exe .\\main.py --object \"Mesh_0\" --debug --no-export --ui",
   "python_app_use_venv": true,
