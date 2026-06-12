@@ -159,24 +159,13 @@ class RuleEngine:
                         modified = True
                         after_val = _jsonpath_get(current_body, jp)
                         print(f"[PI][RULES] ✓ {method} {path}  {jp}: {before_val} → {after_val}")
-                        self.logger.log_response(
-                            request_id=request_id,
-                            status_code=200,
-                            headers={},
-                            body={
-                                "action": "rule_applied",
-                                "jsonpath": jp,
-                                "new_value": rule.replace.get("value"),
-                            },
+                        self.logger.update_request_body(
+                            request_id,
+                            current_body,
+                            rule_applied={"jsonpath": jp, "new_value": rule.replace.get("value")},
                         )
                 except Exception as e:
                     print(f"[PI][RULES] ✗ {method} {path}  rule error: {e}")
-                    self.logger.log_response(
-                        request_id=request_id,
-                        status_code=500,
-                        headers={},
-                        body={"action": "rule_error", "error": str(e)},
-                    )
             else:
                 found_val = _jsonpath_get(current_body, rule.match.get("jsonpath", ""))
                 print(f"[PI][RULES] ✗ {method} {path}  {jp}: "
