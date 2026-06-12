@@ -12,6 +12,13 @@ import pytest
 # Ensure the repo root is on sys.path so `prompt_interceptor` can be imported
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Stub out tkinter for headless CI environments where it is not installed.
+# The launcher imports tkinter at module level; without this stub every test
+# that touches prompt_interceptor.launcher would fail with ModuleNotFoundError.
+_tk_stub = MagicMock()
+for _mod in ("tkinter", "tkinter.ttk", "tkinter.filedialog", "tkinter.messagebox"):
+    sys.modules.setdefault(_mod, _tk_stub)
+
 
 # ---------------------------------------------------------------------------
 # Config fixtures

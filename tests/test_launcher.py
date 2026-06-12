@@ -1241,15 +1241,14 @@ def test_write_opencode_config_wsl_write_failure_is_silent():
 # ---------------------------------------------------------------------------
 
 def test_write_opencode_config_creates_file(tmp_path):
-    """Creates opencode.json when it does not exist."""
+    """Creates .opencode/opencode.json inside work_dir when it does not exist."""
     from prompt_interceptor.launcher import _write_opencode_config
 
-    config_path = tmp_path / "opencode.json"
-    with patch("prompt_interceptor.launcher.Path.home", return_value=tmp_path):
-        _write_opencode_config("qwen2.5:7b", "http://localhost:8080")
+    with patch("prompt_interceptor.launcher.sys") as mock_sys:
+        mock_sys.platform = "linux"
+        _write_opencode_config("qwen2.5:7b", "http://localhost:8080", work_dir=str(tmp_path))
 
-    # Reconstruct the expected path: home / .config / opencode / opencode.json
-    written = tmp_path / ".config" / "opencode" / "opencode.json"
+    written = tmp_path / ".opencode" / "opencode.json"
     assert written.exists()
     data = json.loads(written.read_text())
     assert data["provider"]["ollama"]["options"]["baseURL"] == "http://localhost:8080/v1"
@@ -1258,51 +1257,162 @@ def test_write_opencode_config_creates_file(tmp_path):
 
 def test_write_opencode_config_updates_existing(tmp_path):
     """Merges into an existing opencode.json without overwriting unrelated keys."""
-    import json as _json
     from prompt_interceptor.launcher import _write_opencode_config
 
-    config_dir = tmp_path / ".config" / "opencode"
+    config_dir = tmp_path / ".opencode"
     config_dir.mkdir(parents=True)
     existing = {"$schema": "https://opencode.ai/config.json", "theme": "dark"}
-    (config_dir / "opencode.json").write_text(_json.dumps(existing))
+    (config_dir / "opencode.json").write_text(json.dumps(existing))
 
-    with patch("prompt_interceptor.launcher.Path.home", return_value=tmp_path):
-        _write_opencode_config("mistral:latest", "http://localhost:8080")
+    with patch("prompt_interceptor.launcher.sys") as mock_sys:
+        mock_sys.platform = "linux"
+        _write_opencode_config("mistral:latest", "http://localhost:8080", work_dir=str(tmp_path))
 
-    data = _json.loads((config_dir / "opencode.json").read_text())
+    data = json.loads((config_dir / "opencode.json").read_text())
     assert data["theme"] == "dark"
     assert "mistral:latest" in data["provider"]["ollama"]["models"]
 
 
 def test_write_opencode_config_idempotent(tmp_path):
     """Calling twice with the same model does not duplicate entries."""
-    import json as _json
     from prompt_interceptor.launcher import _write_opencode_config
 
-    with patch("prompt_interceptor.launcher.Path.home", return_value=tmp_path):
-        _write_opencode_config("llama3:8b", "http://localhost:8080")
-        _write_opencode_config("llama3:8b", "http://localhost:8080")
+    with patch("prompt_interceptor.launcher.sys") as mock_sys:
+        mock_sys.platform = "linux"
+        _write_opencode_config("llama3:8b", "http://localhost:8080", work_dir=str(tmp_path))
+        _write_opencode_config("llama3:8b", "http://localhost:8080", work_dir=str(tmp_path))
 
-    written = tmp_path / ".config" / "opencode" / "opencode.json"
-    data = _json.loads(written.read_text())
+    written = tmp_path / ".opencode" / "opencode.json"
+    data = json.loads(written.read_text())
     models = data["provider"]["ollama"]["models"]
     assert list(models.keys()).count("llama3:8b") == 1
 
 
 def test_write_opencode_config_invalid_json_file_falls_back_to_empty(tmp_path):
     """When the existing opencode.json contains invalid JSON, an empty dict is used."""
-    import json as _json
     from prompt_interceptor.launcher import _write_opencode_config
 
-    config_dir = tmp_path / ".config" / "opencode"
+    config_dir = tmp_path / ".opencode"
     config_dir.mkdir(parents=True)
     (config_dir / "opencode.json").write_text("not valid json {{}")
 
-    with patch("prompt_interceptor.launcher.Path.home", return_value=tmp_path):
-        _write_opencode_config("llama3", "http://localhost:8080")
+    with patch("prompt_interceptor.launcher.sys") as mock_sys:
+        mock_sys.platform = "linux"
+        _write_opencode_config("llama3", "http://localhost:8080", work_dir=str(tmp_path))
 
-    data = _json.loads((config_dir / "opencode.json").read_text())
+    data = json.loads((config_dir / "opencode.json").read_text())
     assert "provider" in data
+
+
+# _detect_git_bash / shell field
+# ---------------------------------------------------------------------------
+
+def test_detect_git_bash_true_when_bash_in_path():
+    """Returns True on Windows when bash.exe is in PATH."""
+    from prompt_interceptor.launcher import _detect_git_bash
+    with patch("prompt_interceptor.launcher.sys") as mock_sys, \
+         patch("prompt_interceptor.launcher.shutil.which", return_value="/usr/bin/bash"):
+        mock_sys.platform = "win32"
+        assert _detect_git_bash() is True
+
+
+def test_detect_git_bash_false_when_bash_not_in_path():
+    """Returns False on Windows when bash.exe is not in PATH."""
+    from prompt_interceptor.launcher import _detect_git_bash
+    with patch("prompt_interceptor.launcher.sys") as mock_sys, \
+         patch("prompt_interceptor.launcher.shutil.which", return_value=None):
+        mock_sys.platform = "win32"
+        assert _detect_git_bash() is False
+
+
+def test_detect_git_bash_false_on_non_windows():
+    """Returns False on non-Windows regardless of bash availability."""
+    from prompt_interceptor.launcher import _detect_git_bash
+    with patch("prompt_interceptor.launcher.sys") as mock_sys:
+        mock_sys.platform = "linux"
+        assert _detect_git_bash() is False
+
+
+def test_write_opencode_config_repo_path_used(tmp_path):
+    """Config is written to work_dir/.opencode/opencode.json, not ~/.config."""
+    from prompt_interceptor.launcher import _write_opencode_config
+
+    with patch("prompt_interceptor.launcher.sys") as mock_sys:
+        mock_sys.platform = "linux"
+        _write_opencode_config("llama3", "http://localhost:8080", work_dir=str(tmp_path))
+
+    assert (tmp_path / ".opencode" / "opencode.json").exists()
+    assert not (tmp_path / ".config").exists()
+
+
+def test_write_opencode_config_shell_bash_on_windows_with_git_bash(tmp_path):
+    """On Windows with Git Bash available, shell is set to 'bash'."""
+    from prompt_interceptor.launcher import _write_opencode_config
+
+    with patch("prompt_interceptor.launcher.sys") as mock_sys, \
+         patch("prompt_interceptor.launcher.shutil.which", return_value="C:\\Git\\bin\\bash.exe"):
+        mock_sys.platform = "win32"
+        _write_opencode_config("llama3", "http://localhost:8080", work_dir=str(tmp_path))
+
+    data = json.loads((tmp_path / ".opencode" / "opencode.json").read_text())
+    assert data["shell"] == "bash"
+
+
+def test_write_opencode_config_shell_cmd_on_windows_without_git_bash(tmp_path):
+    """On Windows without Git Bash, shell is set to 'cmd'."""
+    from prompt_interceptor.launcher import _write_opencode_config
+
+    with patch("prompt_interceptor.launcher.sys") as mock_sys, \
+         patch("prompt_interceptor.launcher.shutil.which", return_value=None):
+        mock_sys.platform = "win32"
+        _write_opencode_config("llama3", "http://localhost:8080", work_dir=str(tmp_path))
+
+    data = json.loads((tmp_path / ".opencode" / "opencode.json").read_text())
+    assert data["shell"] == "cmd"
+
+
+def test_write_opencode_config_no_shell_on_linux(tmp_path):
+    """On Linux, no shell key is added to the config."""
+    from prompt_interceptor.launcher import _write_opencode_config
+
+    with patch("prompt_interceptor.launcher.sys") as mock_sys:
+        mock_sys.platform = "linux"
+        _write_opencode_config("llama3", "http://localhost:8080", work_dir=str(tmp_path))
+
+    data = json.loads((tmp_path / ".opencode" / "opencode.json").read_text())
+    assert "shell" not in data
+
+
+def test_write_opencode_config_schema_before_shell_before_provider(tmp_path):
+    """Key order in output: $schema first, then shell (Windows), then provider."""
+    from prompt_interceptor.launcher import _write_opencode_config
+
+    with patch("prompt_interceptor.launcher.sys") as mock_sys, \
+         patch("prompt_interceptor.launcher.shutil.which", return_value="C:\\Git\\bin\\bash.exe"):
+        mock_sys.platform = "win32"
+        _write_opencode_config("llama3", "http://localhost:8080", work_dir=str(tmp_path))
+
+    data = json.loads((tmp_path / ".opencode" / "opencode.json").read_text())
+    keys = list(data.keys())
+    assert keys[0] == "$schema"
+    assert keys[1] == "shell"
+    assert "provider" in keys
+    assert keys.index("shell") < keys.index("provider")
+
+
+def test_write_opencode_config_fallback_to_home_when_no_work_dir(tmp_path):
+    """Falls back to ~/.config/opencode/opencode.json when work_dir is empty."""
+    from prompt_interceptor.launcher import _write_opencode_config
+
+    with patch("prompt_interceptor.launcher.Path.home", return_value=tmp_path), \
+         patch("prompt_interceptor.launcher.sys") as mock_sys:
+        mock_sys.platform = "linux"
+        _write_opencode_config("llama3", "http://localhost:8080", work_dir="")
+
+    written = tmp_path / ".config" / "opencode" / "opencode.json"
+    assert written.exists()
+    data = json.loads(written.read_text())
+    assert "llama3" in data["provider"]["ollama"]["models"]
 
 
 def test_on_launch_client_python_app_custom_env_var(tmp_path, monkeypatch):

@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import urllib.error
 import urllib.parse
@@ -35,6 +36,13 @@ _CTX_DEFAULT = "32k (32768)"
 def _is_wsl_available() -> bool:
     """Return True if wsl.exe is in PATH."""
     return shutil.which("wsl") is not None
+
+
+def _detect_git_bash() -> bool:
+    """Return True if Git Bash (bash.exe) is available on Windows."""
+    if sys.platform != "win32":
+        return False
+    return shutil.which("bash") is not None
 
 
 def _is_opencode_in_wsl() -> bool:
@@ -229,9 +237,12 @@ def _start_dashboard_thread():
         print(f"[PromptInterceptor] Dashboard thread error: {exc}")
 
 
-def _write_opencode_config(model: str, proxy_url: str) -> None:
-    """Write/update ~/.config/opencode/opencode.json to point at the proxy with the selected model."""
-    config_path = Path.home() / ".config" / "opencode" / "opencode.json"
+def _write_opencode_config(model: str, proxy_url: str, work_dir: str = "") -> None:
+    """Write/update .opencode/opencode.json in work_dir (or ~/.config/opencode if no work_dir)."""
+    if work_dir:
+        config_path = Path(work_dir) / ".opencode" / "opencode.json"
+    else:
+        config_path = Path.home() / ".config" / "opencode" / "opencode.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -246,9 +257,16 @@ def _write_opencode_config(model: str, proxy_url: str) -> None:
     })
     ollama.setdefault("options", {})["baseURL"] = f"{proxy_url}/v1"
     ollama.setdefault("models", {})[model] = {"name": model}
-    existing.setdefault("$schema", "https://opencode.ai/config.json")
 
-    config_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    # Enforce key order: $schema first, then shell (Windows only), then the rest
+    existing.pop("$schema", None)
+    existing.pop("shell", None)
+    output: dict = {"$schema": "https://opencode.ai/config.json"}
+    if sys.platform == "win32":
+        output["shell"] = "bash" if _detect_git_bash() else "cmd"
+    output.update(existing)
+
+    config_path.write_text(json.dumps(output, indent=2), encoding="utf-8")
     print(f"[PromptInterceptor] opencode config written to {config_path}")
 
 
@@ -688,7 +706,7 @@ class LauncherWindow:
                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                 )
             elif cmd_name == "opencode":
-                _write_opencode_config(model, proxy_url)
+                _write_opencode_config(model, proxy_url, work_dir=work_dir or "")
                 shell_cmd = f"opencode --model ollama/{model}" if model else "opencode"
                 subprocess.Popen(
                     ["cmd", "/c", "start", "cmd", "/k", shell_cmd],
