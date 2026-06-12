@@ -432,9 +432,12 @@ async def handle_v1_messages(
             request_id, "POST", request.url.path, dict(request.headers), body_json
         )
         if drop:
+            logger.log_response(request_id, 204, {}, {"status": "dropped"})
             return Response(status_code=204)
         if _was_edited:
             logger.update_request_body(request_id, body_json, intercepted_modified=True)
+        else:
+            logger.update_request_body(request_id, body_json, intercepted_forwarded=True)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
     forward_headers = _forward_headers(dict(request.headers))
@@ -563,9 +566,12 @@ async def handle_v1_chat_completions(
             request_id, "POST", request.url.path, dict(request.headers), body_json
         )
         if drop:
+            logger.log_response(request_id, 204, {}, {"status": "dropped"})
             return Response(status_code=204)
         if _was_edited:
             logger.update_request_body(request_id, body_json, intercepted_modified=True)
+        else:
+            logger.update_request_body(request_id, body_json, intercepted_forwarded=True)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
     forward_headers = _forward_headers(dict(request.headers))
@@ -797,9 +803,12 @@ async def handle_chat_request(
             request_id, "POST", request.url.path, dict(request.headers), body_json
         )
         if drop:
+            logger.log_response(request_id, 204, {}, {"status": "dropped"})
             return Response(status_code=204)
         if _was_edited:
             logger.update_request_body(request_id, body_json, intercepted_modified=True)
+        else:
+            logger.update_request_body(request_id, body_json, intercepted_forwarded=True)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
 
@@ -871,9 +880,12 @@ async def handle_generate_request(
             request_id, "POST", request.url.path, dict(request.headers), body_json
         )
         if drop:
+            logger.log_response(request_id, 204, {}, {"status": "dropped"})
             return Response(status_code=204)
         if _was_edited:
             logger.update_request_body(request_id, body_json, intercepted_modified=True)
+        else:
+            logger.update_request_body(request_id, body_json, intercepted_forwarded=True)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
 
@@ -945,9 +957,12 @@ async def handle_stream_chat(
             request_id, "POST", request.url.path, dict(request.headers), body_json
         )
         if drop:
+            logger.log_response(request_id, 204, {}, {"status": "dropped"})
             return Response(status_code=204)
         if _was_edited:
             logger.update_request_body(request_id, body_json, intercepted_modified=True)
+        else:
+            logger.update_request_body(request_id, body_json, intercepted_forwarded=True)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
     forward_headers = _forward_headers(dict(request.headers))
@@ -1040,9 +1055,12 @@ async def handle_stream_generate(
             request_id, "POST", request.url.path, dict(request.headers), body_json
         )
         if drop:
+            logger.log_response(request_id, 204, {}, {"status": "dropped"})
             return Response(status_code=204)
         if _was_edited:
             logger.update_request_body(request_id, body_json, intercepted_modified=True)
+        else:
+            logger.update_request_body(request_id, body_json, intercepted_forwarded=True)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
     forward_headers = _forward_headers(dict(request.headers))

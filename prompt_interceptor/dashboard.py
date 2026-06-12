@@ -285,6 +285,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
       <div id="modal-error-msg" style="color:#daa;margin-top:2px;word-break:break-word"></div>
     </div>
+    <div id="modal-dropped-banner" style="display:none;background:#3a0808;border:1px solid #6a1818;border-radius:5px;padding:10px 14px;margin-bottom:12px;color:#f55;font-size:.83em">
+      &#x2715; Petici&oacute;n descartada &mdash; Ollama no recibi&oacute; esta petici&oacute;n (204 No Content)
+    </div>
     <div class="modal-split">
       <div class="modal-panel">
         <div class="modal-panel-title">Prompt</div>
@@ -311,6 +314,8 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 
 <script>
 const _logsCache = {};
+let _pendingCache = {};
+let _editModalId = null;
 let _proxyStatusData = null;
 let _fileMode = false;
 let _loadedLogs = null;
@@ -541,6 +546,13 @@ function showRaw(id) {
     errorBanner.style.display = 'none';
   }
 
+  const droppedBanner = document.getElementById('modal-dropped-banner');
+  if (sc === 204 && l.response_body?.status === 'dropped') {
+    droppedBanner.style.display = '';
+  } else {
+    droppedBanner.style.display = 'none';
+  }
+
   document.getElementById('modal-overlay').style.display = 'block';
 }
 
@@ -549,7 +561,7 @@ function toggleModalRaw() {
   const split = document.querySelector('.modal-split');
   const rawPanel = document.getElementById('modal-raw-panel');
   const rawBtn = document.getElementById('modal-raw-btn');
-  const bannerIds = ['modal-correction-banner','modal-token-banner','modal-error-banner'];
+  const bannerIds = ['modal-correction-banner','modal-token-banner','modal-error-banner','modal-dropped-banner'];
   if (_modalRawMode) {
     split.style.display = 'none';
     bannerIds.forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
@@ -572,6 +584,7 @@ function closeModal() {
   document.getElementById('modal-raw-panel').style.display = 'none';
   document.getElementById('modal-raw-btn').textContent = 'Raw';
   document.querySelector('.modal-split').style.display = '';
+  document.getElementById('modal-dropped-banner').style.display = 'none';
 }
 
 async function fetchJSON(url, opts) {
@@ -689,14 +702,27 @@ function renderLogsTable(logs) {
         }
       }
     }
-    const respPreview = respText ? esc(respText.slice(0, 100)) + (respText.length > 100 ? '…' : '') : '<span class="empty">-</span>';
-    const statusCode = l.status_code ? `<span class="badge ${l.status_code < 400 ? 'green' : 'red'}">${l.status_code}</span>` : '';
+    const isDropped = l.status_code === 204 && rb?.status === 'dropped';
+    const respPreview = isDropped
+      ? '<span style="color:#f55;font-weight:600">[descartado]</span>'
+      : (respText ? esc(respText.slice(0, 100)) + (respText.length > 100 ? '…' : '') : '<span class="empty">-</span>');
+    const statusCode = l.status_code ? `<span class="badge ${isDropped || l.status_code >= 400 ? 'red' : 'green'}">${l.status_code}</span>` : '';
     const typeTag = l.type === 'response'
       ? `<span class="badge green">resp</span>`
       : `<span class="badge blue">req</span>`;
     const corrBadge = l._correction_applied
       ? `<span class="badge" style="background:#0a2a1a;color:#5dba8a;border:1px solid #1a4a2a;font-size:.75em" title="Auto-corrected: ${esc(l._correction_applied)}">&#x2714; fixed</span>`
       : '';
+    let interceptBadge = '';
+    if (_pendingCache[l.request_id]) {
+      interceptBadge = '<span class="badge" style="background:#2a2000;color:#ffa040;border:1px solid #5a4000;font-size:.75em">&#x23F3; interceptando</span>';
+    } else if (isDropped) {
+      interceptBadge = '<span class="badge" style="background:#3a0808;color:#f55;border:1px solid #6a1818;font-size:.75em">&#x2715; descartado</span>';
+    } else if (l._intercepted_modified) {
+      interceptBadge = '<span class="badge" style="background:#0d3b66;color:#4fc3f7;border:1px solid #1a5b8a;font-size:.75em">&#x270E; editado</span>';
+    } else if (l._intercepted_forwarded) {
+      interceptBadge = '<span class="badge" style="background:#1a2a1a;color:#7dcc7d;border:1px solid #2a4a2a;font-size:.75em">&#x2713; enviado</span>';
+    }
     const tu = l._tokens_usage;
     let tokenCell = '<span class="empty">-</span>';
     if (tu && tu.total_tokens != null) {
@@ -715,11 +741,11 @@ function renderLogsTable(logs) {
       <td>${ts}</td>
       <td>${esc(method)}</td>
       <td><code>${esc(path)}</code></td>
-      <td><code>${esc(model)}</code>${modelModified ? ' <span class="badge blue" title="modelo modificado">✎</span>' : ''}</td>
+      <td><code>${esc(model)}</code>${modelModified ? ' <span class="badge blue">&#x270E; editado</span>' : ''}</td>
       <td style="white-space:nowrap;text-align:right;font-size:.85em">${tokenCell}</td>
       <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(preview)}</td>
       <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${respPreview}</td>
-      <td>${typeTag} ${statusCode} ${corrBadge}</td>
+      <td>${typeTag} ${statusCode} ${corrBadge} ${interceptBadge}</td>
       <td><button class="link-show" onclick="showRaw('${esc(String(cacheKey))}')">show</button></td>
     </tr>`;
   }).join('');
@@ -791,22 +817,24 @@ async function loadPending() {
     const data = await fetchJSON('/api/intercept/pending');
     const section = document.getElementById('pending-section');
     const list = document.getElementById('pending-list');
+    _pendingCache = {};
     if (!data.count) {
       section.style.display = 'none';
       return;
     }
     section.style.display = 'block';
     list.innerHTML = (data.pending || []).map(p => {
+      _pendingCache[p.request_id] = p;
       const ts = p.created_at ? new Date(p.created_at).toLocaleTimeString() : '';
       const meta = [ts ? `received ${ts}` : '', `id: ${esc(p.request_id)}`].filter(Boolean).join(' · ');
       return `
       <div class="pending-card">
         <h3>&#9654; ${esc(p.method)} ${esc(p.path)}</h3>
         <div class="pending-meta">${meta}</div>
-        <textarea id="ta-${esc(p.request_id)}" rows="8">${esc(JSON.stringify(p.body, null, 2))}</textarea>
+        <pre style="max-height:180px;overflow:auto;margin:0 0 8px">${esc(JSON.stringify(p.body, null, 2))}</pre>
         <div class="pending-actions">
           <button class="btn-forward" onclick="forwardRequest('${esc(p.request_id)}')">&#x2713; Forward</button>
-          <button class="btn-forward" onclick="editRequest('${esc(p.request_id)}')">&#x270E; Edit &amp; Forward</button>
+          <button class="btn-forward" onclick="openEditModal('${esc(p.request_id)}')">&#x270E; Edit &amp; Forward</button>
           <button class="btn-drop" onclick="dropRequest('${esc(p.request_id)}')">&#x2715; Drop</button>
         </div>
       </div>`;
@@ -874,15 +902,33 @@ async function forwardRequest(id) {
   loadPending();
 }
 
-async function editRequest(id) {
-  const ta = document.getElementById('ta-' + id);
+function openEditModal(id) {
+  const p = _pendingCache[id];
+  if (!p) return;
+  _editModalId = id;
+  document.getElementById('edit-modal-title').textContent = p.method + ' ' + p.path;
+  document.getElementById('edit-modal-ta').value = JSON.stringify(p.body, null, 2);
+  document.getElementById('edit-modal-overlay').style.display = 'block';
+  fetch(`/api/intercept/${id}/pause`, {method: 'POST'});
+}
+
+function closeEditModal() {
+  document.getElementById('edit-modal-overlay').style.display = 'none';
+  if (_editModalId) fetch(`/api/intercept/${_editModalId}/resume`, {method: 'POST'});
+  _editModalId = null;
+}
+
+async function submitEditModal() {
+  if (!_editModalId) return;
+  const ta = document.getElementById('edit-modal-ta');
   let body;
-  try { body = JSON.parse(ta.value); } catch(e) { alert('Invalid JSON: ' + e.message); return; }
-  await fetch(`/api/intercept/${id}/edit`, {
+  try { body = JSON.parse(ta.value); } catch(e) { alert('JSON inválido: ' + e.message); return; }
+  await fetch(`/api/intercept/${_editModalId}/edit`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body)
   });
+  closeEditModal();
   loadPending();
 }
 
@@ -954,6 +1000,19 @@ refreshAll();
 setInterval(refreshAll, 5000);
 setInterval(loadPending, 1000);
 </script>
+
+<!-- Edit Intercept modal -->
+<div class="modal-overlay" id="edit-modal-overlay" onclick="if(event.target===this)closeEditModal()">
+  <div class="modal-box" style="max-width:800px">
+    <button class="modal-close" onclick="closeEditModal()">&#x2715;</button>
+    <h3 class="modal-title" id="edit-modal-title">Edit Request</h3>
+    <textarea id="edit-modal-ta" rows="20" style="width:100%;background:#0d0d1e;color:#eee;border:1px solid #2a2a4e;border-radius:6px;padding:10px;font-size:.8em;font-family:monospace;resize:vertical;min-height:220px"></textarea>
+    <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">
+      <button class="btn-disable" onclick="closeEditModal()" style="padding:7px 18px">Cancelar</button>
+      <button class="btn-forward" onclick="submitEditModal()" style="padding:7px 18px">&#x2713; Forward</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>"""
 
@@ -1106,6 +1165,22 @@ async def intercept_drop(request_id: str):
     """Drop a paused request (returns 204 to the original client)."""
     if interceptor.resolve_drop(request_id):
         return JSONResponse(status_code=200, content={"status": "dropped"})
+    return JSONResponse(status_code=404, content={"status": "not_found"})
+
+
+@router.post("/intercept/{request_id}/pause")
+async def intercept_pause(request_id: str):
+    """Freeze the auto-forward timer (e.g. edit modal is open)."""
+    if interceptor.pause_request(request_id):
+        return JSONResponse(status_code=200, content={"status": "paused"})
+    return JSONResponse(status_code=404, content={"status": "not_found"})
+
+
+@router.post("/intercept/{request_id}/resume")
+async def intercept_resume(request_id: str):
+    """Resume the auto-forward timer."""
+    if interceptor.resume_request(request_id):
+        return JSONResponse(status_code=200, content={"status": "resumed"})
     return JSONResponse(status_code=404, content={"status": "not_found"})
 
 

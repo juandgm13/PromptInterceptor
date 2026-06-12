@@ -289,6 +289,7 @@ class TrafficLogger:
         new_body: Optional[Dict[str, Any]],
         rule_applied: Optional[Dict[str, Any]] = None,
         intercepted_modified: bool = False,
+        intercepted_forwarded: bool = False,
     ) -> None:
         """Update the body of an existing request log entry without changing its type to 'response'.
 
@@ -313,6 +314,8 @@ class TrafficLogger:
             existing["_rules_applied"] = rules_list
         if intercepted_modified:
             existing["_intercepted_modified"] = True
+        if intercepted_forwarded:
+            existing["_intercepted_forwarded"] = True
 
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(existing, f, indent=2, default=str)
