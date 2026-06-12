@@ -428,11 +428,13 @@ async def handle_v1_messages(
     is_stream = bool(body_json.get("stream", False)) if body_json else False
 
     if config.mode == "intercept":
-        drop, body_json = await _apply_intercept(
+        drop, body_json, _was_edited = await _apply_intercept(
             request_id, "POST", request.url.path, dict(request.headers), body_json
         )
         if drop:
             return Response(status_code=204)
+        if _was_edited:
+            logger.update_request_body(request_id, body_json, intercepted_modified=True)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
     forward_headers = _forward_headers(dict(request.headers))
@@ -557,11 +559,13 @@ async def handle_v1_chat_completions(
     is_stream = bool(body_json.get("stream", False)) if body_json else False
 
     if config.mode == "intercept":
-        drop, body_json = await _apply_intercept(
+        drop, body_json, _was_edited = await _apply_intercept(
             request_id, "POST", request.url.path, dict(request.headers), body_json
         )
         if drop:
             return Response(status_code=204)
+        if _was_edited:
+            logger.update_request_body(request_id, body_json, intercepted_modified=True)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
     forward_headers = _forward_headers(dict(request.headers))
@@ -754,7 +758,7 @@ async def _apply_intercept(
     In intercept mode, pause the request until the dashboard resolves it.
 
     Returns:
-        (should_drop: bool, body_json: dict|None)
+        (should_drop: bool, body_json: dict|None, was_edited: bool)
     """
     if get_config().debug_intercept:
         print(f"[PromptInterceptor][INTERCEPT] → pausing  {method} {path}  id={request_id}")
@@ -764,8 +768,8 @@ async def _apply_intercept(
     if get_config().debug_intercept:
         print(f"[PromptInterceptor][INTERCEPT] ← {action}  id={request_id}")
     if action == "drop":
-        return (True, None)
-    return (False, resolved_body)
+        return (True, None, False)
+    return (False, resolved_body, action == "edit")
 
 
 async def handle_chat_request(
@@ -789,11 +793,13 @@ async def handle_chat_request(
     body_json = _inject_num_ctx(body_json)
 
     if config.mode == "intercept":
-        drop, body_json = await _apply_intercept(
+        drop, body_json, _was_edited = await _apply_intercept(
             request_id, "POST", request.url.path, dict(request.headers), body_json
         )
         if drop:
             return Response(status_code=204)
+        if _was_edited:
+            logger.update_request_body(request_id, body_json, intercepted_modified=True)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
 
@@ -861,11 +867,13 @@ async def handle_generate_request(
     body_json = _inject_num_ctx(body_json)
 
     if config.mode == "intercept":
-        drop, body_json = await _apply_intercept(
+        drop, body_json, _was_edited = await _apply_intercept(
             request_id, "POST", request.url.path, dict(request.headers), body_json
         )
         if drop:
             return Response(status_code=204)
+        if _was_edited:
+            logger.update_request_body(request_id, body_json, intercepted_modified=True)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
 
@@ -933,11 +941,13 @@ async def handle_stream_chat(
     body_json = _inject_num_ctx(body_json)
 
     if config.mode == "intercept":
-        drop, body_json = await _apply_intercept(
+        drop, body_json, _was_edited = await _apply_intercept(
             request_id, "POST", request.url.path, dict(request.headers), body_json
         )
         if drop:
             return Response(status_code=204)
+        if _was_edited:
+            logger.update_request_body(request_id, body_json, intercepted_modified=True)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
     forward_headers = _forward_headers(dict(request.headers))
@@ -1026,11 +1036,13 @@ async def handle_stream_generate(
     body_json = _inject_num_ctx(body_json)
 
     if config.mode == "intercept":
-        drop, body_json = await _apply_intercept(
+        drop, body_json, _was_edited = await _apply_intercept(
             request_id, "POST", request.url.path, dict(request.headers), body_json
         )
         if drop:
             return Response(status_code=204)
+        if _was_edited:
+            logger.update_request_body(request_id, body_json, intercepted_modified=True)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
     forward_headers = _forward_headers(dict(request.headers))

@@ -283,6 +283,40 @@ class TrafficLogger:
             body=None
         )
 
+    def update_request_body(
+        self,
+        request_id: str,
+        new_body: Optional[Dict[str, Any]],
+        rule_applied: Optional[Dict[str, Any]] = None,
+        intercepted_modified: bool = False,
+    ) -> None:
+        """Update the body of an existing request log entry without changing its type to 'response'.
+
+        Used when rules or intercept edits modify the body that is actually sent to Ollama,
+        so the log reflects what was forwarded rather than the original request.
+        """
+        date_dir = self._get_date_dir()
+        filepath = date_dir / f"req_{request_id}.json"
+
+        existing: Dict[str, Any] = {}
+        if filepath.exists():
+            try:
+                with open(filepath, encoding="utf-8") as f:
+                    existing = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                existing = {}
+
+        existing["body"] = self._truncate_body(new_body)
+        if rule_applied:
+            rules_list = existing.get("_rules_applied", [])
+            rules_list.append(rule_applied)
+            existing["_rules_applied"] = rules_list
+        if intercepted_modified:
+            existing["_intercepted_modified"] = True
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(existing, f, indent=2, default=str)
+
     def log_intercepted(self, request_id: str, modified: bool = True) -> None:
         """Log that a request was intercepted."""
         self.log_response(

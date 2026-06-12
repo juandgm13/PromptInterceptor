@@ -631,6 +631,7 @@ function renderLogsTable(logs) {
     const method = l.method || '-';
     const path = l.path || '-';
     const model = l.body?.model || l.response_body?.model || '-';
+    const modelModified = l._intercepted_modified || (l._rules_applied && l._rules_applied.length > 0);
     const msgs = l.body?.messages;
     let preview = '-';
     if (msgs && msgs.length) {
@@ -714,7 +715,7 @@ function renderLogsTable(logs) {
       <td>${ts}</td>
       <td>${esc(method)}</td>
       <td><code>${esc(path)}</code></td>
-      <td><code>${esc(model)}</code></td>
+      <td><code>${esc(model)}</code>${modelModified ? ' <span class="badge blue" title="modelo modificado">✎</span>' : ''}</td>
       <td style="white-space:nowrap;text-align:right;font-size:.85em">${tokenCell}</td>
       <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(preview)}</td>
       <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${respPreview}</td>
