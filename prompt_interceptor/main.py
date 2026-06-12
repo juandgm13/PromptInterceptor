@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from .bash_wrapper import is_windows_bash_mode
-from .config import get_config, save_config
+from .config import get_config
 from .logger import TrafficLogger
 from .rules_engine import RuleEngine
 from .proxy import (
@@ -29,9 +29,6 @@ from .cors_middleware import add_cors_middleware
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     config = get_config()
-    if config.mode != "passthrough":
-        config.mode = "passthrough"
-        save_config(config)
     logger = TrafficLogger()
     rule_engine = RuleEngine(logger)
 

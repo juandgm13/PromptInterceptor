@@ -51,6 +51,8 @@ class InterceptedRequest:
         self._event: asyncio.Event = asyncio.Event()
         # Captured in intercept() so resolution from the dashboard thread is thread-safe
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # When True the auto-forward deadline is frozen (edit modal open in dashboard)
+        self._paused: bool = False
 
     # ------------------------------------------------------------------
     # Resolution methods – called by dashboard API or CLI
@@ -85,6 +87,14 @@ class InterceptedRequest:
         self._action = "drop"
         self._signal()
 
+    def pause(self) -> None:
+        """Freeze the auto-forward deadline (e.g. edit modal is open)."""
+        self._paused = True
+
+    def resume(self) -> None:
+        """Resume the auto-forward countdown from now."""
+        self._paused = False
+
     # ------------------------------------------------------------------
     # Awaitable by the proxy handler
     # ------------------------------------------------------------------
@@ -93,17 +103,30 @@ class InterceptedRequest:
         """
         Block until a decision is made or *timeout* seconds elapse.
 
+        Polls in 0.25 s chunks so the paused flag can be checked at runtime.
+        While paused the deadline is kept rolling forward, effectively freezing
+        the countdown until resume() is called.
+
         Returns:
             (action, body) where action is 'forward', 'edit', or 'drop',
             and body is the (possibly modified) request body.
         """
-        try:
-            await asyncio.wait_for(self._event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            if get_config().debug_intercept:
-                _log.info("[PI][INTERCEPT] timeout — auto-forward  id=%s", self.request_id)
-            # Auto-forward on timeout so the client isn't left hanging
-            self._action = "forward"
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+
+        while not self._event.is_set():
+            now = loop.time()
+            if self._paused:
+                deadline = now + timeout  # keep rolling the deadline
+            elif now >= deadline:
+                if get_config().debug_intercept:
+                    _log.info("[PI][INTERCEPT] timeout — auto-forward  id=%s", self.request_id)
+                self._action = "forward"
+                break
+            try:
+                await asyncio.wait_for(self._event.wait(), timeout=0.25)
+            except asyncio.TimeoutError:
+                pass
 
         final_body = self._edited_body if self._action == "edit" else self.body
         return self._action, final_body
@@ -207,6 +230,22 @@ class Interceptor:
             if get_config().debug_intercept:
                 _log.info("[PI][INTERCEPT] dashboard → drop  id=%s", request_id)
             req.drop()
+            return True
+        return False
+
+    def pause_request(self, request_id: str) -> bool:
+        """Freeze the auto-forward timer for a pending request."""
+        req = self._pending.get(request_id)
+        if req:
+            req.pause()
+            return True
+        return False
+
+    def resume_request(self, request_id: str) -> bool:
+        """Resume the auto-forward timer for a pending request."""
+        req = self._pending.get(request_id)
+        if req:
+            req.resume()
             return True
         return False
 
