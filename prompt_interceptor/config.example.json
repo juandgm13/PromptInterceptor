@@ -33,12 +33,12 @@
       "match": {
         "jsonpath": "$.model",
         "value": [
-          "qwen3:8b"
+          "llama3"
         ]
       },
       "replace": {
         "jsonpath": "$.model",
-        "value": "qwen3.5:9b"
+        "value": "deepseek-coder"
       }
     }
   ],
@@ -50,10 +50,10 @@
     "deepseek-coder"
   ],
   "context_size": 32768,
-  "default_model": "qwen3:8b",
-  "client_work_dir": "C:/Users/juand/Documents/Repositorios/MyUtils",
-  "python_app_path": "C:/Users/juand/Documents/Repositorios/RiggingAgent",
-  "python_app_command": "python.exe .\\main.py --object \"Mesh_0\" --debug --no-export --ui",
+  "default_model": "llama3",
+  "client_work_dir": "C:/path/to/your/project",
+  "python_app_path": "C:/path/to/your/python/app",
+  "python_app_command": "python.exe main.py",
   "python_app_use_venv": true,
   "python_app_env_var": "OLLAMA_HOST"
 }
