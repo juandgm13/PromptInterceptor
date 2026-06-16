@@ -19,6 +19,7 @@ from pathlib import Path
 
 from .client_versions import OPENCODE_MIN_VERSION, OPENCODE_MAX_VERSION
 from .config import get_config, save_config
+from ._version import __version__
 
 _LOCALHOST_HOSTS = {"127.0.0.1", "localhost"}
 
@@ -433,7 +434,8 @@ class LauncherWindow:
         # ── Header ──
         ttk.Label(self.root, text="PromptInterceptor", style="Header.TLabel").pack(pady=(20, 2))
         ttk.Label(self.root, text="Ollama Traffic Interceptor for AI Clients",
-                  font=("Segoe UI", 9)).pack(pady=(0, 6))
+                  font=("Segoe UI", 9)).pack(pady=(0, 2))
+        ttk.Label(self.root, text=f"v{__version__}", style="Section.TLabel").pack(pady=(0, 6))
 
         # Proxy Port (global proxy setting, not Ollama-specific)
         row_port = ttk.Frame(self.root)
