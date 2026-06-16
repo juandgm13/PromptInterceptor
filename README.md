@@ -157,7 +157,13 @@ Running Open Code on Windows with a local model? **No configuration needed** —
 
 ## Configuration
 
-Edit `prompt_interceptor/config.json`:
+`config.json` is not included in the repository (it contains user-specific paths and settings). Copy the example and edit it:
+
+```bash
+cp prompt_interceptor/config.example.json prompt_interceptor/config.json
+```
+
+Then edit `prompt_interceptor/config.json` with your settings:
 
 ```json
 {
