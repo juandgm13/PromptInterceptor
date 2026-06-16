@@ -4,6 +4,7 @@ Uses only tkinter (Python built-in), no extra dependencies.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 from pathlib import Path
 
+from .client_versions import OPENCODE_MIN_VERSION, OPENCODE_MAX_VERSION
 from .config import get_config, save_config
 
 _LOCALHOST_HOSTS = {"127.0.0.1", "localhost"}
@@ -57,6 +59,61 @@ def _is_opencode_in_wsl() -> bool:
         return result.returncode == 0 and bool(result.stdout.strip())
     except Exception:
         return False
+
+
+def _parse_version(v: str) -> tuple:
+    """Convert '1.17.4' to (1, 17, 4). Non-numeric segments become 0."""
+    parts = []
+    for segment in v.strip().split("."):
+        try:
+            parts.append(int(segment))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
+
+
+def _is_version_compatible(version: str, min_v: str, max_v: str) -> bool:
+    """Return True if min_v <= version <= max_v (inclusive, tuple comparison)."""
+    return _parse_version(min_v) <= _parse_version(version) <= _parse_version(max_v)
+
+
+def _get_opencode_version(cmd: str = "opencode") -> str | None:
+    """Return the opencode version string (e.g. '1.17.4'), or None if undetectable.
+
+    Resolves the full path via shutil.which first so that Windows .cmd/.bat
+    wrappers are found by subprocess (which does not apply PATHEXT by default).
+    Tries --version, then the 'version' subcommand, then -v.
+    """
+    debug = get_config().debug
+    resolved = shutil.which(cmd) or cmd
+    if debug:
+        print(f"[DEBUG] _get_opencode_version: cmd={cmd!r}  resolved={resolved!r}")
+    for args in ([resolved, "--version"], [resolved, "version"], [resolved, "-v"]):
+        try:
+            result = subprocess.run(
+                args,
+                capture_output=True, text=True, timeout=5
+            )
+            stdout = result.stdout.strip()
+            stderr = result.stderr.strip()
+            output = (stdout or stderr or "").strip()
+            if debug:
+                print(f"[DEBUG]   args={args}  rc={result.returncode}")
+                print(f"[DEBUG]   stdout={stdout!r}")
+                print(f"[DEBUG]   stderr={stderr!r}")
+            match = re.search(r'\b(\d+\.\d+(?:\.\d+)*)\b', output)
+            if match:
+                if debug:
+                    print(f"[DEBUG]   -> version={match.group(1)!r}")
+                return match.group(1)
+            if debug:
+                print(f"[DEBUG]   -> no version found in output")
+        except Exception as exc:
+            if debug:
+                print(f"[DEBUG]   args={args}  EXCEPTION: {type(exc).__name__}: {exc}")
+    if debug:
+        print(f"[DEBUG] _get_opencode_version: returning None")
+    return None
 
 
 def _get_wsl_host_ip() -> str:
@@ -145,20 +202,32 @@ def _write_opencode_config_wsl(model: str, proxy_url: str) -> None:
         print(f"[PromptInterceptor] Failed to write opencode WSL config: {exc}")
 
 
-def _detect_clients() -> list:
-    """Detect installed AI clients. Returns list of (display_name, command).
-    Always includes 'Python App (Ollama)' as a custom option.
+def _detect_clients() -> tuple:
+    """Detect installed AI clients.
+
+    Returns (clients, version_warnings) where:
+      clients: list of (display_name, command) — always clean names
+      version_warnings: list of warning strings for incompatible client versions
     """
     clients = [("Only Proxy", "__only_proxy__")]
+    version_warnings = []
     # Claude Code disabled for now — proxy translation not yet stable for this client.
     # if shutil.which("claude"):
     #     clients.append(("Claude Code", "claude"))
     if shutil.which("opencode"):
+        ver = _get_opencode_version()
+        if ver is not None and not _is_version_compatible(ver, OPENCODE_MIN_VERSION, OPENCODE_MAX_VERSION):
+            version_warnings.append(
+                f"OpenCode is installed (version {ver}), but this version may not be "
+                f"compatible with PromptInterceptor.\n\n"
+                f"Supported versions: {OPENCODE_MIN_VERSION} – {OPENCODE_MAX_VERSION}\n\n"
+                f"You can still use it, but some features may not work correctly."
+            )
         clients.append(("Open Code (CLI)", "opencode"))
     # Open Code (WSL) support is implemented but disabled in the UI for now.
     # clients.append(("Open Code (WSL)", "__opencode_wsl__"))
     clients.append(("Python App (Ollama)", "__python_app__"))
-    return clients
+    return clients, version_warnings
 
 
 def _fetch_ollama_models(target: str) -> list:
@@ -303,6 +372,11 @@ class LauncherWindow:
             except Exception:
                 pass
 
+    def _show_version_warnings(self, warnings: list) -> None:
+        import tkinter.messagebox as mb
+        for msg in warnings:
+            mb.showwarning("Compatibility Warning", msg)
+
     def _get_window_height(self) -> int:
         """Return the appropriate window height for the currently selected client."""
         try:
@@ -395,8 +469,10 @@ class LauncherWindow:
         row2 = ttk.Frame(self.root)
         row2.pack(fill="x", **pad)
         ttk.Label(row2, text="AI Client:", width=14, anchor="w").pack(side="left")
-        self._clients = _detect_clients()
+        self._clients, _version_warnings = _detect_clients()
         self.client_var = tk.StringVar(value=self._clients[0][0])
+        if _version_warnings:
+            self.root.after(300, lambda w=_version_warnings: self._show_version_warnings(w))
         self._client_cb = ttk.Combobox(row2, textvariable=self.client_var,
                                         values=[name for name, _ in self._clients],
                                         state="disabled", width=22)
