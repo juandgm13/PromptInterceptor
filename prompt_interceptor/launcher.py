@@ -78,18 +78,23 @@ def _is_version_compatible(version: str, min_v: str, max_v: str) -> bool:
 
 
 def _get_opencode_version(cmd: str = "opencode") -> str | None:
-    """Run `cmd --version` and return a version string like '1.17.4', or None."""
-    try:
-        result = subprocess.run(
-            [cmd, "--version"],
-            capture_output=True, text=True, timeout=5
-        )
-        output = (result.stdout or result.stderr or "").strip()
-        match = re.search(r'\b(\d+\.\d+(?:\.\d+)*)\b', output)
-        if match:
-            return match.group(1)
-    except Exception:
-        pass
+    """Return the opencode version string (e.g. '1.17.4'), or None if undetectable.
+
+    Tries --version, then the 'version' subcommand, then -v so we cover the
+    different CLI conventions opencode has used across releases.
+    """
+    for args in ([cmd, "--version"], [cmd, "version"], [cmd, "-v"]):
+        try:
+            result = subprocess.run(
+                args,
+                capture_output=True, text=True, timeout=5
+            )
+            output = (result.stdout or result.stderr or "").strip()
+            match = re.search(r'\b(\d+\.\d+(?:\.\d+)*)\b', output)
+            if match:
+                return match.group(1)
+        except Exception:
+            pass
     return None
 
 
