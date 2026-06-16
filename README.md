@@ -157,7 +157,13 @@ Running Open Code on Windows with a local model? **No configuration needed** —
 
 ## Configuration
 
-Edit `prompt_interceptor/config.json`:
+`config.json` is optional — the proxy starts with sensible defaults if the file is missing. To customize settings, copy the example and edit it:
+
+```bash
+cp prompt_interceptor/config.example.json prompt_interceptor/config.json
+```
+
+Edit `prompt_interceptor/config.json` with your settings:
 
 ```json
 {
