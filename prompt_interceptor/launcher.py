@@ -4,6 +4,7 @@ Uses only tkinter (Python built-in), no extra dependencies.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 from pathlib import Path
 
+from .client_versions import OPENCODE_MIN_VERSION, OPENCODE_MAX_VERSION
 from .config import get_config, save_config
 
 _LOCALHOST_HOSTS = {"127.0.0.1", "localhost"}
@@ -57,6 +59,38 @@ def _is_opencode_in_wsl() -> bool:
         return result.returncode == 0 and bool(result.stdout.strip())
     except Exception:
         return False
+
+
+def _parse_version(v: str) -> tuple:
+    """Convert '1.17.4' to (1, 17, 4). Non-numeric segments become 0."""
+    parts = []
+    for segment in v.strip().split("."):
+        try:
+            parts.append(int(segment))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
+
+
+def _is_version_compatible(version: str, min_v: str, max_v: str) -> bool:
+    """Return True if min_v <= version <= max_v (inclusive, tuple comparison)."""
+    return _parse_version(min_v) <= _parse_version(version) <= _parse_version(max_v)
+
+
+def _get_opencode_version(cmd: str = "opencode") -> str | None:
+    """Run `cmd --version` and return a version string like '1.17.4', or None."""
+    try:
+        result = subprocess.run(
+            [cmd, "--version"],
+            capture_output=True, text=True, timeout=5
+        )
+        output = (result.stdout or result.stderr or "").strip()
+        match = re.search(r'\b(\d+\.\d+(?:\.\d+)*)\b', output)
+        if match:
+            return match.group(1)
+    except Exception:
+        pass
+    return None
 
 
 def _get_wsl_host_ip() -> str:
@@ -154,7 +188,11 @@ def _detect_clients() -> list:
     # if shutil.which("claude"):
     #     clients.append(("Claude Code", "claude"))
     if shutil.which("opencode"):
-        clients.append(("Open Code (CLI)", "opencode"))
+        ver = _get_opencode_version()
+        if ver is not None and not _is_version_compatible(ver, OPENCODE_MIN_VERSION, OPENCODE_MAX_VERSION):
+            clients.append((f"Open Code (CLI) [unsupported: v{ver}]", "opencode"))
+        else:
+            clients.append(("Open Code (CLI)", "opencode"))
     # Open Code (WSL) support is implemented but disabled in the UI for now.
     # clients.append(("Open Code (WSL)", "__opencode_wsl__"))
     clients.append(("Python App (Ollama)", "__python_app__"))
