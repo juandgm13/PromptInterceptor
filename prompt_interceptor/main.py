@@ -12,6 +12,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
+from ._version import __version__
 from .bash_wrapper import is_windows_bash_mode
 from .config import get_config
 from .logger import TrafficLogger
@@ -35,7 +36,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=config.project_name,
         description=config.project_description,
-        version=config.project_version,
+        version=__version__,
         debug=config.debug,
     )
 
