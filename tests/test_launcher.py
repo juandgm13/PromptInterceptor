@@ -36,9 +36,10 @@ def test_detect_clients_no_system_clients(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda cmd: None)
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
-    clients = launcher._detect_clients()
+    clients, warnings = launcher._detect_clients()
     assert len(clients) == 2
     assert clients[-1] == ("Python App (Ollama)", "__python_app__")
+    assert warnings == []
 
 
 @pytest.mark.skip(reason="Claude Code client deshabilitado en el launcher")
@@ -56,10 +57,12 @@ def test_detect_clients_opencode_only(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/opencode" if cmd == "opencode" else None)
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
-    clients = launcher._detect_clients()
+    monkeypatch.setattr(launcher, "_get_opencode_version", lambda cmd="opencode": "1.17.5")
+    clients, warnings = launcher._detect_clients()
     assert len(clients) == 3
     assert clients[1] == ("Open Code (CLI)", "opencode")
     assert clients[-1] == ("Python App (Ollama)", "__python_app__")
+    assert warnings == []
 
 
 @pytest.mark.skip(reason="Claude Code client deshabilitado en el launcher")
@@ -79,7 +82,8 @@ def test_detect_clients_python_app_always_last(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
-    clients = launcher._detect_clients()
+    monkeypatch.setattr(launcher, "_get_opencode_version", lambda cmd="opencode": "1.17.5")
+    clients, _ = launcher._detect_clients()
     assert clients[-1] == ("Python App (Ollama)", "__python_app__")
 
 
@@ -88,7 +92,8 @@ def test_detect_clients_wsl_opencode(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/opencode" if cmd == "opencode" else None)
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: True)
-    clients = launcher._detect_clients()
+    monkeypatch.setattr(launcher, "_get_opencode_version", lambda cmd="opencode": "1.17.5")
+    clients, _ = launcher._detect_clients()
     names = [name for name, _ in clients]
     assert "Open Code (CLI)" in names
     assert "Open Code (WSL)" not in names
@@ -100,11 +105,175 @@ def test_detect_clients_wsl_only_no_cli(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda cmd: None)
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: True)
-    clients = launcher._detect_clients()
+    clients, warnings = launcher._detect_clients()
     names = [name for name, _ in clients]
     assert "Open Code (CLI)" not in names
     assert "Open Code (WSL)" not in names
     assert clients[-1] == ("Python App (Ollama)", "__python_app__")
+    assert warnings == []
+
+
+def test_detect_clients_opencode_incompatible_version(monkeypatch):
+    """Out-of-range version produces a warning and clean label; command stays 'opencode'."""
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/opencode" if cmd == "opencode" else None)
+    from prompt_interceptor import launcher
+    monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
+    monkeypatch.setattr(launcher, "_get_opencode_version", lambda cmd="opencode": "1.17.8")
+    clients, warnings = launcher._detect_clients()
+    assert len(clients) == 3
+    assert clients[1] == ("Open Code (CLI)", "opencode")
+    assert len(warnings) == 1
+    assert "1.17.8" in warnings[0]
+    assert "compatible" in warnings[0].lower()
+
+
+def test_detect_clients_opencode_version_unknown(monkeypatch):
+    """When version cannot be detected (None), display name is clean and no warning."""
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/opencode" if cmd == "opencode" else None)
+    from prompt_interceptor import launcher
+    monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
+    monkeypatch.setattr(launcher, "_get_opencode_version", lambda cmd="opencode": None)
+    clients, warnings = launcher._detect_clients()
+    assert clients[1] == ("Open Code (CLI)", "opencode")
+    assert warnings == []
+
+
+def test_detect_clients_opencode_version_at_min(monkeypatch):
+    """Version at minimum bound is accepted without warning."""
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/opencode" if cmd == "opencode" else None)
+    from prompt_interceptor import launcher
+    monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
+    monkeypatch.setattr(launcher, "_get_opencode_version", lambda cmd="opencode": "1.17.4")
+    clients, warnings = launcher._detect_clients()
+    assert clients[1] == ("Open Code (CLI)", "opencode")
+    assert warnings == []
+
+
+def test_detect_clients_opencode_version_at_max(monkeypatch):
+    """Version at maximum bound is accepted without warning."""
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/opencode" if cmd == "opencode" else None)
+    from prompt_interceptor import launcher
+    monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
+    monkeypatch.setattr(launcher, "_get_opencode_version", lambda cmd="opencode": "1.17.7")
+    clients, warnings = launcher._detect_clients()
+    assert clients[1] == ("Open Code (CLI)", "opencode")
+    assert warnings == []
+
+
+# ---------------------------------------------------------------------------
+# _parse_version
+# ---------------------------------------------------------------------------
+
+def test_parse_version_three_parts():
+    from prompt_interceptor.launcher import _parse_version
+    assert _parse_version("1.17.4") == (1, 17, 4)
+
+
+def test_parse_version_two_parts():
+    from prompt_interceptor.launcher import _parse_version
+    assert _parse_version("1.17") == (1, 17)
+
+
+def test_parse_version_non_numeric_segment():
+    from prompt_interceptor.launcher import _parse_version
+    result = _parse_version("1.17.4-beta")
+    assert result[0] == 1
+    assert result[1] == 17
+
+
+def test_parse_version_strips_whitespace():
+    from prompt_interceptor.launcher import _parse_version
+    assert _parse_version("  1.17.4  ") == (1, 17, 4)
+
+
+# ---------------------------------------------------------------------------
+# _is_version_compatible
+# ---------------------------------------------------------------------------
+
+def test_is_version_compatible_at_min():
+    from prompt_interceptor.launcher import _is_version_compatible
+    assert _is_version_compatible("1.17.4", "1.17.4", "1.17.7") is True
+
+
+def test_is_version_compatible_at_max():
+    from prompt_interceptor.launcher import _is_version_compatible
+    assert _is_version_compatible("1.17.7", "1.17.4", "1.17.7") is True
+
+
+def test_is_version_compatible_in_range():
+    from prompt_interceptor.launcher import _is_version_compatible
+    assert _is_version_compatible("1.17.5", "1.17.4", "1.17.7") is True
+
+
+def test_is_version_compatible_below_min():
+    from prompt_interceptor.launcher import _is_version_compatible
+    assert _is_version_compatible("1.17.3", "1.17.4", "1.17.7") is False
+
+
+def test_is_version_compatible_above_max():
+    from prompt_interceptor.launcher import _is_version_compatible
+    assert _is_version_compatible("1.17.8", "1.17.4", "1.17.7") is False
+
+
+def test_is_version_compatible_major_minor_below():
+    from prompt_interceptor.launcher import _is_version_compatible
+    assert _is_version_compatible("1.16.9", "1.17.4", "1.17.7") is False
+
+
+# ---------------------------------------------------------------------------
+# _get_opencode_version
+# ---------------------------------------------------------------------------
+
+def test_get_opencode_version_stdout():
+    mock_result = MagicMock()
+    mock_result.stdout = "opencode 1.17.4\n"
+    mock_result.stderr = ""
+    with patch("prompt_interceptor.launcher.subprocess.run", return_value=mock_result):
+        from prompt_interceptor.launcher import _get_opencode_version
+        assert _get_opencode_version() == "1.17.4"
+
+
+def test_get_opencode_version_bare_version_string():
+    mock_result = MagicMock()
+    mock_result.stdout = "1.17.5\n"
+    mock_result.stderr = ""
+    with patch("prompt_interceptor.launcher.subprocess.run", return_value=mock_result):
+        from prompt_interceptor.launcher import _get_opencode_version
+        assert _get_opencode_version() == "1.17.5"
+
+
+def test_get_opencode_version_from_stderr():
+    mock_result = MagicMock()
+    mock_result.stdout = ""
+    mock_result.stderr = "opencode version 1.17.6"
+    with patch("prompt_interceptor.launcher.subprocess.run", return_value=mock_result):
+        from prompt_interceptor.launcher import _get_opencode_version
+        assert _get_opencode_version() == "1.17.6"
+
+
+def test_get_opencode_version_no_version_in_output():
+    mock_result = MagicMock()
+    mock_result.stdout = "some unexpected output"
+    mock_result.stderr = ""
+    with patch("prompt_interceptor.launcher.subprocess.run", return_value=mock_result):
+        from prompt_interceptor.launcher import _get_opencode_version
+        assert _get_opencode_version() is None
+
+
+def test_get_opencode_version_subprocess_exception():
+    with patch("prompt_interceptor.launcher.subprocess.run", side_effect=Exception("timeout")):
+        from prompt_interceptor.launcher import _get_opencode_version
+        assert _get_opencode_version() is None
+
+
+def test_get_opencode_version_custom_cmd():
+    mock_result = MagicMock()
+    mock_result.stdout = "opencode 1.17.4"
+    mock_result.stderr = ""
+    with patch("prompt_interceptor.launcher.subprocess.run", return_value=mock_result) as mock_run:
+        from prompt_interceptor.launcher import _get_opencode_version
+        _get_opencode_version(cmd="opencode-custom")
+    assert mock_run.call_args[0][0][0] == "opencode-custom"
 
 
 # ---------------------------------------------------------------------------
