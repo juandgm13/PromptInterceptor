@@ -211,6 +211,9 @@ claude-ollama.bat
 PlanInstructions.txt
 activar_venv.bat
 
+# User-specific config (copy config.example.json to config.json and customize)
+prompt_interceptor/config.json
+
 # Logs
 logs/
 
