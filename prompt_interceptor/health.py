@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import httpx
 from fastapi.responses import JSONResponse
 
+from ._version import __version__
 from .config import get_config
 from .logger import TrafficLogger
 from .rules_engine import RuleEngine
@@ -124,6 +125,7 @@ async def get_status() -> JSONResponse:
             status_code=200,
             content={
                 "status": "healthy",
+                "version": __version__,
                 "proxy": {
                     "port": config.proxy_port,
                     "target": config.target,
