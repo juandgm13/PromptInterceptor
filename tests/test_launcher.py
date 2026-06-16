@@ -36,9 +36,10 @@ def test_detect_clients_no_system_clients(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda cmd: None)
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
-    clients = launcher._detect_clients()
+    clients, warnings = launcher._detect_clients()
     assert len(clients) == 2
     assert clients[-1] == ("Python App (Ollama)", "__python_app__")
+    assert warnings == []
 
 
 @pytest.mark.skip(reason="Claude Code client deshabilitado en el launcher")
@@ -57,10 +58,11 @@ def test_detect_clients_opencode_only(monkeypatch):
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
     monkeypatch.setattr(launcher, "_get_opencode_version", lambda cmd="opencode": "1.17.5")
-    clients = launcher._detect_clients()
+    clients, warnings = launcher._detect_clients()
     assert len(clients) == 3
     assert clients[1] == ("Open Code (CLI)", "opencode")
     assert clients[-1] == ("Python App (Ollama)", "__python_app__")
+    assert warnings == []
 
 
 @pytest.mark.skip(reason="Claude Code client deshabilitado en el launcher")
@@ -81,7 +83,7 @@ def test_detect_clients_python_app_always_last(monkeypatch):
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
     monkeypatch.setattr(launcher, "_get_opencode_version", lambda cmd="opencode": "1.17.5")
-    clients = launcher._detect_clients()
+    clients, _ = launcher._detect_clients()
     assert clients[-1] == ("Python App (Ollama)", "__python_app__")
 
 
@@ -91,7 +93,7 @@ def test_detect_clients_wsl_opencode(monkeypatch):
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: True)
     monkeypatch.setattr(launcher, "_get_opencode_version", lambda cmd="opencode": "1.17.5")
-    clients = launcher._detect_clients()
+    clients, _ = launcher._detect_clients()
     names = [name for name, _ in clients]
     assert "Open Code (CLI)" in names
     assert "Open Code (WSL)" not in names
@@ -103,34 +105,37 @@ def test_detect_clients_wsl_only_no_cli(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda cmd: None)
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: True)
-    clients = launcher._detect_clients()
+    clients, warnings = launcher._detect_clients()
     names = [name for name, _ in clients]
     assert "Open Code (CLI)" not in names
     assert "Open Code (WSL)" not in names
     assert clients[-1] == ("Python App (Ollama)", "__python_app__")
+    assert warnings == []
 
 
 def test_detect_clients_opencode_incompatible_version(monkeypatch):
-    """Out-of-range version shows [unsupported:] label; command stays 'opencode'."""
+    """Out-of-range version produces a warning and clean label; command stays 'opencode'."""
     monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/opencode" if cmd == "opencode" else None)
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
     monkeypatch.setattr(launcher, "_get_opencode_version", lambda cmd="opencode": "1.17.8")
-    clients = launcher._detect_clients()
+    clients, warnings = launcher._detect_clients()
     assert len(clients) == 3
-    assert clients[1][0].startswith("Open Code (CLI) [unsupported:")
-    assert "1.17.8" in clients[1][0]
-    assert clients[1][1] == "opencode"
+    assert clients[1] == ("Open Code (CLI)", "opencode")
+    assert len(warnings) == 1
+    assert "1.17.8" in warnings[0]
+    assert "compatible" in warnings[0].lower()
 
 
 def test_detect_clients_opencode_version_unknown(monkeypatch):
-    """When version cannot be detected (None), display name is clean."""
+    """When version cannot be detected (None), display name is clean and no warning."""
     monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/opencode" if cmd == "opencode" else None)
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
     monkeypatch.setattr(launcher, "_get_opencode_version", lambda cmd="opencode": None)
-    clients = launcher._detect_clients()
+    clients, warnings = launcher._detect_clients()
     assert clients[1] == ("Open Code (CLI)", "opencode")
+    assert warnings == []
 
 
 def test_detect_clients_opencode_version_at_min(monkeypatch):
@@ -139,8 +144,9 @@ def test_detect_clients_opencode_version_at_min(monkeypatch):
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
     monkeypatch.setattr(launcher, "_get_opencode_version", lambda cmd="opencode": "1.17.4")
-    clients = launcher._detect_clients()
+    clients, warnings = launcher._detect_clients()
     assert clients[1] == ("Open Code (CLI)", "opencode")
+    assert warnings == []
 
 
 def test_detect_clients_opencode_version_at_max(monkeypatch):
@@ -149,8 +155,9 @@ def test_detect_clients_opencode_version_at_max(monkeypatch):
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
     monkeypatch.setattr(launcher, "_get_opencode_version", lambda cmd="opencode": "1.17.7")
-    clients = launcher._detect_clients()
+    clients, warnings = launcher._detect_clients()
     assert clients[1] == ("Open Code (CLI)", "opencode")
+    assert warnings == []
 
 
 # ---------------------------------------------------------------------------
