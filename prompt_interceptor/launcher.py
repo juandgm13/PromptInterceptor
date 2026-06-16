@@ -85,18 +85,27 @@ def _get_opencode_version(cmd: str = "opencode") -> str | None:
     Tries --version, then the 'version' subcommand, then -v.
     """
     resolved = shutil.which(cmd) or cmd
+    print(f"[DEBUG] _get_opencode_version: cmd={cmd!r}  resolved={resolved!r}")
     for args in ([resolved, "--version"], [resolved, "version"], [resolved, "-v"]):
         try:
             result = subprocess.run(
                 args,
                 capture_output=True, text=True, timeout=5
             )
-            output = (result.stdout or result.stderr or "").strip()
+            stdout = result.stdout.strip()
+            stderr = result.stderr.strip()
+            output = (stdout or stderr or "").strip()
+            print(f"[DEBUG]   args={args}  rc={result.returncode}")
+            print(f"[DEBUG]   stdout={stdout!r}")
+            print(f"[DEBUG]   stderr={stderr!r}")
             match = re.search(r'\b(\d+\.\d+(?:\.\d+)*)\b', output)
             if match:
+                print(f"[DEBUG]   -> version={match.group(1)!r}")
                 return match.group(1)
-        except Exception:
-            pass
+            print(f"[DEBUG]   -> no version found in output")
+        except Exception as exc:
+            print(f"[DEBUG]   args={args}  EXCEPTION: {type(exc).__name__}: {exc}")
+    print(f"[DEBUG] _get_opencode_version: returning None")
     return None
 
 
