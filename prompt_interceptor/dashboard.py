@@ -12,6 +12,7 @@ from fastapi import FastAPI, APIRouter, Body
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
 
+from ._version import __version__
 from .config import get_config, save_config
 from .interceptor import interceptor
 from .logger import TrafficLogger
@@ -25,7 +26,7 @@ from .health import check_proxy_health, check_target_health, get_models, get_sta
 app = FastAPI(
     title="PromptInterceptor Dashboard",
     description="Dashboard for PromptInterceptor - Ollama Traffic Interceptor for AI Clients",
-    version="0.1.0",
+    version=__version__,
 )
 
 _config = get_config()
@@ -250,7 +251,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 
   <footer>
-    PromptInterceptor Dashboard v0.1.0 &mdash;
+    PromptInterceptor Dashboard {APP_VERSION} &mdash;
     <a href="/docs">API Docs</a>
   </footer>
 </div>
@@ -1042,7 +1043,7 @@ async def read_root():
     if os.path.exists(static_index):
         with open(static_index) as f:
             return HTMLResponse(content=f.read())
-    return HTMLResponse(content=_DASHBOARD_HTML)
+    return HTMLResponse(content=_DASHBOARD_HTML.replace("{APP_VERSION}", f"v{__version__}"))
 
 
 @router.get("/status")
