@@ -89,12 +89,20 @@ def _get_opencode_version(cmd: str = "opencode") -> str | None:
                 args,
                 capture_output=True, text=True, timeout=5
             )
-            output = (result.stdout or result.stderr or "").strip()
+            stdout = result.stdout.strip()
+            stderr = result.stderr.strip()
+            output = (stdout or stderr or "").strip()
+            print(f"[DEBUG opencode version] cmd={args}  rc={result.returncode}")
+            print(f"[DEBUG opencode version]   stdout={repr(stdout)}")
+            print(f"[DEBUG opencode version]   stderr={repr(stderr)}")
             match = re.search(r'\b(\d+\.\d+(?:\.\d+)*)\b', output)
             if match:
+                print(f"[DEBUG opencode version]   -> matched: {match.group(1)}")
                 return match.group(1)
-        except Exception:
-            pass
+            print(f"[DEBUG opencode version]   -> no version match in output")
+        except Exception as exc:
+            print(f"[DEBUG opencode version] cmd={args}  exception: {exc}")
+    print(f"[DEBUG opencode version] all attempts failed, returning None")
     return None
 
 
