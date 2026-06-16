@@ -80,29 +80,23 @@ def _is_version_compatible(version: str, min_v: str, max_v: str) -> bool:
 def _get_opencode_version(cmd: str = "opencode") -> str | None:
     """Return the opencode version string (e.g. '1.17.4'), or None if undetectable.
 
-    Tries --version, then the 'version' subcommand, then -v so we cover the
-    different CLI conventions opencode has used across releases.
+    Resolves the full path via shutil.which first so that Windows .cmd/.bat
+    wrappers are found by subprocess (which does not apply PATHEXT by default).
+    Tries --version, then the 'version' subcommand, then -v.
     """
-    for args in ([cmd, "--version"], [cmd, "version"], [cmd, "-v"]):
+    resolved = shutil.which(cmd) or cmd
+    for args in ([resolved, "--version"], [resolved, "version"], [resolved, "-v"]):
         try:
             result = subprocess.run(
                 args,
                 capture_output=True, text=True, timeout=5
             )
-            stdout = result.stdout.strip()
-            stderr = result.stderr.strip()
-            output = (stdout or stderr or "").strip()
-            print(f"[DEBUG opencode version] cmd={args}  rc={result.returncode}")
-            print(f"[DEBUG opencode version]   stdout={repr(stdout)}")
-            print(f"[DEBUG opencode version]   stderr={repr(stderr)}")
+            output = (result.stdout or result.stderr or "").strip()
             match = re.search(r'\b(\d+\.\d+(?:\.\d+)*)\b', output)
             if match:
-                print(f"[DEBUG opencode version]   -> matched: {match.group(1)}")
                 return match.group(1)
-            print(f"[DEBUG opencode version]   -> no version match in output")
-        except Exception as exc:
-            print(f"[DEBUG opencode version] cmd={args}  exception: {exc}")
-    print(f"[DEBUG opencode version] all attempts failed, returning None")
+        except Exception:
+            pass
     return None
 
 
