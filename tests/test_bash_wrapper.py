@@ -68,6 +68,22 @@ class TestWrapBashCommand:
         assert wrap_bash_command("Select-Object -Property Name, Size") == \
                "Select-Object -Property Name, Size"
 
+    def test_multiline_command_unix(self):
+        result = wrap_bash_command("echo hello\npwd")
+        assert result == 'bash -c "echo hello; pwd"'
+
+    def test_multiline_command_windows_endings(self):
+        result = wrap_bash_command("echo hello\r\npwd")
+        assert result == 'bash -c "echo hello; pwd"'
+
+    def test_multiline_command_skips_empty_lines(self):
+        result = wrap_bash_command("echo hello\n\npwd\n")
+        assert result == 'bash -c "echo hello; pwd"'
+
+    def test_multiline_command_with_quotes(self):
+        result = wrap_bash_command('echo "hi"\npwd')
+        assert result == 'bash -c "echo \\"hi\\"; pwd"'
+
 
 class TestFixWindowsCommand:
     """Unit tests for _fix_windows_command independently of wrapping."""
