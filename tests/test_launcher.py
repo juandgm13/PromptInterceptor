@@ -440,7 +440,7 @@ def _make_headless_win(cfg, clients=None):
     with patch("prompt_interceptor.launcher.ttk"), \
          patch("prompt_interceptor.launcher.tk") as mock_tk, \
          patch("prompt_interceptor.launcher.get_config", return_value=cfg), \
-         patch("prompt_interceptor.launcher._detect_clients", return_value=clients):
+         patch("prompt_interceptor.launcher._detect_clients", return_value=(clients, [])):
         mock_tk.StringVar.return_value = MagicMock()
         from prompt_interceptor.launcher import LauncherWindow
         win = LauncherWindow(mock_root)
@@ -461,7 +461,7 @@ def test_launcher_window_init_python_app_only(tmp_path, monkeypatch):
 
     with patch("prompt_interceptor.launcher.ttk"), \
          patch("prompt_interceptor.launcher.tk") as mock_tk, \
-         patch("prompt_interceptor.launcher._detect_clients", return_value=python_only):
+         patch("prompt_interceptor.launcher._detect_clients", return_value=(python_only, [])):
         mock_tk.StringVar.return_value = MagicMock()
         mock_tk.PhotoImage.side_effect = Exception("no display")
         from prompt_interceptor.launcher import LauncherWindow
@@ -480,7 +480,7 @@ def test_launcher_window_init_with_clients(tmp_path, monkeypatch):
 
     with patch("prompt_interceptor.launcher.ttk"), \
          patch("prompt_interceptor.launcher.tk") as mock_tk, \
-         patch("prompt_interceptor.launcher._detect_clients", return_value=_DEFAULT_CLIENTS):
+         patch("prompt_interceptor.launcher._detect_clients", return_value=(_DEFAULT_CLIENTS, [])):
         mock_tk.StringVar.return_value = MagicMock()
         mock_tk.PhotoImage.return_value = MagicMock()
         from prompt_interceptor.launcher import LauncherWindow
@@ -499,7 +499,7 @@ def test_launcher_window_set_icon_success(tmp_path, monkeypatch):
 
     with patch("prompt_interceptor.launcher.ttk"), \
          patch("prompt_interceptor.launcher.tk") as mock_tk, \
-         patch("prompt_interceptor.launcher._detect_clients", return_value=_DEFAULT_CLIENTS), \
+         patch("prompt_interceptor.launcher._detect_clients", return_value=(_DEFAULT_CLIENTS, [])), \
          patch("prompt_interceptor.launcher.Path.exists", return_value=True):
         mock_tk.StringVar.return_value = MagicMock()
         mock_tk.PhotoImage.return_value = mock_icon
@@ -518,7 +518,7 @@ def test_launcher_window_set_icon_missing(tmp_path, monkeypatch):
 
     with patch("prompt_interceptor.launcher.ttk"), \
          patch("prompt_interceptor.launcher.tk") as mock_tk, \
-         patch("prompt_interceptor.launcher._detect_clients", return_value=_DEFAULT_CLIENTS), \
+         patch("prompt_interceptor.launcher._detect_clients", return_value=(_DEFAULT_CLIENTS, [])), \
          patch("prompt_interceptor.launcher.Path.exists", return_value=False):
         mock_tk.StringVar.return_value = MagicMock()
         from prompt_interceptor.launcher import LauncherWindow
