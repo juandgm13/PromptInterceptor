@@ -2523,7 +2523,8 @@ def test_on_launch_client_wsl_opens_terminal_when_reachable(tmp_path, monkeypatc
                side_effect=lambda *a, **kw: popen_calls.append((a[0], kw))), \
          patch("prompt_interceptor.launcher._get_wsl_host_ip", return_value="172.28.0.1"), \
          patch("prompt_interceptor.launcher._write_opencode_config_wsl"), \
-         patch("prompt_interceptor.launcher._wsl_can_reach_proxy", return_value=True):
+         patch("prompt_interceptor.launcher._wsl_can_reach_proxy", return_value=True), \
+         patch("prompt_interceptor.launcher.threading.Thread"):
         win._on_launch_client()
 
     assert len(popen_calls) == 1
@@ -2552,7 +2553,8 @@ def test_on_launch_client_wsl_with_workdir_passes_cd_flag(tmp_path, monkeypatch)
                side_effect=lambda *a, **kw: popen_calls.append(a[0])), \
          patch("prompt_interceptor.launcher._get_wsl_host_ip", return_value="172.28.0.1"), \
          patch("prompt_interceptor.launcher._write_opencode_config_wsl"), \
-         patch("prompt_interceptor.launcher._wsl_can_reach_proxy", return_value=True):
+         patch("prompt_interceptor.launcher._wsl_can_reach_proxy", return_value=True), \
+         patch("prompt_interceptor.launcher.threading.Thread"):
         win._on_launch_client()
 
     assert len(popen_calls) == 1
@@ -2578,7 +2580,8 @@ def test_on_launch_client_generic_else_branch(tmp_path, monkeypatch):
 
     popen_calls = []
     with patch("prompt_interceptor.launcher.subprocess.Popen",
-               side_effect=lambda *a, **kw: popen_calls.append(a[0])):
+               side_effect=lambda *a, **kw: popen_calls.append(a[0])), \
+         patch("prompt_interceptor.launcher.threading.Thread"):
         win._on_launch_client()
 
     assert len(popen_calls) == 1
@@ -2694,3 +2697,116 @@ def test_ask_on_remote_fail_cancel_reenables_button(tmp_path, monkeypatch):
 
     win._launch_ollama_btn.config.assert_called_with(state="normal")
     win.status_var.set.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# _get_opencode_version — debug output (lines 91, 102-104, 108, 111, 114, 116)
+# ---------------------------------------------------------------------------
+
+def test_get_opencode_version_debug_with_match(monkeypatch, capsys):
+    """debug=True prints diagnostics when a version is found."""
+    from prompt_interceptor.launcher import _get_opencode_version
+    from prompt_interceptor.config import Config
+
+    cfg = Config(debug=True)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    monkeypatch.setattr("prompt_interceptor.launcher.shutil.which", lambda cmd: cmd)
+
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = "opencode 1.17.4"
+    mock_result.stderr = ""
+    with patch("prompt_interceptor.launcher.subprocess.run", return_value=mock_result):
+        result = _get_opencode_version()
+
+    assert result == "1.17.4"
+    out = capsys.readouterr().out
+    assert "[DEBUG] _get_opencode_version" in out
+    assert "1.17.4" in out
+
+
+def test_get_opencode_version_debug_no_match(monkeypatch, capsys):
+    """debug=True prints diagnostics when no version is found in output."""
+    from prompt_interceptor.launcher import _get_opencode_version
+    from prompt_interceptor.config import Config
+
+    cfg = Config(debug=True)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    monkeypatch.setattr("prompt_interceptor.launcher.shutil.which", lambda cmd: cmd)
+
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = "no version here"
+    mock_result.stderr = ""
+    with patch("prompt_interceptor.launcher.subprocess.run", return_value=mock_result):
+        result = _get_opencode_version()
+
+    assert result is None
+    out = capsys.readouterr().out
+    assert "no version found" in out
+    assert "returning None" in out
+
+
+def test_get_opencode_version_debug_exception(monkeypatch, capsys):
+    """debug=True prints diagnostics on subprocess exception."""
+    from prompt_interceptor.launcher import _get_opencode_version
+    from prompt_interceptor.config import Config
+
+    cfg = Config(debug=True)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    monkeypatch.setattr("prompt_interceptor.launcher.shutil.which", lambda cmd: cmd)
+
+    with patch("prompt_interceptor.launcher.subprocess.run", side_effect=Exception("timeout")):
+        result = _get_opencode_version()
+
+    assert result is None
+    out = capsys.readouterr().out
+    assert "EXCEPTION" in out
+    assert "returning None" in out
+
+
+# ---------------------------------------------------------------------------
+# _show_version_warnings (lines 377-379)
+# ---------------------------------------------------------------------------
+
+def test_show_version_warnings_calls_messagebox(tmp_path, monkeypatch):
+    """_show_version_warnings shows a messagebox for each warning."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _make_headless_win(cfg)
+    warnings_shown = []
+
+    import tkinter.messagebox as _mb_real
+    with patch.object(_mb_real, "showwarning", side_effect=lambda title, msg: warnings_shown.append(msg)):
+        win._show_version_warnings(["Version A is too old", "Version B is incompatible"])
+
+    assert len(warnings_shown) == 2
+    assert "Version A is too old" in warnings_shown
+    assert "Version B is incompatible" in warnings_shown
+
+
+# ---------------------------------------------------------------------------
+# _build_ui — version warning scheduling (line 477)
+# ---------------------------------------------------------------------------
+
+def test_build_ui_schedules_version_warning_when_warnings_present(tmp_path, monkeypatch):
+    """When _detect_clients returns warnings, root.after is called at 300ms."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    mock_root = _make_mock_root()
+    after_calls = []
+    mock_root.after.side_effect = lambda delay, fn, *args: after_calls.append(delay)
+
+    clients = [("Python App (Ollama)", "__python_app__")]
+    warnings = ["OpenCode version 1.0.0 is not supported."]
+
+    with patch("prompt_interceptor.launcher.ttk"), \
+         patch("prompt_interceptor.launcher.tk") as mock_tk, \
+         patch("prompt_interceptor.launcher._detect_clients", return_value=(clients, warnings)):
+        mock_tk.StringVar.return_value = MagicMock()
+        from prompt_interceptor.launcher import LauncherWindow
+        win = LauncherWindow(mock_root)
+
+    assert 300 in after_calls
