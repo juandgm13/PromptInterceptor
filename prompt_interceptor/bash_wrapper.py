@@ -91,6 +91,10 @@ def wrap_bash_command(command: str) -> str:
     command = _fix_windows_command(command)
     if command.startswith('bash '):
         return command
+    # Flatten multi-line commands: newlines act as semicolons in bash
+    if '\n' in command or '\r' in command:
+        lines = [ln.strip() for ln in command.splitlines() if ln.strip()]
+        command = '; '.join(lines)
     # Escape backslashes first, then double-quotes, so the shell sees them correctly
     escaped = command.replace('\\', '\\\\').replace('"', '\\"')
     return f'bash -c "{escaped}"'
