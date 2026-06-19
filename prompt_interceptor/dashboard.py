@@ -83,8 +83,8 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .ctx-alert-banner{display:none;background:#3a0000;border:1px solid #8a1a1a;border-radius:6px;padding:10px 16px;margin-bottom:10px;color:#ff6060;font-size:.88em;font-weight:600;align-items:center;justify-content:space-between}
   #ctx-toast{position:fixed;top:18px;right:18px;z-index:9999;background:#3a0000;border:1px solid #8a1a1a;border-radius:8px;padding:14px 20px;color:#ff6060;font-size:.9em;font-weight:600;box-shadow:0 4px 18px rgba(0,0,0,.6);max-width:320px;display:none;animation:ctx-slide-in .25s ease}
   @keyframes ctx-slide-in{from{opacity:0;transform:translateX(40px)}to{opacity:1;transform:none}}
-  .alert-settings-row{display:flex;align-items:center;gap:14px;padding:8px 0;border-top:1px solid #2a2a4e;margin-bottom:10px;flex-wrap:wrap}
-  .alert-settings-row label{color:#888;font-size:.82em}
+  .ctx-alert-controls{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid #2a2a4e}
+  .ctx-alert-controls span{color:#888;font-size:.75em}
   input[type=number].threshold-input{width:70px;background:#0d0d1e;color:#eee;border:1px solid #2a2a4e;border-radius:4px;padding:5px 8px;font-size:.85em}
   .toggle-switch{position:relative;display:inline-block;width:36px;height:20px}
   .toggle-switch input{opacity:0;width:0;height:0}
@@ -189,6 +189,16 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="stat">
       <div class="stat-value" id="stat-ctx">-</div>
       <div class="stat-label">Context Used</div>
+      <div class="ctx-alert-controls">
+        <span>Alert:</span>
+        <label class="toggle-switch" title="Enable context alert">
+          <input type="checkbox" id="ctx-alert-enabled" onchange="saveAlertSettings()" checked>
+          <span class="toggle-slider"></span>
+        </label>
+        <input type="number" class="threshold-input" id="ctx-alert-threshold"
+          min="0" max="100" value="80" onchange="saveAlertSettings()">
+        <span>%</span>
+      </div>
     </div>
   </div>
 
@@ -251,18 +261,8 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       <span>&#128196; Archivo: <strong id="file-mode-name"></strong></span>
       <button onclick="exitFileMode()" style="background:#4d1a1a;color:#f88;border:1px solid #6b2a2a;border-radius:4px;padding:3px 8px;cursor:pointer;font-size:.8em">&#x2715; Volver a live</button>
     </div>
-    <div class="alert-settings-row">
-      <label>Alerta de contexto:</label>
-      <label class="toggle-switch">
-        <input type="checkbox" id="ctx-alert-enabled" onchange="saveAlertSettings()" checked>
-        <span class="toggle-slider"></span>
-      </label>
-      <label>Umbral:</label>
-      <input type="number" class="threshold-input" id="ctx-alert-threshold" min="0" max="100" value="80" onchange="saveAlertSettings()">
-      <span style="color:#888;font-size:.82em">%</span>
-    </div>
     <div class="ctx-alert-banner" id="ctx-alert-banner">
-      <span>&#x26A0; Contexto al <strong id="ctx-alert-pct">-</strong> &mdash; supera el umbral de alerta. La calidad puede empeorar.</span>
+      <span>&#x26A0; Context at <strong id="ctx-alert-pct">-</strong> &mdash; exceeds alert threshold. Response quality may degrade.</span>
       <button onclick="dismissAlert()" style="background:none;border:none;color:#ff6060;cursor:pointer;font-size:1em;padding:0 4px">&#x2715;</button>
     </div>
     <table>
@@ -1073,7 +1073,7 @@ setInterval(loadPending, 1000);
 </script>
 
 <div id="ctx-toast">
-  &#x26A0; Alerta de contexto: <strong id="ctx-toast-pct">-</strong> usado
+  &#x26A0; Context alert: <strong id="ctx-toast-pct">-</strong> used
 </div>
 
 <!-- Edit Intercept modal -->

@@ -1010,3 +1010,68 @@ async def test_intercept_resume_nonexistent_request(client):
         assert resp.json()["status"] == "not_found"
     finally:
         dash_mod.interceptor = original
+
+
+async def test_get_alert_settings_defaults(client):
+    """GET /api/alert-settings returns default values."""
+    resp = await client.get("/api/alert-settings")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["context_alert_enabled"] is True
+    assert data["context_alert_threshold"] == 80
+
+
+async def test_post_alert_settings_threshold(client, monkeypatch):
+    """POST /api/alert-settings updates threshold."""
+    monkeypatch.setattr("prompt_interceptor.dashboard.save_config", lambda c: None)
+    resp = await client.post("/api/alert-settings", json={"context_alert_threshold": 60})
+    assert resp.status_code == 200
+    assert resp.json()["context_alert_threshold"] == 60
+
+
+async def test_post_alert_settings_disable(client, monkeypatch):
+    """POST /api/alert-settings disables the alert."""
+    monkeypatch.setattr("prompt_interceptor.dashboard.save_config", lambda c: None)
+    resp = await client.post("/api/alert-settings", json={"context_alert_enabled": False})
+    assert resp.status_code == 200
+    assert resp.json()["context_alert_enabled"] is False
+
+
+async def test_post_alert_settings_invalid_threshold(client):
+    """POST /api/alert-settings with threshold > 100 returns 400."""
+    resp = await client.post("/api/alert-settings", json={"context_alert_threshold": 150})
+    assert resp.status_code == 400
+    assert "error" in resp.json()
+
+
+async def test_enable_rule_success(client):
+    """GET /api/enable-rule/{index} with a valid rule returns 200."""
+    import prompt_interceptor.dashboard as dash_mod
+
+    rule = {"match": {"jsonpath": "$.model", "value": ["llama3"]},
+            "replace": {"jsonpath": "$.model", "value": "other"}}
+    dash_mod._rule_engine.add_rule(rule)
+    idx = len(dash_mod._rule_engine.get_rules()) - 1
+    try:
+        await client.get(f"/api/disable-rule/{idx}")
+        resp = await client.get(f"/api/enable-rule/{idx}")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "enabled"
+    finally:
+        dash_mod._rule_engine.delete_rule(idx)
+
+
+async def test_disable_rule_success(client):
+    """GET /api/disable-rule/{index} with a valid rule returns 200."""
+    import prompt_interceptor.dashboard as dash_mod
+
+    rule = {"match": {"jsonpath": "$.model", "value": ["llama3"]},
+            "replace": {"jsonpath": "$.model", "value": "other"}}
+    dash_mod._rule_engine.add_rule(rule)
+    idx = len(dash_mod._rule_engine.get_rules()) - 1
+    try:
+        resp = await client.get(f"/api/disable-rule/{idx}")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "disabled"
+    finally:
+        dash_mod._rule_engine.delete_rule(idx)
