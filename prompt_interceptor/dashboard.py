@@ -80,6 +80,18 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .stat-value{font-size:2em;color:#4fc3f7}
   .stat-label{color:#888;font-size:.82em;margin-top:4px}
   .ctx-warn{display:none;background:#3a1a00;border:1px solid #7a4a00;border-radius:6px;padding:10px 16px;margin-bottom:10px;color:#ffa040;font-size:.88em}
+  .ctx-alert-banner{display:none;background:#3a0000;border:1px solid #8a1a1a;border-radius:6px;padding:10px 16px;margin-bottom:10px;color:#ff6060;font-size:.88em;font-weight:600;align-items:center;justify-content:space-between}
+  #ctx-toast{position:fixed;top:18px;right:18px;z-index:9999;background:#3a0000;border:1px solid #8a1a1a;border-radius:8px;padding:14px 20px;color:#ff6060;font-size:.9em;font-weight:600;box-shadow:0 4px 18px rgba(0,0,0,.6);max-width:320px;display:none;animation:ctx-slide-in .25s ease}
+  @keyframes ctx-slide-in{from{opacity:0;transform:translateX(40px)}to{opacity:1;transform:none}}
+  .alert-settings-row{display:flex;align-items:center;gap:14px;padding:8px 0;border-top:1px solid #2a2a4e;margin-bottom:10px;flex-wrap:wrap}
+  .alert-settings-row label{color:#888;font-size:.82em}
+  input[type=number].threshold-input{width:70px;background:#0d0d1e;color:#eee;border:1px solid #2a2a4e;border-radius:4px;padding:5px 8px;font-size:.85em}
+  .toggle-switch{position:relative;display:inline-block;width:36px;height:20px}
+  .toggle-switch input{opacity:0;width:0;height:0}
+  .toggle-slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#333;border-radius:20px;transition:.3s}
+  .toggle-slider:before{position:absolute;content:"";height:14px;width:14px;left:3px;bottom:3px;background:#888;border-radius:50%;transition:.3s}
+  input:checked+.toggle-slider{background:#0d3b66}
+  input:checked+.toggle-slider:before{transform:translateX(16px);background:#4fc3f7}
   footer{text-align:center;margin-top:30px;color:#555;font-size:.82em}
   pre{background:#0d0d1e;padding:12px;border-radius:6px;font-size:.78em;
       overflow:auto;max-height:280px;line-height:1.5}
@@ -239,8 +251,19 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       <span>&#128196; Archivo: <strong id="file-mode-name"></strong></span>
       <button onclick="exitFileMode()" style="background:#4d1a1a;color:#f88;border:1px solid #6b2a2a;border-radius:4px;padding:3px 8px;cursor:pointer;font-size:.8em">&#x2715; Volver a live</button>
     </div>
-    <div class="ctx-warn" id="ctx-warn-banner">
-      &#x26A0; Contexto al <strong id="ctx-warn-pct">-</strong> de capacidad &mdash; la calidad de respuesta puede empeorar.
+    <div class="alert-settings-row">
+      <label>Alerta de contexto:</label>
+      <label class="toggle-switch">
+        <input type="checkbox" id="ctx-alert-enabled" onchange="saveAlertSettings()" checked>
+        <span class="toggle-slider"></span>
+      </label>
+      <label>Umbral:</label>
+      <input type="number" class="threshold-input" id="ctx-alert-threshold" min="0" max="100" value="80" onchange="saveAlertSettings()">
+      <span style="color:#888;font-size:.82em">%</span>
+    </div>
+    <div class="ctx-alert-banner" id="ctx-alert-banner">
+      <span>&#x26A0; Contexto al <strong id="ctx-alert-pct">-</strong> &mdash; supera el umbral de alerta. La calidad puede empeorar.</span>
+      <button onclick="dismissAlert()" style="background:none;border:none;color:#ff6060;cursor:pointer;font-size:1em;padding:0 4px">&#x2715;</button>
     </div>
     <table>
       <thead><tr>
@@ -322,6 +345,9 @@ let _fileMode = false;
 let _loadedLogs = null;
 let _currentModalLog = null;
 let _currentModalId = null;
+let _alertSettings = { context_alert_enabled: true, context_alert_threshold: 80 };
+let _alertDismissed = false;
+let _alertToastTimer = null;
 let _modalRawMode = false;
 
 function esc(s) {
@@ -755,16 +781,16 @@ function renderLogsTable(logs) {
     const pctColor = maxCtxPct >= 90 ? '#f55' : maxCtxPct >= 70 ? '#ffa040' : '#4fc3f7';
     ctxEl.textContent = maxCtxPct + '%';
     ctxEl.style.color = pctColor;
-    if (maxCtxPct >= 80) {
-      document.getElementById('ctx-warn-pct').textContent = maxCtxPct + '%';
-      document.getElementById('ctx-warn-banner').style.display = '';
+    if (_alertSettings.context_alert_enabled && maxCtxPct >= _alertSettings.context_alert_threshold) {
+      triggerContextAlert(maxCtxPct);
     } else {
-      document.getElementById('ctx-warn-banner').style.display = 'none';
+      document.getElementById('ctx-alert-banner').style.display = 'none';
+      if (maxCtxPct < _alertSettings.context_alert_threshold) _alertDismissed = false;
     }
   } else {
     document.getElementById('stat-ctx').textContent = '-';
     document.getElementById('stat-ctx').style.color = '';
-    document.getElementById('ctx-warn-banner').style.display = 'none';
+    document.getElementById('ctx-alert-banner').style.display = 'none';
   }
 }
 
@@ -995,12 +1021,60 @@ function exitFileMode() {
   loadLogs();
 }
 
+async function loadAlertSettings() {
+  try {
+    const data = await fetchJSON('/api/alert-settings');
+    _alertSettings = data;
+    document.getElementById('ctx-alert-enabled').checked = data.context_alert_enabled;
+    document.getElementById('ctx-alert-threshold').value = data.context_alert_threshold;
+  } catch(e) { /* usar defaults */ }
+}
+
+async function saveAlertSettings() {
+  const enabled = document.getElementById('ctx-alert-enabled').checked;
+  const threshold = parseInt(document.getElementById('ctx-alert-threshold').value, 10);
+  if (isNaN(threshold) || threshold < 0 || threshold > 100) return;
+  try {
+    const data = await fetchJSON('/api/alert-settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ context_alert_enabled: enabled, context_alert_threshold: threshold })
+    });
+    _alertSettings = data;
+    _alertDismissed = false;
+  } catch(e) { /* silent */ }
+}
+
+function triggerContextAlert(pct) {
+  document.getElementById('ctx-alert-pct').textContent = pct + '%';
+  document.getElementById('ctx-alert-banner').style.display = 'flex';
+  if (!_alertDismissed) {
+    const toast = document.getElementById('ctx-toast');
+    document.getElementById('ctx-toast-pct').textContent = pct + '%';
+    toast.style.display = 'block';
+    if (_alertToastTimer) clearTimeout(_alertToastTimer);
+    _alertToastTimer = setTimeout(() => { toast.style.display = 'none'; }, 6000);
+  }
+}
+
+function dismissAlert() {
+  document.getElementById('ctx-alert-banner').style.display = 'none';
+  document.getElementById('ctx-toast').style.display = 'none';
+  if (_alertToastTimer) clearTimeout(_alertToastTimer);
+  _alertDismissed = true;
+}
+
 function refreshAll() { loadStatus(); loadRules(); loadLogs(); loadPending(); }
 
+loadAlertSettings();
 refreshAll();
 setInterval(refreshAll, 5000);
 setInterval(loadPending, 1000);
 </script>
+
+<div id="ctx-toast">
+  &#x26A0; Alerta de contexto: <strong id="ctx-toast-pct">-</strong> usado
+</div>
 
 <!-- Edit Intercept modal -->
 <div class="modal-overlay" id="edit-modal-overlay" onclick="if(event.target===this)closeEditModal()">
@@ -1117,6 +1191,35 @@ async def set_mode(body: dict = Body(...)):
     config.mode = new_mode
     save_config(config)
     return JSONResponse(status_code=200, content={"mode": new_mode})
+
+
+@router.get("/alert-settings")
+async def get_alert_settings():
+    """Return current context alert configuration."""
+    config = get_config()
+    return JSONResponse(status_code=200, content={
+        "context_alert_enabled": config.context_alert_enabled,
+        "context_alert_threshold": config.context_alert_threshold,
+    })
+
+
+@router.post("/alert-settings")
+async def set_alert_settings(body: dict = Body(...)):
+    """Update context alert configuration."""
+    enabled = body.get("context_alert_enabled")
+    threshold = body.get("context_alert_threshold")
+    if threshold is not None and not (0 <= int(threshold) <= 100):
+        return JSONResponse(status_code=400, content={"error": "threshold must be 0-100"})
+    config = get_config()
+    if enabled is not None:
+        config.context_alert_enabled = bool(enabled)
+    if threshold is not None:
+        config.context_alert_threshold = int(threshold)
+    save_config(config)
+    return JSONResponse(status_code=200, content={
+        "context_alert_enabled": config.context_alert_enabled,
+        "context_alert_threshold": config.context_alert_threshold,
+    })
 
 
 @router.post("/rules")
