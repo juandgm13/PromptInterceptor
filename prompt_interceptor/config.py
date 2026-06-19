@@ -54,6 +54,10 @@ class Config(BaseModel):
     dashboard_enabled: bool = True
     dashboard_port: int = 9090
 
+    # Context usage alert
+    context_alert_enabled: bool = True
+    context_alert_threshold: int = 80  # 0-100 percentage
+
     # Model names to watch for rules
     model_names: List[str] = Field(default_factory=lambda: ["llama3", "mistral"])
 
