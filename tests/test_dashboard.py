@@ -1012,8 +1012,11 @@ async def test_intercept_resume_nonexistent_request(client):
         dash_mod.interceptor = original
 
 
-async def test_get_alert_settings_defaults(client):
-    """GET /api/alert-settings returns default values."""
+async def test_get_alert_settings_defaults(client, monkeypatch):
+    """GET /api/alert-settings returns the current config values."""
+    import prompt_interceptor.dashboard as dash_mod
+    monkeypatch.setattr(dash_mod._config, "context_alert_enabled", True)
+    monkeypatch.setattr(dash_mod._config, "context_alert_threshold", 80)
     resp = await client.get("/api/alert-settings")
     assert resp.status_code == 200
     data = resp.json()
