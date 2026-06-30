@@ -115,15 +115,18 @@ def test_detect_clients_wsl_only_no_cli(monkeypatch):
 
 def test_detect_clients_opencode_incompatible_version(monkeypatch):
     """Out-of-range version produces a warning and clean label; command stays 'opencode'."""
+    from prompt_interceptor.client_versions import OPENCODE_MAX_VERSION
+    parts = OPENCODE_MAX_VERSION.split(".")
+    incompatible = ".".join(parts[:-1] + [str(int(parts[-1]) + 1)])
     monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/opencode" if cmd == "opencode" else None)
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
-    monkeypatch.setattr(launcher, "_get_opencode_version", lambda cmd="opencode": "1.17.8")
+    monkeypatch.setattr(launcher, "_get_opencode_version", lambda cmd="opencode": incompatible)
     clients, warnings = launcher._detect_clients()
     assert len(clients) == 3
     assert clients[1] == ("Open Code (CLI)", "opencode")
     assert len(warnings) == 1
-    assert "1.17.8" in warnings[0]
+    assert incompatible in warnings[0]
     assert "compatible" in warnings[0].lower()
 
 
