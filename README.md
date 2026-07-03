@@ -32,7 +32,7 @@ PromptInterceptor sits between your client and Ollama and can rewrite any field 
 ## Installation
 
 ```bash
-git clone https://github.com/your-user/PromptInterceptor.git
+git clone https://github.com/juandgm13/PromptInterceptor.git
 cd PromptInterceptor
 pip install -r prompt_interceptor/requirements.txt
 ```

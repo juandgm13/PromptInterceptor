@@ -49,6 +49,8 @@
     "deepseek-coder"
   ],
   "context_size": 32768,
+  "context_alert_enabled": true,
+  "context_alert_threshold": 80,
   "default_model": "llama3",
   "client_work_dir": "C:/path/to/your/project",
   "python_app_path": "C:/path/to/your/python/app",

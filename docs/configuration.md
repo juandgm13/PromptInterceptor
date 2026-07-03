@@ -24,6 +24,8 @@ Configuration is stored in `prompt_interceptor/config.json`. All fields are opti
   "dashboard_port": 9090,
   "model_names": ["llama3", "mistral"],
   "context_size": 32768,
+  "context_alert_enabled": true,
+  "context_alert_threshold": 80,
   "default_model": "",
   "client_work_dir": "",
   "python_app_path": "",
@@ -67,6 +69,11 @@ Configuration is stored in `prompt_interceptor/config.json`. All fields are opti
 | `context_size` | int | `32768` | Context window size passed as `OLLAMA_NUM_CTX` when launching Ollama from the desktop launcher. Does not affect the proxy itself. |
 
 Available options: `4096`, `8192`, `16384`, `32768`, `65536`, `131072`, `262144` (4k–256k).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `context_alert_enabled` | bool | `true` | Show a dashboard alert when context usage crosses the threshold |
+| `context_alert_threshold` | int | `80` | Context usage percentage (0-100) that triggers the alert |
 
 ### Logging
 

@@ -6,4 +6,3 @@ python-multipart>=0.0.6
 pydantic>=2.5.0
 aiofiles>=23.0.0
 jsonpath-ng>=1.6.0
-python-json-logger>=2.0.0
