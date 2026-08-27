@@ -174,6 +174,54 @@ async def test_api_logs_with_limit(client):
 
 
 # ---------------------------------------------------------------------------
+# DELETE /api/logs/{request_id}
+# ---------------------------------------------------------------------------
+
+async def test_delete_log_removes_entry(client):
+    """A logged request can be deleted, and deleting it twice yields 404."""
+    from prompt_interceptor.dashboard import _logger
+
+    rid = _logger.log_request("POST", "/api/chat", {}, {"model": "llama3"})
+
+    resp = await client.delete(f"/api/logs/{rid}")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "deleted"
+
+    again = await client.delete(f"/api/logs/{rid}")
+    assert again.status_code == 404
+    assert again.json()["status"] == "not_found"
+
+
+async def test_delete_log_not_found(client):
+    resp = await client.delete("/api/logs/abcdef123456")
+    assert resp.status_code == 404
+    assert resp.json()["status"] == "not_found"
+
+
+@pytest.mark.parametrize("bad_id", ["ABCDEF123456", "abcdef12345", "not-hex-here"])
+async def test_delete_log_malformed_id_is_404(client, bad_id):
+    """Malformed ids are rejected, never treated as a path."""
+    resp = await client.delete(f"/api/logs/{bad_id}")
+    assert resp.status_code == 404
+    assert resp.json()["status"] == "not_found"
+
+
+async def test_delete_log_leaves_other_entries(client):
+    """Deleting one entry does not disturb the others."""
+    from prompt_interceptor.dashboard import _logger
+
+    rids = [_logger.log_request("POST", f"/api/chat/{i}", {}, None) for i in range(3)]
+
+    resp = await client.delete(f"/api/logs/{rids[1]}")
+    assert resp.status_code == 200
+
+    remaining = {e["request_id"] for e in _logger.get_logs(limit=100)}
+    assert rids[0] in remaining
+    assert rids[2] in remaining
+    assert rids[1] not in remaining
+
+
+# ---------------------------------------------------------------------------
 # /api/raw-logs
 # ---------------------------------------------------------------------------
 

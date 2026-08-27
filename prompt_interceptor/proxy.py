@@ -333,6 +333,9 @@ async def handle_passthrough(request: Request, logger: Optional[TrafficLogger] =
 
     is_stream = body_json.get("stream", False) if body_json else False
 
+    if logger:
+        logger.start_timer(request_id)
+
     if is_stream:
         media = "text/event-stream" if path.startswith("/v1/") else "application/x-ndjson"
         try:
@@ -440,6 +443,7 @@ async def handle_v1_messages(
             logger.update_request_body(request_id, body_json, intercepted_forwarded=True)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
+    logger.start_timer(request_id)
     forward_headers = _forward_headers(dict(request.headers))
 
     if is_stream:
@@ -574,6 +578,7 @@ async def handle_v1_chat_completions(
             logger.update_request_body(request_id, body_json, intercepted_forwarded=True)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
+    logger.start_timer(request_id)
     forward_headers = _forward_headers(dict(request.headers))
 
     if is_stream:
@@ -811,6 +816,7 @@ async def handle_chat_request(
             logger.update_request_body(request_id, body_json, intercepted_forwarded=True)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
+    logger.start_timer(request_id)
 
     try:
         response_code, response_headers, response_body = await _fetch_from_ollama(
@@ -888,6 +894,7 @@ async def handle_generate_request(
             logger.update_request_body(request_id, body_json, intercepted_forwarded=True)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
+    logger.start_timer(request_id)
 
     try:
         response_code, response_headers, response_body = await _fetch_from_ollama(
@@ -965,6 +972,7 @@ async def handle_stream_chat(
             logger.update_request_body(request_id, body_json, intercepted_forwarded=True)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
+    logger.start_timer(request_id)
     forward_headers = _forward_headers(dict(request.headers))
 
     try:
@@ -1063,6 +1071,7 @@ async def handle_stream_generate(
             logger.update_request_body(request_id, body_json, intercepted_forwarded=True)
 
     body_bytes = json.dumps(body_json).encode("utf-8") if body_json else b""
+    logger.start_timer(request_id)
     forward_headers = _forward_headers(dict(request.headers))
 
     try:

@@ -4,6 +4,8 @@ Traffic logging for PyProxy.
 
 import json
 import os
+import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -13,6 +15,9 @@ import shutil
 import httpx
 
 from .config import get_config
+
+# Max in-flight request timers kept in memory (see TrafficLogger.start_timer).
+_MAX_TIMERS = 512
 
 
 def _get_ollama_ps_info(model: str, target: str) -> Dict[str, Any]:
@@ -61,6 +66,8 @@ class TrafficLogger:
         self.log_dir = Path(self.config.log_dir)
         self.log_size_limit = self.config.log_size_limit
         self.max_log_files = self.config.max_log_files
+        # request_id -> monotonic timestamp taken just before forwarding to Ollama
+        self._forward_start: Dict[str, float] = {}
         self._ensure_log_dir()
 
     def _ensure_log_dir(self):
@@ -81,6 +88,23 @@ class TrafficLogger:
         return hashlib.md5(
             f"{datetime.now().isoformat()}:{os.getpid()}".encode()
         ).hexdigest()[:12]
+
+    def start_timer(self, request_id: Optional[str]) -> None:
+        """
+        Mark the start of the forward to Ollama for this request.
+
+        Called by the proxy handlers right before the outbound call, so the
+        measured duration excludes the (potentially unbounded) wait for a
+        dashboard decision in intercept mode. log_response later reads the
+        mark to compute _duration_ms.
+        """
+        if not request_id:
+            return
+        # Bound the dict: requests that error out before log_response never
+        # clear their mark, so drop the oldest entry once the cap is reached.
+        while len(self._forward_start) >= _MAX_TIMERS:
+            del self._forward_start[next(iter(self._forward_start))]
+        self._forward_start[request_id] = time.monotonic()
 
     def _truncate_body(self, body: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """Truncate large bodies for logging."""
@@ -240,6 +264,9 @@ class TrafficLogger:
             "response_headers": self._get_headers_for_log(headers),
             "response_body": self._truncate_body(body),
         }
+        started = self._forward_start.get(request_id)
+        if started is not None:
+            log_entry["_duration_ms"] = round((time.monotonic() - started) * 1000)
         if correction_applied:
             log_entry["_correction_applied"] = correction_applied
         # Extract model name from response or request body for context size lookup
@@ -393,6 +420,24 @@ class TrafficLogger:
                 continue
 
         return all_logs
+
+    def delete_log(self, request_id: str) -> bool:
+        """
+        Delete a single log entry by request id.
+
+        Returns True if a file was removed, False otherwise.
+        """
+        # request_id reaches us straight from a URL path and is used to build a
+        # filesystem path, so reject anything that is not the exact shape
+        # _generate_request_id produces (12 hex chars).
+        if not re.fullmatch(r"[0-9a-f]{12}", request_id or ""):
+            return False
+        filepath = self._get_date_dir() / f"req_{request_id}.json"
+        try:
+            filepath.unlink()
+        except OSError:
+            return False
+        return True
 
     def clear_logs(self) -> int:
         """Delete all log files in today's directory. Returns number of files deleted."""

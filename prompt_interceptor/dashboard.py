@@ -119,6 +119,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .empty{color:#555;font-style:italic}
   .link-show{color:#4fc3f7;cursor:pointer;font-size:.8em;text-decoration:underline;
     background:none;border:none;padding:0}
+  .link-del{color:#f66;cursor:pointer;font-size:.9em;background:none;border:none;
+    padding:0 2px;opacity:.65}
+  .link-del:hover{opacity:1}
   .modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;
     background:rgba(0,0,0,.75);z-index:1000;overflow-y:auto}
   .modal-box{background:#16213e;border-radius:8px;padding:24px;max-width:1400px;
@@ -267,9 +270,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
     <table>
       <thead><tr>
-        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Tokens / Ctx%</th><th>Prompt</th><th>Response</th><th>Status</th><th></th>
+        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Tokens / Ctx%</th><th>Prompt</th><th>Response</th><th>Tiempo</th><th>Status</th><th></th>
       </tr></thead>
-      <tbody id="logs-body"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody>
+      <tbody id="logs-body"><tr><td colspan="10" class="empty">Loading...</td></tr></tbody>
     </table>
   </div>
 
@@ -657,7 +660,7 @@ function renderLogsTable(logs) {
   const tbody = document.getElementById('logs-body');
   document.getElementById('stat-requests').textContent = logs.length;
   if (!logs.length) {
-    tbody.innerHTML = '<tr><td colspan="9" class="empty">No requests yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">No requests yet.</td></tr>';
     document.getElementById('stat-ctx').textContent = '-';
     document.getElementById('stat-ctx').style.color = '';
     document.getElementById('ctx-warn-banner').style.display = 'none';
@@ -764,6 +767,17 @@ function renderLogsTable(logs) {
         tokenCell = totStr;
       }
     }
+    // Hidden while an intercept is pending: log_response would recreate the file.
+    const delBtn = (l.request_id && !_pendingCache[l.request_id])
+      ? ` <button class="link-del" title="Eliminar este mensaje" onclick="deleteLog('${esc(String(l.request_id))}')">&#x2715;</button>`
+      : '';
+    const dur = l._duration_ms;
+    let durCell = '<span class="empty">-</span>';
+    if (dur != null) {
+      const durStr = dur < 1000 ? dur + ' ms' : (dur/1000).toFixed(1) + ' s';
+      const durColor = dur >= 20000 ? '#f55' : dur >= 5000 ? '#ffa040' : '#9a9ac0';
+      durCell = '<span style="color:' + durColor + '">' + durStr + '</span>';
+    }
     return `<tr>
       <td>${ts}</td>
       <td>${esc(method)}</td>
@@ -772,8 +786,9 @@ function renderLogsTable(logs) {
       <td style="white-space:nowrap;text-align:right;font-size:.85em">${tokenCell}</td>
       <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(preview)}</td>
       <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${respPreview}</td>
+      <td style="white-space:nowrap;text-align:right;font-size:.85em">${durCell}</td>
       <td>${typeTag} ${statusCode} ${corrBadge} ${interceptBadge}</td>
-      <td><button class="link-show" onclick="showRaw('${esc(String(cacheKey))}')">show</button></td>
+      <td style="white-space:nowrap"><button class="link-show" onclick="showRaw('${esc(String(cacheKey))}')">show</button>${delBtn}</td>
     </tr>`;
   }).join('');
   if (maxCtxPct !== null) {
@@ -801,7 +816,7 @@ async function loadLogs() {
     renderLogsTable(data.logs || []);
   } catch(e) {
     const tb = document.getElementById('logs-body');
-    tb.innerHTML = '<tr><td colspan="9" id="_logs-err"></td></tr>';
+    tb.innerHTML = '<tr><td colspan="10" id="_logs-err"></td></tr>';
     document.getElementById('_logs-err').textContent = 'Error: ' + e.message;
   }
 }
@@ -889,6 +904,12 @@ async function deleteRule(index) {
   await fetch(`/api/rules/${index}`, {method: 'DELETE'});
   loadRules();
   loadStatus();
+}
+
+async function deleteLog(requestId) {
+  await fetch(`/api/logs/${requestId}`, {method: 'DELETE'});
+  delete _logsCache[requestId];
+  loadLogs();
 }
 
 async function addModifier() {
@@ -1155,6 +1176,14 @@ async def reset_session():
 @router.get("/logs")
 async def logs(limit: int = 20):
     return {"logs": _logger.get_logs(limit=limit)}
+
+
+@router.delete("/logs/{request_id}")
+async def delete_log(request_id: str):
+    """Delete a single traffic log entry by request id."""
+    if _logger.delete_log(request_id):
+        return JSONResponse(status_code=200, content={"status": "deleted"})
+    return JSONResponse(status_code=404, content={"status": "not_found"})
 
 
 @router.get("/raw-logs")
