@@ -23,6 +23,48 @@ from ._version import __version__
 
 _LOCALHOST_HOSTS = {"127.0.0.1", "localhost"}
 
+_DEFAULT_OLLAMA_PORT = 11434
+
+
+def _parse_ollama_host(text: str, default_port: int = _DEFAULT_OLLAMA_PORT) -> tuple:
+    """
+    Normalise whatever the user typed in the "Ollama Host" field.
+
+    Accepts "192.168.1.50", "192.168.1.50:11434", "http://192.168.1.50:11434"
+    and "my-server.local". Returns (target_url, hostname), where target_url
+    always carries a scheme and no trailing slash (the proxy concatenates
+    target + path, so a stray slash would produce "//api/chat").
+    """
+    text = (text or "").strip().rstrip("/")
+    if not text:
+        return f"http://127.0.0.1:{default_port}", "127.0.0.1"
+
+    # urlsplit only recognises host/port when a scheme is present.
+    if "://" not in text:
+        text = f"http://{text}"
+
+    parts = urllib.parse.urlsplit(text)
+    host = parts.hostname or "127.0.0.1"
+    try:
+        port = parts.port or default_port
+    except ValueError:
+        # Malformed port (e.g. "1.2.3.4:11434:11434") — fall back to the default.
+        port = default_port
+    scheme = parts.scheme or "http"
+    return f"{scheme}://{host}:{port}", host
+
+
+def _format_ollama_host(target: str, default_port: int = _DEFAULT_OLLAMA_PORT) -> str:
+    """Render a target URL for the host field, keeping a non-standard port visible."""
+    parts = urllib.parse.urlsplit(target or "")
+    host = parts.hostname or "127.0.0.1"
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    return host if port in (None, default_port) else f"{host}:{port}"
+
+
 _CTX_OPTIONS = {
     "4k  (4096)":    4096,
     "8k  (8192)":    8192,
@@ -447,9 +489,9 @@ class LauncherWindow:
         # ── Step 1: Check Ollama ──
         ttk.Label(self.root, text="── Step 1: Check Ollama ──", style="Section.TLabel").pack(pady=(6, 0))
 
-        # Ollama Host row
-        parsed_target = urllib.parse.urlparse(config.target)
-        initial_host = parsed_target.hostname or "127.0.0.1"
+        # Ollama Host row. Keeps a non-standard port visible so it survives a
+        # repaint instead of silently reverting to 11434 on the next check.
+        initial_host = _format_ollama_host(config.target)
         row_host = ttk.Frame(self.root)
         row_host.pack(fill="x", **pad)
         ttk.Label(row_host, text="Ollama Host:", width=14, anchor="w").pack(side="left")
@@ -596,10 +638,11 @@ class LauncherWindow:
         threading.Thread(target=self._check_or_launch_ollama, daemon=True).start()
 
     def _check_or_launch_ollama(self) -> None:
-        host = self.ollama_host_var.get().strip() or "127.0.0.1"
-        config = get_config()
-        port = urllib.parse.urlparse(config.target).port or 11434
-        target = f"http://{host}:{port}"
+        # The field accepts "host" or "host:port"; the port is no longer
+        # inherited from config.target, so a remote Ollama on a non-standard
+        # port can be reached from the UI alone.
+        target, host = _parse_ollama_host(self.ollama_host_var.get())
+        port = urllib.parse.urlsplit(target).port or _DEFAULT_OLLAMA_PORT
         is_local = host in _LOCALHOST_HOSTS
 
         models = _fetch_ollama_models(target)
@@ -758,7 +801,12 @@ class LauncherWindow:
             self.app_path_var.set(path)
 
     def _on_launch_client(self) -> None:
-        config = get_config()
+        # Persist before any branch: all three proxy start points below (Only
+        # Proxy, Python App and the external clients) run off config.json, so the
+        # validated target and the typed proxy port must be on disk first.
+        config = self._persist_ui_config()
+        if config is None:
+            return
         name = self.client_var.get()
         cmd_name = next((c for n, c in self._clients if n == name), "")
         work_dir = self.work_dir_var.get().strip() or None
@@ -894,13 +942,23 @@ class LauncherWindow:
         except Exception:
             pass
 
-    def _on_open_dashboard(self) -> None:
+    def _persist_ui_config(self):
+        """
+        Write the current UI selections to config.json.
+
+        Must run before the proxy starts: the proxy re-reads config.json on every
+        request, so a target validated by "Check Ollama" that is never persisted
+        leaves it forwarding to the stale value (usually localhost).
+
+        Returns the saved Config, or None if the form is invalid (the reason is
+        left in status_var).
+        """
         config = get_config()
         try:
             config.proxy_port = int(self.proxy_port_var.get().strip())
         except ValueError:
             self.status_var.set("Error: Proxy Port must be a number.")
-            return
+            return None
         config.context_size = _CTX_OPTIONS.get(self.ctx_var.get(), 4096)
         model = self.model_var.get().strip()
         if model:
@@ -916,6 +974,12 @@ class LauncherWindow:
             save_config(config)
         except OSError as exc:
             self.status_var.set(f"Warning: could not save config — {exc}")
+        return config
+
+    def _on_open_dashboard(self) -> None:
+        config = self._persist_ui_config()
+        if config is None:
+            return
 
         dashboard_port = config.dashboard_port
 

@@ -93,6 +93,47 @@ def test_forward_headers_empty():
     assert _forward_headers({}) == {}
 
 
+def test_forward_headers_strips_client_addressing_headers():
+    """
+    host/origin/referer name the proxy, not Ollama.
+
+    Forwarding Host verbatim sends Ollama a Host pointing at this machine, which
+    breaks any reverse proxy in front of it; Origin can trigger a 403.
+    """
+    result = _forward_headers({
+        "host": "192.168.1.50:8080",
+        "origin": "http://192.168.1.50:8080",
+        "referer": "http://192.168.1.50:8080/",
+        "content-type": "application/json",
+    })
+    assert result == {"content-type": "application/json"}
+
+
+def test_forward_headers_strips_host_case_insensitive():
+    assert _forward_headers({"Host": "proxy:8080", "Origin": "http://proxy:8080"}) == {}
+
+
+def test_httpx_recomputes_host_when_absent():
+    """
+    Guards the reason host must be stripped: httpx only adds Host if none is set,
+    and its headers are case-insensitive, so a forwarded host would win.
+    """
+    import httpx
+
+    with httpx.Client() as client:
+        kept = client.build_request(
+            "POST", "http://ollama-box:11434/api/chat",
+            headers={"host": "proxy:8080"}, content=b"{}",
+        )
+        assert kept.headers["host"] == "proxy:8080"
+
+        stripped = client.build_request(
+            "POST", "http://ollama-box:11434/api/chat",
+            headers=_forward_headers({"host": "proxy:8080"}), content=b"{}",
+        )
+        assert stripped.headers["host"] == "ollama-box:11434"
+
+
 # ---------------------------------------------------------------------------
 # _inject_num_ctx
 # ---------------------------------------------------------------------------
@@ -3750,3 +3791,61 @@ async def test_handle_stream_generate_intercept_edited(tmp_path, monkeypatch):
     b"".join([chunk async for chunk in resp.body_iterator])
 
     assert any(c.get("intercepted_modified") is True for c in update_calls)
+
+
+# ---------------------------------------------------------------------------
+# Outbound Host header against a real server (regression: remote Ollama)
+# ---------------------------------------------------------------------------
+
+async def test_outbound_request_carries_target_host_not_client_host(cfg, engine_and_logger, monkeypatch):
+    """
+    The request that reaches Ollama must be addressed to Ollama.
+
+    Regression for a remote target: the client addresses the proxy, so its Host
+    (and Origin) name this machine. Forwarding them verbatim made Ollama see a
+    Host it does not own, breaking any reverse proxy in front of it.
+    """
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    received = {}
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            received.update({k.lower(): v for k, v in self.headers.items()})
+            body = b'{"model": "llama3", "message": {"role": "assistant", "content": "ok"}, "done": true}'
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    try:
+        cfg.target = f"http://127.0.0.1:{port}"
+        import prompt_interceptor.proxy as proxy_mod
+        monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+        engine, logger = engine_and_logger
+
+        req = make_req({"model": "llama3", "messages": [{"role": "user", "content": "hi"}]})
+        # What a client pointed at the proxy over the LAN actually sends.
+        req.headers = {
+            "content-type": "application/json",
+            "host": "192.168.1.50:8080",
+            "origin": "http://192.168.1.50:8080",
+        }
+
+        resp = await handle_chat_request(req, engine, logger)
+        assert resp.status_code == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert received["host"] == f"127.0.0.1:{port}"
+    assert "origin" not in received

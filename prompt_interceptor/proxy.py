@@ -31,12 +31,24 @@ _HOP_BY_HOP = frozenset({
     "te", "trailers", "transfer-encoding", "upgrade",
     "content-encoding",  # httpx decompresses for us
     "content-length",    # will be recalculated
+    # The client addressed the proxy, not Ollama. Forwarding these verbatim sends
+    # Ollama a Host naming this machine (breaking any vhost/reverse proxy in front
+    # of it) and an Origin it may reject with 403. Dropping "host" lets httpx
+    # recompute it from the target URL.
+    "host",
+    "origin",
+    "referer",
 })
 
 
 def _forward_headers(headers: Dict[str, str]) -> Dict[str, str]:
     """Strip hop-by-hop headers before forwarding."""
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP}
+
+
+def _cannot_connect_msg() -> str:
+    """502 text naming the target, so a misconfigured host is obvious from the error."""
+    return f"Cannot connect to Ollama at {get_config().target}"
 
 
 def _inject_num_ctx(body_json: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -344,8 +356,8 @@ async def handle_passthrough(request: Request, logger: Optional[TrafficLogger] =
             )
         except httpx.ConnectError:
             if logger and request_id:
-                logger.log_response(request_id, 502, {}, {"error": "Cannot connect to Ollama"})
-            return _error_response(502, "Cannot connect to Ollama")
+                logger.log_response(request_id, 502, {}, {"error": _cannot_connect_msg()})
+            return _error_response(502, _cannot_connect_msg())
         except Exception as exc:
             if logger and request_id:
                 logger.log_response(request_id, 500, {}, {"error": str(exc)})
@@ -407,7 +419,7 @@ async def handle_passthrough(request: Request, logger: Optional[TrafficLogger] =
     except httpx.TimeoutException:
         return _error_response(408, "Request timeout")
     except httpx.ConnectError:
-        return _error_response(502, "Cannot connect to Ollama")
+        return _error_response(502, _cannot_connect_msg())
     except Exception as exc:
         return _error_response(500, str(exc))
 
@@ -456,8 +468,8 @@ async def handle_v1_messages(
             logger.log_response(request_id, 408, {}, {"error": "Request timeout"})
             return _error_response(408, "Request timeout")
         except httpx.ConnectError:
-            logger.log_response(request_id, 502, {}, {"error": "Cannot connect to Ollama"})
-            return _error_response(502, "Cannot connect to Ollama")
+            logger.log_response(request_id, 502, {}, {"error": _cannot_connect_msg()})
+            return _error_response(502, _cannot_connect_msg())
         except Exception as exc:
             logger.log_response(request_id, 500, {}, {"error": str(exc)})
             return _error_response(500, str(exc))
@@ -540,7 +552,7 @@ async def handle_v1_messages(
     except httpx.TimeoutException:
         return _error_response(408, "Request timeout")
     except httpx.ConnectError:
-        return _error_response(502, "Cannot connect to Ollama")
+        return _error_response(502, _cannot_connect_msg())
     except Exception as exc:
         return _error_response(500, str(exc))
 
@@ -591,8 +603,8 @@ async def handle_v1_chat_completions(
             logger.log_response(request_id, 408, {}, {"error": "Request timeout"})
             return _error_response(408, "Request timeout")
         except httpx.ConnectError:
-            logger.log_response(request_id, 502, {}, {"error": "Cannot connect to Ollama"})
-            return _error_response(502, "Cannot connect to Ollama")
+            logger.log_response(request_id, 502, {}, {"error": _cannot_connect_msg()})
+            return _error_response(502, _cannot_connect_msg())
         except Exception as exc:
             logger.log_response(request_id, 500, {}, {"error": str(exc)})
             return _error_response(500, str(exc))
@@ -690,7 +702,7 @@ async def handle_v1_chat_completions(
     except httpx.TimeoutException:
         return _error_response(408, "Request timeout")
     except httpx.ConnectError:
-        return _error_response(502, "Cannot connect to Ollama")
+        return _error_response(502, _cannot_connect_msg())
     except Exception as exc:
         return _error_response(500, str(exc))
 
@@ -984,8 +996,8 @@ async def handle_stream_chat(
         logger.log_response(request_id, 408, {}, {"error": "Request timeout"})
         return _error_response(408, "Request timeout")
     except httpx.ConnectError:
-        logger.log_response(request_id, 502, {}, {"error": "Cannot connect to Ollama"})
-        return _error_response(502, "Cannot connect to Ollama")
+        logger.log_response(request_id, 502, {}, {"error": _cannot_connect_msg()})
+        return _error_response(502, _cannot_connect_msg())
     except Exception as exc:
         logger.log_response(request_id, 500, {}, {"error": str(exc)})
         return _error_response(500, str(exc))
@@ -1083,8 +1095,8 @@ async def handle_stream_generate(
         logger.log_response(request_id, 408, {}, {"error": "Request timeout"})
         return _error_response(408, "Request timeout")
     except httpx.ConnectError:
-        logger.log_response(request_id, 502, {}, {"error": "Cannot connect to Ollama"})
-        return _error_response(502, "Cannot connect to Ollama")
+        logger.log_response(request_id, 502, {}, {"error": _cannot_connect_msg()})
+        return _error_response(502, _cannot_connect_msg())
     except Exception as exc:
         logger.log_response(request_id, 500, {}, {"error": str(exc)})
         return _error_response(500, str(exc))
