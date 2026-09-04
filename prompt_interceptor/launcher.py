@@ -403,7 +403,7 @@ class LauncherWindow:
 
         self._set_icon()
         self._build_ui()
-        self._center_window(540, self._get_window_height())
+        self._center_window(540, max(self._get_window_height(), self._required_height()))
 
     def _set_icon(self) -> None:
         icon_path = Path(__file__).parent.parent / "res" / "PromptInterceptor_Icon.png"
@@ -431,6 +431,24 @@ class LauncherWindow:
         if name == "Only Proxy":
             return 400
         return 460
+
+    def _required_height(self) -> int:
+        """Height tkinter says the packed content needs, or 0 when there is no real UI."""
+        try:
+            self.root.update_idletasks()
+            return int(self.root.winfo_reqheight())
+        except (TypeError, ValueError, AttributeError):
+            return 0
+
+    def _apply_window_height(self) -> None:
+        """
+        Resize to fit, never clipping the content.
+
+        _get_window_height is a floor, not the last word: a bare constant silently
+        cut off the Step 3 buttons and the status line once the layout grew.
+        """
+        height = max(self._get_window_height(), self._required_height())
+        self.root.geometry(f"540x{height}")
 
     def _center_window(self, width: int, height: int) -> None:
         self.root.update_idletasks()
@@ -612,20 +630,29 @@ class LauncherWindow:
         self._launch_client_btn.pack(side="left")
 
         # ── Step 3: Dashboard ──
-        ttk.Label(self.root, text="── Step 3: Dashboard ──", style="Section.TLabel").pack()
-
-        btn_frame = ttk.Frame(self.root)
-        btn_frame.pack(pady=(8, 16))
-        self._start_btn = ttk.Button(btn_frame, text="Open Dashboard", style="Start.TButton",
+        # Grouped in one frame so _refresh_client_rows can hide the whole step:
+        # in Only Proxy mode the dashboard already opens on its own.
+        self._step3_block = ttk.Frame(self.root)
+        self._step3_block.pack(fill="x")
+        ttk.Label(self._step3_block, text="── Step 3: Dashboard ──",
+                  style="Section.TLabel").pack()
+        step3_btns = ttk.Frame(self._step3_block)
+        step3_btns.pack(pady=(8, 16))
+        self._start_btn = ttk.Button(step3_btns, text="Open Dashboard", style="Start.TButton",
                                       command=self._on_open_dashboard, state="normal")
-        self._start_btn.pack(side="left", padx=8)
-        ttk.Button(btn_frame, text="Exit", style="Exit.TButton",
-                   command=self.root.destroy).pack(side="left", padx=8)
+        self._start_btn.pack()
 
         # Status
         self.status_var = tk.StringVar(value="")
-        ttk.Label(self.root, textvariable=self.status_var,
-                  foreground="#4fc3f7", font=("Segoe UI", 9)).pack()
+        self._status_label = ttk.Label(self.root, textvariable=self.status_var,
+                                       foreground="#4fc3f7", font=("Segoe UI", 9))
+        self._status_label.pack()
+
+        # Exit lives outside Step 3 so it stays reachable in every mode.
+        self._exit_block = ttk.Frame(self.root)
+        self._exit_block.pack(pady=(8, 16))
+        ttk.Button(self._exit_block, text="Exit", style="Exit.TButton",
+                   command=self.root.destroy).pack()
 
         # Show correct conditional rows for initial client selection
         self._refresh_client_rows()
@@ -753,6 +780,13 @@ class LauncherWindow:
         is_only_proxy = cmd_name == "__only_proxy__"
         field_state = "normal" if self._step2_enabled else "disabled"
 
+        # Step 3 is noise in Only Proxy mode: launching already opens the dashboard.
+        # Re-packing needs before=, or tkinter would drop it below the status line.
+        if is_only_proxy:
+            self._step3_block.pack_forget()
+        else:
+            self._step3_block.pack(fill="x", before=self._status_label)
+
         if is_only_proxy:
             try:
                 port = int(self.proxy_port_var.get().strip())
@@ -785,7 +819,7 @@ class LauncherWindow:
             self._browse_workdir_btn.config(state=field_state)
             self._launch_client_btn.config(text="Launch Client", state=field_state)
 
-        self.root.geometry(f"540x{self._get_window_height()}")
+        self._apply_window_height()
 
     def _on_client_change(self, event=None) -> None:
         self._refresh_client_rows()

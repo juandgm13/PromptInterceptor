@@ -3033,3 +3033,138 @@ def test_persist_ui_config_writes_a_loadable_file(tmp_path, monkeypatch):
         assert win._persist_ui_config() is not None
 
     assert load_config(config_path).target == "http://192.168.1.60:11434"
+
+
+# ---------------------------------------------------------------------------
+# Step 3 visibility and window fitting
+# ---------------------------------------------------------------------------
+
+_STEP3_CLIENTS = [("Only Proxy", "__only_proxy__"),
+                  ("Python App (Ollama)", "__python_app__"),
+                  ("Claude Code", "claude")]
+
+
+def _win_for_client(cfg, client_name):
+    win, mock_root = _make_headless_win(cfg, clients=_STEP3_CLIENTS)
+    win._clients = _STEP3_CLIENTS
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = client_name
+    win._step3_block = MagicMock()
+    win._exit_block = MagicMock()
+    win._status_label = MagicMock()
+    return win, mock_root
+
+
+def test_refresh_hides_step3_for_only_proxy(tmp_path, monkeypatch):
+    """Only Proxy opens the dashboard by itself, so Step 3 is noise there."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _win_for_client(cfg, "Only Proxy")
+    win._refresh_client_rows()
+
+    win._step3_block.pack_forget.assert_called()
+    win._step3_block.pack.assert_not_called()
+
+
+@pytest.mark.parametrize("client_name", ["Claude Code", "Python App (Ollama)"])
+def test_refresh_shows_step3_for_other_clients(tmp_path, monkeypatch, client_name):
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _win_for_client(cfg, client_name)
+    win._refresh_client_rows()
+
+    win._step3_block.pack.assert_called()
+
+
+@pytest.mark.parametrize("client_name", ["Claude Code", "Python App (Ollama)"])
+def test_step3_repacks_before_status_label(tmp_path, monkeypatch, client_name):
+    """
+    Without before=, tkinter would re-add Step 3 at the end of the window,
+    below the status line and the Exit button.
+    """
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _win_for_client(cfg, client_name)
+    win._refresh_client_rows()
+
+    assert win._step3_block.pack.call_args.kwargs["before"] is win._status_label
+
+
+def test_step3_hidden_again_after_switching_back(tmp_path, monkeypatch):
+    """The full cycle: Only Proxy -> client -> Only Proxy leaves Step 3 hidden."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _win_for_client(cfg, "Only Proxy")
+    win._refresh_client_rows()
+
+    win.client_var.get.return_value = "Claude Code"
+    win._refresh_client_rows()
+
+    win._step3_block.reset_mock()
+    win.client_var.get.return_value = "Only Proxy"
+    win._refresh_client_rows()
+
+    win._step3_block.pack_forget.assert_called()
+    win._step3_block.pack.assert_not_called()
+
+
+@pytest.mark.parametrize("client_name", ["Only Proxy", "Claude Code", "Python App (Ollama)"])
+def test_exit_block_never_hidden(tmp_path, monkeypatch, client_name):
+    """Exit sits outside Step 3 so the launcher can always be closed."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _win_for_client(cfg, client_name)
+    win._refresh_client_rows()
+
+    win._exit_block.pack_forget.assert_not_called()
+
+
+def test_required_height_returns_zero_when_root_cannot_measure(tmp_path):
+    """A root that cannot report a height must not break the sizing."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, mock_root = _make_headless_win(cfg)
+    mock_root.winfo_reqheight.side_effect = AttributeError("no display")
+
+    assert win._required_height() == 0
+
+
+def test_required_height_never_poisons_the_floor(tmp_path):
+    """Whatever a mocked root reports, the constant must still apply."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, mock_root = _make_headless_win(cfg)
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Only Proxy"
+
+    win._apply_window_height()
+
+    mock_root.geometry.assert_called_with("540x400")
+
+
+def test_apply_window_height_uses_constant_when_content_fits(tmp_path):
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, mock_root = _make_headless_win(cfg)
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Only Proxy"
+    mock_root.winfo_reqheight.return_value = 200
+
+    win._apply_window_height()
+
+    mock_root.geometry.assert_called_with("540x400")
+
+
+def test_apply_window_height_grows_to_fit_content(tmp_path):
+    """The constant is a floor: content taller than it must not be clipped."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, mock_root = _make_headless_win(cfg)
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Only Proxy"
+    mock_root.winfo_reqheight.return_value = 640
+
+    win._apply_window_height()
+
+    mock_root.geometry.assert_called_with("540x640")
