@@ -522,23 +522,23 @@ async def test_root_serves_static_index_when_present(plain_client):
 
 
 # ---------------------------------------------------------------------------
-# Live Prompts — Guardar / Limpiar buttons in HTML
+# Live Prompts — Save / Clear buttons in HTML
 # ---------------------------------------------------------------------------
 
 async def test_dashboard_html_has_clear_logs_button(client):
-    """Dashboard HTML includes the Limpiar button that calls clearLogs()."""
+    """Dashboard HTML includes the Clear button that calls clearLogs()."""
     resp = await client.get("/")
     assert resp.status_code == 200
     assert "clearLogs()" in resp.text
-    assert "Limpiar" in resp.text
+    assert "Clear" in resp.text
 
 
 async def test_dashboard_html_has_save_logs_button(client):
-    """Dashboard HTML includes the Guardar button that calls saveLogs()."""
+    """Dashboard HTML includes the Save button that calls saveLogs()."""
     resp = await client.get("/")
     assert resp.status_code == 200
     assert "saveLogs()" in resp.text
-    assert "Guardar" in resp.text
+    assert "Save" in resp.text
 
 
 async def test_dashboard_html_save_logs_js_function(client):
@@ -893,11 +893,11 @@ async def test_dashboard_html_extract_embedded_parses_json_format(client):
 # ---------------------------------------------------------------------------
 
 async def test_dashboard_html_has_load_file_button(client):
-    """Dashboard HTML includes a Cargar button that calls loadFile()."""
+    """Dashboard HTML includes a Load button that calls loadFile()."""
     resp = await client.get("/")
     assert resp.status_code == 200
     assert "loadFile()" in resp.text
-    assert "Cargar" in resp.text
+    assert "Load" in resp.text
 
 
 async def test_dashboard_html_load_file_js_function(client):
