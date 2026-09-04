@@ -503,7 +503,8 @@ async def handle_v1_messages(
                     pass
 
             corrected, was_corrected, fix_desc = (
-                normalize_anthropic_messages(parsed) if isinstance(parsed, dict) else (parsed, False, '')
+                normalize_anthropic_messages(parsed, (body_json or {}).get("tools"))
+                if isinstance(parsed, dict) else (parsed, False, '')
             )
             if is_windows_bash_mode() and isinstance(corrected, dict):
                 corrected, bash_changed = patch_anthropic_body(corrected)
@@ -530,7 +531,9 @@ async def handle_v1_messages(
         except json.JSONDecodeError:
             response_json = None
         if isinstance(response_json, dict):
-            response_json, was_corrected, fix_desc = normalize_anthropic_messages(response_json)
+            response_json, was_corrected, fix_desc = normalize_anthropic_messages(
+                response_json, (body_json or {}).get("tools")
+            )
             if is_windows_bash_mode():
                 response_json, bash_changed = patch_anthropic_body(response_json)
                 if bash_changed:
@@ -646,7 +649,8 @@ async def handle_v1_chat_completions(
                 return
 
             corrected, was_corrected, fix_desc = (
-                normalize_openai_chat(parsed) if isinstance(parsed, dict) else (parsed, False, '')
+                normalize_openai_chat(parsed, (body_json or {}).get("tools"))
+                if isinstance(parsed, dict) else (parsed, False, '')
             )
             if is_windows_bash_mode() and isinstance(corrected, dict):
                 corrected, bash_changed = patch_openai_body(corrected)
@@ -680,7 +684,9 @@ async def handle_v1_chat_completions(
             if _detect_context_overflow(response_json, ctx):
                 logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG}, token_source_body=response_json)
                 return _error_response(413, _CONTEXT_OVERFLOW_MSG)
-            response_json, was_corrected, fix_desc = normalize_openai_chat(response_json)
+            response_json, was_corrected, fix_desc = normalize_openai_chat(
+                response_json, (body_json or {}).get("tools")
+            )
             if is_windows_bash_mode():
                 response_json, bash_changed = patch_openai_body(response_json)
                 if bash_changed:

@@ -3849,3 +3849,98 @@ async def test_outbound_request_carries_target_host_not_client_host(cfg, engine_
 
     assert received["host"] == f"127.0.0.1:{port}"
     assert "origin" not in received
+
+
+# ---------------------------------------------------------------------------
+# XML-tag tool calls reach the client (regression: opencode + gemma4:26b)
+# ---------------------------------------------------------------------------
+
+_XML_TOOLS = [{"type": "function", "function": {"name": "task", "description": ""}}]
+_XML_CALL = ('Season: 2027\\n\\n<task subagent_type=\\"quiniela-scraper\\" '
+             'prompt=\\"matchday 1\\"></task>')
+
+
+async def test_v1_streaming_xml_tool_call_reaches_client(cfg, engine_and_logger, monkeypatch):
+    """
+    The rescued call must be re-emitted to the client, not just logged.
+
+    A model that writes <task ...></task> into content instead of emitting
+    tool_calls leaves the agent with plain text and the run stalls.
+    """
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    sse_chunks = [
+        ('data: {"id":"cmp-1","choices":[{"index":0,"delta":'
+         '{"role":"assistant","content":"' + _XML_CALL + '"},'
+         '"finish_reason":"stop"}]}\n\n').encode(),
+        b'data: [DONE]\n',
+    ]
+    monkeypatch.setattr(proxy_mod, "_start_streaming_request",
+                        _make_start_streaming_mock(sse_chunks))
+
+    req = make_req({"model": "gemma4:26b", "messages": [], "stream": True,
+                    "tools": _XML_TOOLS}, path="/v1/chat/completions")
+    resp = await handle_v1_chat_completions(req, engine, logger)
+    collected = b"".join([chunk async for chunk in resp.body_iterator])
+
+    # Structured call, addressed to the right tool, with its arguments.
+    assert b'"tool_calls"' in collected
+    assert b'"name": "task"' in collected or b'"name":"task"' in collected
+    assert b"quiniela-scraper" in collected
+    # And the turn is announced as ending in a tool call.
+    assert b'"finish_reason": "tool_calls"' in collected or b'"finish_reason":"tool_calls"' in collected
+    # The raw tag must not survive into the content the agent reads.
+    assert b"<task" not in collected
+
+
+async def test_v1_streaming_xml_tag_untouched_when_tool_undeclared(cfg, engine_and_logger, monkeypatch):
+    """Without the tool declared, the bytes pass through unchanged."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    sse_chunks = [
+        ('data: {"id":"cmp-1","choices":[{"index":0,"delta":'
+         '{"role":"assistant","content":"' + _XML_CALL + '"},'
+         '"finish_reason":"stop"}]}\n\n').encode(),
+        b'data: [DONE]\n',
+    ]
+    monkeypatch.setattr(proxy_mod, "_start_streaming_request",
+                        _make_start_streaming_mock(sse_chunks))
+
+    req = make_req({"model": "gemma4:26b", "messages": [], "stream": True},
+                   path="/v1/chat/completions")
+    resp = await handle_v1_chat_completions(req, engine, logger)
+    collected = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert b"<task" in collected
+    assert b'"tool_calls"' not in collected
+
+
+async def test_v1_non_streaming_xml_tool_call_reaches_client(cfg, engine_and_logger, monkeypatch):
+    """Same rescue on the non-streaming path, including finish_reason."""
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    upstream = {
+        "id": "cmp-1",
+        "choices": [{"index": 0, "finish_reason": "stop", "message": {
+            "role": "assistant",
+            "content": 'Season: 2027\n\n<task subagent_type="quiniela-scraper"></task>',
+        }}],
+    }
+    monkeypatch.setattr(proxy_mod, "_fetch_from_ollama",
+                        AsyncMock(return_value=(200, {}, json.dumps(upstream).encode())))
+
+    req = make_req({"model": "gemma4:26b", "messages": [], "stream": False,
+                    "tools": _XML_TOOLS}, path="/v1/chat/completions")
+    resp = await handle_v1_chat_completions(req, engine, logger)
+    payload = json.loads(resp.body)
+
+    msg = payload["choices"][0]["message"]
+    assert msg["content"] == "Season: 2027"
+    assert msg["tool_calls"][0]["function"]["name"] == "task"
+    assert payload["choices"][0]["finish_reason"] == "tool_calls"

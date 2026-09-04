@@ -674,3 +674,198 @@ def test_openai_bash_tool_call_invalid_json_arguments_skipped():
     # The bash tool_call arguments remain unchanged (still the invalid string)
     tc_fn = corrected["choices"][0]["message"]["tool_calls"][0]["function"]
     assert tc_fn["arguments"] == "not-valid-json"
+
+
+# ---------------------------------------------------------------------------
+# XML-tag tool calls — a model writing the invocation as plain text
+# ---------------------------------------------------------------------------
+
+# The exact tools/response pair captured from a real opencode + gemma4:26b run.
+_OPENCODE_TOOLS = [
+    {"type": "function", "function": {"name": n, "description": ""}}
+    for n in ["bash", "edit", "glob", "grep", "read", "skill", "task",
+              "todowrite", "webfetch", "write"]
+]
+_TASK_XML = (
+    'Season: 2027\n\n<task subagent_type="quiniela-scraper" '
+    'description="Collect data for matchday 1, season 2027" '
+    'prompt="matchday 1, season 2027"></task>'
+)
+
+
+def _openai_body(content, **msg_extra):
+    return {"choices": [{"message": {"role": "assistant", "content": content, **msg_extra},
+                         "finish_reason": "stop"}]}
+
+
+def test_openai_xml_tag_call_rescued_from_content():
+    """The real failing case: <task ...></task> written into content."""
+    corrected, was_corrected, desc = normalize_openai_chat(
+        _openai_body(_TASK_XML), _OPENCODE_TOOLS)
+
+    assert was_corrected
+    assert "content→tool_calls (xml)" in desc
+
+    msg = corrected["choices"][0]["message"]
+    assert msg["content"] == "Season: 2027"
+
+    tc = msg["tool_calls"][0]
+    assert tc["function"]["name"] == "task"
+    assert json.loads(tc["function"]["arguments"]) == {
+        "subagent_type": "quiniela-scraper",
+        "description": "Collect data for matchday 1, season 2027",
+        "prompt": "matchday 1, season 2027",
+    }
+
+
+def test_openai_xml_tag_call_sets_finish_reason():
+    """A client trusting finish_reason must be told the turn ended in a tool call."""
+    corrected, _, _ = normalize_openai_chat(_openai_body(_TASK_XML), _OPENCODE_TOOLS)
+    assert corrected["choices"][0]["finish_reason"] == "tool_calls"
+
+
+def test_openai_xml_tag_ignored_when_tool_not_declared():
+    """The guard against inventing calls: an undeclared name is left as text."""
+    tools = [t for t in _OPENCODE_TOOLS if t["function"]["name"] != "task"]
+    corrected, was_corrected, _ = normalize_openai_chat(_openai_body(_TASK_XML), tools)
+
+    assert was_corrected is False
+    assert corrected is not None
+    assert "<task" in corrected["choices"][0]["message"]["content"]
+
+
+def test_openai_xml_tag_ignored_without_tools():
+    """No tools in the request means nothing to rescue."""
+    _, was_corrected, _ = normalize_openai_chat(_openai_body(_TASK_XML))
+    assert was_corrected is False
+
+
+def test_openai_ordinary_markup_is_not_a_tool_call():
+    """HTML or markup in a response must never become a phantom call."""
+    text = "Use <div class='x'>foo</div> then <span>bar</span> and <br/> here."
+    _, was_corrected, _ = normalize_openai_chat(_openai_body(text), _OPENCODE_TOOLS)
+    assert was_corrected is False
+
+
+def test_openai_xml_tag_does_not_override_real_tool_calls():
+    """A model that emitted proper tool_calls is left alone."""
+    body = _openai_body(_TASK_XML, tool_calls=[
+        {"id": "call_x", "type": "function",
+         "function": {"name": "read", "arguments": "{}"}}])
+    corrected, was_corrected, _ = normalize_openai_chat(body, _OPENCODE_TOOLS)
+
+    if was_corrected:
+        assert corrected["choices"][0]["message"]["tool_calls"][0]["id"] == "call_x"
+    tcs = corrected["choices"][0]["message"]["tool_calls"]
+    assert len(tcs) == 1 and tcs[0]["function"]["name"] == "read"
+
+
+def test_openai_xml_tag_rescued_from_thinking():
+    body = _openai_body("", thinking=_TASK_XML)
+    corrected, was_corrected, desc = normalize_openai_chat(body, _OPENCODE_TOOLS)
+
+    assert was_corrected
+    assert "thinking→tool_calls (xml)" in desc
+    assert corrected["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "task"
+
+
+def test_openai_self_closing_xml_tag():
+    body = _openai_body('<read path="/tmp/a.txt" />')
+    corrected, was_corrected, _ = normalize_openai_chat(body, _OPENCODE_TOOLS)
+
+    assert was_corrected
+    tc = corrected["choices"][0]["message"]["tool_calls"][0]
+    assert tc["function"]["name"] == "read"
+    assert json.loads(tc["function"]["arguments"]) == {"path": "/tmp/a.txt"}
+
+
+def test_openai_xml_tag_unescapes_attribute_values():
+    body = _openai_body('<bash command="echo &quot;hi&quot; &amp;&amp; ls"></bash>')
+    corrected, _, _ = normalize_openai_chat(body, _OPENCODE_TOOLS)
+
+    args = json.loads(corrected["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
+    assert args["command"] == 'echo "hi" && ls'
+
+
+def test_openai_xml_tag_json_body_merges_over_attributes():
+    body = _openai_body('<task subagent_type="a">{"prompt": "from body"}</task>')
+    corrected, _, _ = normalize_openai_chat(body, _OPENCODE_TOOLS)
+
+    args = json.loads(corrected["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
+    assert args == {"subagent_type": "a", "prompt": "from body"}
+
+
+def test_openai_multiple_xml_tag_calls():
+    body = _openai_body('<read path="a"></read> and <read path="b"></read>')
+    corrected, _, _ = normalize_openai_chat(body, _OPENCODE_TOOLS)
+
+    tcs = corrected["choices"][0]["message"]["tool_calls"]
+    assert [json.loads(t["function"]["arguments"])["path"] for t in tcs] == ["a", "b"]
+
+
+def test_anthropic_xml_tag_call_rescued_from_text():
+    body = {"content": [{"type": "text", "text": _TASK_XML}], "stop_reason": "end_turn"}
+    anthropic_tools = [{"name": "task", "input_schema": {}}]
+    corrected, was_corrected, desc = normalize_anthropic_messages(body, anthropic_tools)
+
+    assert was_corrected
+    assert "text→tool_use (xml)" in desc
+    assert corrected["stop_reason"] == "tool_use"
+
+    tu = [b for b in corrected["content"] if b["type"] == "tool_use"][0]
+    assert tu["name"] == "task"
+    assert tu["input"]["subagent_type"] == "quiniela-scraper"
+
+    text_block = [b for b in corrected["content"] if b["type"] == "text"][0]
+    assert text_block["text"] == "Season: 2027"
+
+
+def test_anthropic_xml_tag_ignored_when_tool_not_declared():
+    body = {"content": [{"type": "text", "text": _TASK_XML}]}
+    _, was_corrected, _ = normalize_anthropic_messages(body, [{"name": "read"}])
+    assert was_corrected is False
+
+
+def test_anthropic_xml_tag_skipped_when_real_tool_use_present():
+    """An existing tool_use block means the model used the protocol correctly."""
+    body = {"content": [
+        {"type": "text", "text": _TASK_XML},
+        {"type": "tool_use", "id": "toolu_1", "name": "read", "input": {}},
+    ]}
+    _, was_corrected, _ = normalize_anthropic_messages(body, [{"name": "task"}])
+    assert was_corrected is False
+
+
+def test_tool_names_handles_both_shapes():
+    from prompt_interceptor.response_normalizer import _tool_names
+
+    assert _tool_names([{"function": {"name": "task"}}]) == {"task": "task"}
+    assert _tool_names([{"name": "Task"}]) == {"task": "Task"}
+    assert _tool_names(None) == {}
+    assert _tool_names(["not a dict"]) == {}
+
+
+def test_openai_xml_tag_non_json_body_is_ignored():
+    """A tag body that is not JSON leaves the attribute arguments untouched."""
+    body = _openai_body('<task subagent_type="a">just some prose</task>')
+    corrected, was_corrected, _ = normalize_openai_chat(body, _OPENCODE_TOOLS)
+
+    assert was_corrected
+    args = json.loads(corrected["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
+    assert args == {"subagent_type": "a"}
+
+
+def test_anthropic_xml_tag_rescued_from_thinking():
+    body = {"content": [{"type": "thinking", "thinking": _TASK_XML}]}
+    corrected, was_corrected, desc = normalize_anthropic_messages(body, [{"name": "task"}])
+
+    assert was_corrected
+    assert "thinking→tool_use (xml)" in desc
+    assert corrected["stop_reason"] == "tool_use"
+
+    tu = [b for b in corrected["content"] if b["type"] == "tool_use"][0]
+    assert tu["name"] == "task"
+    assert tu["input"]["prompt"] == "matchday 1, season 2027"
+
+    thinking_block = [b for b in corrected["content"] if b["type"] == "thinking"][0]
+    assert thinking_block["thinking"] == "Season: 2027"
