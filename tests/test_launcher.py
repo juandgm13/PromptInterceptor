@@ -435,6 +435,31 @@ def _make_mock_root():
 _DEFAULT_CLIENTS = [("Claude Code", "claude"), ("Python App (Ollama)", "__python_app__")]
 
 
+class _FakeVar:
+    """
+    Stand-in for tk.StringVar/BooleanVar that holds a real value.
+
+    A bare MagicMock returns a MagicMock from .get(), which silently poisons any
+    code that persists those values (they are not JSON-serialisable). Holding the
+    real value keeps the double faithful to tkinter.
+    """
+
+    def __init__(self, value="", **kwargs):
+        self._value = kwargs.get("value", value)
+
+    def get(self):
+        return self._value
+
+    def set(self, value):
+        self._value = value
+
+
+def _install_fake_vars(mock_tk):
+    """Make the patched tk module hand out per-call _FakeVar instances."""
+    mock_tk.StringVar.side_effect = lambda *a, **kw: _FakeVar(*a, **kw)
+    mock_tk.BooleanVar.side_effect = lambda *a, **kw: _FakeVar(*a, **kw)
+
+
 def _make_headless_win(cfg, clients=None):
     """Create a LauncherWindow with fully mocked UI for unit-testing methods."""
     if clients is None:
@@ -444,7 +469,7 @@ def _make_headless_win(cfg, clients=None):
          patch("prompt_interceptor.launcher.tk") as mock_tk, \
          patch("prompt_interceptor.launcher.get_config", return_value=cfg), \
          patch("prompt_interceptor.launcher._detect_clients", return_value=(clients, [])):
-        mock_tk.StringVar.return_value = MagicMock()
+        _install_fake_vars(mock_tk)
         from prompt_interceptor.launcher import LauncherWindow
         win = LauncherWindow(mock_root)
     return win, mock_root
@@ -465,7 +490,7 @@ def test_launcher_window_init_python_app_only(tmp_path, monkeypatch):
     with patch("prompt_interceptor.launcher.ttk"), \
          patch("prompt_interceptor.launcher.tk") as mock_tk, \
          patch("prompt_interceptor.launcher._detect_clients", return_value=(python_only, [])):
-        mock_tk.StringVar.return_value = MagicMock()
+        _install_fake_vars(mock_tk)
         mock_tk.PhotoImage.side_effect = Exception("no display")
         from prompt_interceptor.launcher import LauncherWindow
         win = LauncherWindow(mock_root)
@@ -484,7 +509,7 @@ def test_launcher_window_init_with_clients(tmp_path, monkeypatch):
     with patch("prompt_interceptor.launcher.ttk"), \
          patch("prompt_interceptor.launcher.tk") as mock_tk, \
          patch("prompt_interceptor.launcher._detect_clients", return_value=(_DEFAULT_CLIENTS, [])):
-        mock_tk.StringVar.return_value = MagicMock()
+        _install_fake_vars(mock_tk)
         mock_tk.PhotoImage.return_value = MagicMock()
         from prompt_interceptor.launcher import LauncherWindow
         win = LauncherWindow(mock_root)
@@ -504,7 +529,7 @@ def test_launcher_window_set_icon_success(tmp_path, monkeypatch):
          patch("prompt_interceptor.launcher.tk") as mock_tk, \
          patch("prompt_interceptor.launcher._detect_clients", return_value=(_DEFAULT_CLIENTS, [])), \
          patch("prompt_interceptor.launcher.Path.exists", return_value=True):
-        mock_tk.StringVar.return_value = MagicMock()
+        _install_fake_vars(mock_tk)
         mock_tk.PhotoImage.return_value = mock_icon
         from prompt_interceptor.launcher import LauncherWindow
         win = LauncherWindow(mock_root)
@@ -523,7 +548,7 @@ def test_launcher_window_set_icon_missing(tmp_path, monkeypatch):
          patch("prompt_interceptor.launcher.tk") as mock_tk, \
          patch("prompt_interceptor.launcher._detect_clients", return_value=(_DEFAULT_CLIENTS, [])), \
          patch("prompt_interceptor.launcher.Path.exists", return_value=False):
-        mock_tk.StringVar.return_value = MagicMock()
+        _install_fake_vars(mock_tk)
         from prompt_interceptor.launcher import LauncherWindow
         win = LauncherWindow(mock_root)
 
@@ -2808,8 +2833,338 @@ def test_build_ui_schedules_version_warning_when_warnings_present(tmp_path, monk
     with patch("prompt_interceptor.launcher.ttk"), \
          patch("prompt_interceptor.launcher.tk") as mock_tk, \
          patch("prompt_interceptor.launcher._detect_clients", return_value=(clients, warnings)):
-        mock_tk.StringVar.return_value = MagicMock()
+        _install_fake_vars(mock_tk)
         from prompt_interceptor.launcher import LauncherWindow
         win = LauncherWindow(mock_root)
 
     assert 300 in after_calls
+
+
+# ---------------------------------------------------------------------------
+# _parse_ollama_host / _format_ollama_host
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text,expected", [
+    ("192.168.1.50", ("http://192.168.1.50:11434", "192.168.1.50")),
+    ("192.168.1.50:11434", ("http://192.168.1.50:11434", "192.168.1.50")),
+    ("192.168.1.50:8000", ("http://192.168.1.50:8000", "192.168.1.50")),
+    ("http://192.168.1.50:8000", ("http://192.168.1.50:8000", "192.168.1.50")),
+    # trailing slash would make the proxy build "//api/chat"
+    ("http://192.168.1.50:8000/", ("http://192.168.1.50:8000", "192.168.1.50")),
+    ("mi-servidor.local", ("http://mi-servidor.local:11434", "mi-servidor.local")),
+    ("  10.0.0.5  ", ("http://10.0.0.5:11434", "10.0.0.5")),
+    ("localhost", ("http://localhost:11434", "localhost")),
+    ("", ("http://127.0.0.1:11434", "127.0.0.1")),
+    (None, ("http://127.0.0.1:11434", "127.0.0.1")),
+    # malformed port must not raise
+    ("1.2.3.4:11434:11434", ("http://1.2.3.4:11434", "1.2.3.4")),
+])
+def test_parse_ollama_host(text, expected):
+    from prompt_interceptor.launcher import _parse_ollama_host
+    assert _parse_ollama_host(text) == expected
+
+
+def test_parse_ollama_host_keeps_localhost_detectable():
+    """The returned hostname must still match _LOCALHOST_HOSTS for the local check."""
+    from prompt_interceptor.launcher import _parse_ollama_host, _LOCALHOST_HOSTS
+    for text in ("localhost", "127.0.0.1", "http://127.0.0.1:11434"):
+        _, host = _parse_ollama_host(text)
+        assert host in _LOCALHOST_HOSTS
+
+
+@pytest.mark.parametrize("target,expected", [
+    ("http://192.168.1.50:11434", "192.168.1.50"),   # default port stays hidden
+    ("http://192.168.1.50:8000", "192.168.1.50:8000"),
+    ("http://localhost:11434", "localhost"),
+    ("", "127.0.0.1"),
+])
+def test_format_ollama_host(target, expected):
+    from prompt_interceptor.launcher import _format_ollama_host
+    assert _format_ollama_host(target) == expected
+
+
+def test_host_field_round_trips_non_default_port():
+    """A non-standard port survives display -> re-check instead of reverting to 11434."""
+    from prompt_interceptor.launcher import _parse_ollama_host, _format_ollama_host
+    target = "http://192.168.1.50:8000"
+    assert _parse_ollama_host(_format_ollama_host(target))[0] == target
+
+
+def test_check_or_launch_ollama_uses_typed_port(tmp_path, monkeypatch):
+    """The port comes from the host field, not from config.target."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), target="http://localhost:11434")
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, mock_root = _make_headless_win(cfg)
+    win.ollama_host_var = MagicMock()
+    win.ollama_host_var.get.return_value = "192.168.1.50:8000"
+    win.status_var = MagicMock()
+    win._launch_ollama_btn = MagicMock()
+    mock_root.after.side_effect = lambda delay, fn, *args: None
+
+    with patch("prompt_interceptor.launcher._fetch_ollama_models",
+               return_value=["llama3"]) as mock_fetch:
+        win._check_or_launch_ollama()
+
+    mock_fetch.assert_called_once_with("http://192.168.1.50:8000")
+    assert win._active_target == "http://192.168.1.50:8000"
+
+
+# ---------------------------------------------------------------------------
+# _persist_ui_config — the validated target must reach disk before the proxy runs
+# ---------------------------------------------------------------------------
+
+def _make_launch_win(cfg, client_name, cmd_name, tmp_path):
+    """Headless window wired to launch `client_name`, with a validated remote target."""
+    clients = [(client_name, cmd_name)]
+    win, mock_root = _make_headless_win(cfg, clients=clients)
+    win._clients = clients
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = client_name
+    win.status_var = MagicMock()
+    win._servers_started = False
+    win._active_target = "http://192.168.1.60:11434"
+    return win, mock_root
+
+
+@pytest.mark.parametrize("client_name,cmd_name", [
+    ("Only Proxy", "__only_proxy__"),
+    ("Python App (Ollama)", "__python_app__"),
+    ("Claude Code", "claude"),
+])
+def test_on_launch_client_persists_target_before_starting_proxy(
+    tmp_path, monkeypatch, client_name, cmd_name
+):
+    """
+    Every launch mode must save the checked target before the proxy starts.
+
+    The proxy re-reads config.json on each request, so a target validated by
+    "Check Ollama" but left in memory means it forwards to the stale value
+    (localhost) — the remote-Ollama bug.
+    """
+    cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080,
+                 target="http://localhost:11434", dashboard_enabled=False)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    # Windows-only flag; absent on Linux CI.
+    monkeypatch.setattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
+
+    win, mock_root = _make_launch_win(cfg, client_name, cmd_name, tmp_path)
+    mock_root.after.side_effect = lambda delay, fn, *args: None
+
+    order = []
+    saved = []
+
+    def _save(config):
+        saved.append(config)
+        order.append("save")
+
+    def _thread(*args, **kwargs):
+        order.append("thread")
+        return MagicMock()
+
+    with patch("prompt_interceptor.launcher.save_config", side_effect=_save), \
+         patch("prompt_interceptor.launcher.threading.Thread", side_effect=_thread), \
+         patch("prompt_interceptor.launcher.subprocess.Popen"), \
+         patch("prompt_interceptor.launcher.webbrowser.open"):
+        win._on_launch_client()
+
+    assert saved, f"{cmd_name} never persisted the config"
+    assert saved[-1].target == "http://192.168.1.60:11434"
+    assert order[0] == "save", f"{cmd_name} started the proxy before saving: {order}"
+
+
+def test_on_launch_client_persists_typed_proxy_port(tmp_path, monkeypatch):
+    """The port typed in the UI reaches disk, so uvicorn binds what the UI shows."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080, dashboard_enabled=False)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, mock_root = _make_launch_win(cfg, "Only Proxy", "__only_proxy__", tmp_path)
+    win.proxy_port_var.set("8099")
+    mock_root.after.side_effect = lambda delay, fn, *args: None
+
+    saved = []
+    with patch("prompt_interceptor.launcher.save_config", side_effect=saved.append), \
+         patch("prompt_interceptor.launcher.threading.Thread", return_value=MagicMock()), \
+         patch("prompt_interceptor.launcher.webbrowser.open"):
+        win._on_launch_client()
+
+    assert saved[-1].proxy_port == 8099
+    # The status line must quote the same port the proxy will bind.
+    assert "8099" in win.status_var.set.call_args[0][0]
+
+
+def test_on_launch_client_aborts_on_invalid_port(tmp_path, monkeypatch):
+    """An unparseable port stops the launch instead of starting a misconfigured proxy."""
+    cfg = Config(log_dir=str(tmp_path / "logs"), dashboard_enabled=False)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, mock_root = _make_launch_win(cfg, "Only Proxy", "__only_proxy__", tmp_path)
+    win.proxy_port_var.set("not-a-port")
+    mock_root.after.side_effect = lambda delay, fn, *args: None
+
+    with patch("prompt_interceptor.launcher.save_config") as mock_save, \
+         patch("prompt_interceptor.launcher.threading.Thread") as mock_thread:
+        win._on_launch_client()
+
+    mock_save.assert_not_called()
+    mock_thread.assert_not_called()
+    assert win._servers_started is False
+
+
+def test_persist_ui_config_writes_a_loadable_file(tmp_path, monkeypatch):
+    """
+    End-to-end: what _persist_ui_config saves round-trips through load_config.
+
+    save_config always writes the packaged config.json, so the test serialises the
+    same object to tmp_path and reads it back the way the proxy does.
+    """
+    from prompt_interceptor.config import load_config
+
+    cfg = Config(log_dir=str(tmp_path / "logs"), target="http://localhost:11434")
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    config_path = tmp_path / "config.json"
+    win, _ = _make_launch_win(cfg, "Only Proxy", "__only_proxy__", tmp_path)
+
+    def _write(config):
+        config_path.write_text(json.dumps(config.model_dump(), default=str))
+
+    with patch("prompt_interceptor.launcher.save_config", side_effect=_write):
+        assert win._persist_ui_config() is not None
+
+    assert load_config(config_path).target == "http://192.168.1.60:11434"
+
+
+# ---------------------------------------------------------------------------
+# Step 3 visibility and window fitting
+# ---------------------------------------------------------------------------
+
+_STEP3_CLIENTS = [("Only Proxy", "__only_proxy__"),
+                  ("Python App (Ollama)", "__python_app__"),
+                  ("Claude Code", "claude")]
+
+
+def _win_for_client(cfg, client_name):
+    win, mock_root = _make_headless_win(cfg, clients=_STEP3_CLIENTS)
+    win._clients = _STEP3_CLIENTS
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = client_name
+    win._step3_block = MagicMock()
+    win._exit_block = MagicMock()
+    win._status_label = MagicMock()
+    return win, mock_root
+
+
+def test_refresh_hides_step3_for_only_proxy(tmp_path, monkeypatch):
+    """Only Proxy opens the dashboard by itself, so Step 3 is noise there."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _win_for_client(cfg, "Only Proxy")
+    win._refresh_client_rows()
+
+    win._step3_block.pack_forget.assert_called()
+    win._step3_block.pack.assert_not_called()
+
+
+@pytest.mark.parametrize("client_name", ["Claude Code", "Python App (Ollama)"])
+def test_refresh_shows_step3_for_other_clients(tmp_path, monkeypatch, client_name):
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _win_for_client(cfg, client_name)
+    win._refresh_client_rows()
+
+    win._step3_block.pack.assert_called()
+
+
+@pytest.mark.parametrize("client_name", ["Claude Code", "Python App (Ollama)"])
+def test_step3_repacks_before_status_label(tmp_path, monkeypatch, client_name):
+    """
+    Without before=, tkinter would re-add Step 3 at the end of the window,
+    below the status line and the Exit button.
+    """
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _win_for_client(cfg, client_name)
+    win._refresh_client_rows()
+
+    assert win._step3_block.pack.call_args.kwargs["before"] is win._status_label
+
+
+def test_step3_hidden_again_after_switching_back(tmp_path, monkeypatch):
+    """The full cycle: Only Proxy -> client -> Only Proxy leaves Step 3 hidden."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _win_for_client(cfg, "Only Proxy")
+    win._refresh_client_rows()
+
+    win.client_var.get.return_value = "Claude Code"
+    win._refresh_client_rows()
+
+    win._step3_block.reset_mock()
+    win.client_var.get.return_value = "Only Proxy"
+    win._refresh_client_rows()
+
+    win._step3_block.pack_forget.assert_called()
+    win._step3_block.pack.assert_not_called()
+
+
+@pytest.mark.parametrize("client_name", ["Only Proxy", "Claude Code", "Python App (Ollama)"])
+def test_exit_block_never_hidden(tmp_path, monkeypatch, client_name):
+    """Exit sits outside Step 3 so the launcher can always be closed."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+
+    win, _ = _win_for_client(cfg, client_name)
+    win._refresh_client_rows()
+
+    win._exit_block.pack_forget.assert_not_called()
+
+
+def test_required_height_returns_zero_when_root_cannot_measure(tmp_path):
+    """A root that cannot report a height must not break the sizing."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, mock_root = _make_headless_win(cfg)
+    mock_root.winfo_reqheight.side_effect = AttributeError("no display")
+
+    assert win._required_height() == 0
+
+
+def test_required_height_never_poisons_the_floor(tmp_path):
+    """Whatever a mocked root reports, the constant must still apply."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, mock_root = _make_headless_win(cfg)
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Only Proxy"
+
+    win._apply_window_height()
+
+    mock_root.geometry.assert_called_with("540x400")
+
+
+def test_apply_window_height_uses_constant_when_content_fits(tmp_path):
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, mock_root = _make_headless_win(cfg)
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Only Proxy"
+    mock_root.winfo_reqheight.return_value = 200
+
+    win._apply_window_height()
+
+    mock_root.geometry.assert_called_with("540x400")
+
+
+def test_apply_window_height_grows_to_fit_content(tmp_path):
+    """The constant is a floor: content taller than it must not be clipped."""
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, mock_root = _make_headless_win(cfg)
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Only Proxy"
+    mock_root.winfo_reqheight.return_value = 640
+
+    win._apply_window_height()
+
+    mock_root.geometry.assert_called_with("540x640")

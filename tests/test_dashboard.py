@@ -174,6 +174,54 @@ async def test_api_logs_with_limit(client):
 
 
 # ---------------------------------------------------------------------------
+# DELETE /api/logs/{request_id}
+# ---------------------------------------------------------------------------
+
+async def test_delete_log_removes_entry(client):
+    """A logged request can be deleted, and deleting it twice yields 404."""
+    from prompt_interceptor.dashboard import _logger
+
+    rid = _logger.log_request("POST", "/api/chat", {}, {"model": "llama3"})
+
+    resp = await client.delete(f"/api/logs/{rid}")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "deleted"
+
+    again = await client.delete(f"/api/logs/{rid}")
+    assert again.status_code == 404
+    assert again.json()["status"] == "not_found"
+
+
+async def test_delete_log_not_found(client):
+    resp = await client.delete("/api/logs/abcdef123456")
+    assert resp.status_code == 404
+    assert resp.json()["status"] == "not_found"
+
+
+@pytest.mark.parametrize("bad_id", ["ABCDEF123456", "abcdef12345", "not-hex-here"])
+async def test_delete_log_malformed_id_is_404(client, bad_id):
+    """Malformed ids are rejected, never treated as a path."""
+    resp = await client.delete(f"/api/logs/{bad_id}")
+    assert resp.status_code == 404
+    assert resp.json()["status"] == "not_found"
+
+
+async def test_delete_log_leaves_other_entries(client):
+    """Deleting one entry does not disturb the others."""
+    from prompt_interceptor.dashboard import _logger
+
+    rids = [_logger.log_request("POST", f"/api/chat/{i}", {}, None) for i in range(3)]
+
+    resp = await client.delete(f"/api/logs/{rids[1]}")
+    assert resp.status_code == 200
+
+    remaining = {e["request_id"] for e in _logger.get_logs(limit=100)}
+    assert rids[0] in remaining
+    assert rids[2] in remaining
+    assert rids[1] not in remaining
+
+
+# ---------------------------------------------------------------------------
 # /api/raw-logs
 # ---------------------------------------------------------------------------
 
@@ -474,23 +522,23 @@ async def test_root_serves_static_index_when_present(plain_client):
 
 
 # ---------------------------------------------------------------------------
-# Live Prompts — Guardar / Limpiar buttons in HTML
+# Live Prompts — Save / Clear buttons in HTML
 # ---------------------------------------------------------------------------
 
 async def test_dashboard_html_has_clear_logs_button(client):
-    """Dashboard HTML includes the Limpiar button that calls clearLogs()."""
+    """Dashboard HTML includes the Clear button that calls clearLogs()."""
     resp = await client.get("/")
     assert resp.status_code == 200
     assert "clearLogs()" in resp.text
-    assert "Limpiar" in resp.text
+    assert "Clear" in resp.text
 
 
 async def test_dashboard_html_has_save_logs_button(client):
-    """Dashboard HTML includes the Guardar button that calls saveLogs()."""
+    """Dashboard HTML includes the Save button that calls saveLogs()."""
     resp = await client.get("/")
     assert resp.status_code == 200
     assert "saveLogs()" in resp.text
-    assert "Guardar" in resp.text
+    assert "Save" in resp.text
 
 
 async def test_dashboard_html_save_logs_js_function(client):
@@ -845,11 +893,11 @@ async def test_dashboard_html_extract_embedded_parses_json_format(client):
 # ---------------------------------------------------------------------------
 
 async def test_dashboard_html_has_load_file_button(client):
-    """Dashboard HTML includes a Cargar button that calls loadFile()."""
+    """Dashboard HTML includes a Load button that calls loadFile()."""
     resp = await client.get("/")
     assert resp.status_code == 200
     assert "loadFile()" in resp.text
-    assert "Cargar" in resp.text
+    assert "Load" in resp.text
 
 
 async def test_dashboard_html_load_file_js_function(client):

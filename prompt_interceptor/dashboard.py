@@ -119,6 +119,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .empty{color:#555;font-style:italic}
   .link-show{color:#4fc3f7;cursor:pointer;font-size:.8em;text-decoration:underline;
     background:none;border:none;padding:0}
+  .link-del{color:#f66;cursor:pointer;font-size:.9em;background:none;border:none;
+    padding:0 2px;opacity:.65}
+  .link-del:hover{opacity:1}
   .modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;
     background:rgba(0,0,0,.75);z-index:1000;overflow-y:auto}
   .modal-box{background:#16213e;border-radius:8px;padding:24px;max-width:1400px;
@@ -252,9 +255,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
       <h2 style="margin-bottom:0">Live Prompts</h2>
       <div style="display:flex;gap:6px">
-        <button class="btn-add" onclick="loadFile()" style="background:#0d3b66;border-color:#1a5b8a;color:#4fc3f7">&#128193; Cargar</button>
-        <button class="btn-add" onclick="saveLogs()" style="background:#1a4d1a;border-color:#2a6b2a;color:#5f5">&#8595; Guardar</button>
-        <button class="btn-add" onclick="clearLogs()" style="background:#4d1a1a;border-color:#6b2a2a;color:#f88">&#x2715; Limpiar</button>
+        <button class="btn-add" onclick="loadFile()" style="background:#0d3b66;border-color:#1a5b8a;color:#4fc3f7">&#128193; Load</button>
+        <button class="btn-add" onclick="saveLogs()" style="background:#1a4d1a;border-color:#2a6b2a;color:#5f5">&#8595; Save</button>
+        <button class="btn-add" onclick="clearLogs()" style="background:#4d1a1a;border-color:#6b2a2a;color:#f88">&#x2715; Clear</button>
       </div>
     </div>
     <div id="file-mode-banner" style="display:none;background:#0a1e0a;border:1px solid #1a4b1a;border-radius:6px;padding:8px 14px;margin-bottom:10px;color:#5f5;font-size:.85em;align-items:center;justify-content:space-between">
@@ -267,9 +270,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
     <table>
       <thead><tr>
-        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Tokens / Ctx%</th><th>Prompt</th><th>Response</th><th>Status</th><th></th>
+        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Tokens / Ctx%</th><th>Prompt</th><th>Response</th><th>Duration</th><th>Status</th><th></th>
       </tr></thead>
-      <tbody id="logs-body"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody>
+      <tbody id="logs-body"><tr><td colspan="10" class="empty">Loading...</td></tr></tbody>
     </table>
   </div>
 
@@ -310,7 +313,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       <div id="modal-error-msg" style="color:#daa;margin-top:2px;word-break:break-word"></div>
     </div>
     <div id="modal-dropped-banner" style="display:none;background:#3a0808;border:1px solid #6a1818;border-radius:5px;padding:10px 14px;margin-bottom:12px;color:#f55;font-size:.83em">
-      &#x2715; Petici&oacute;n descartada &mdash; Ollama no recibi&oacute; esta petici&oacute;n (204 No Content)
+      &#x2715; Request dropped &mdash; Ollama never received it (204 No Content)
     </div>
     <div class="modal-split">
       <div class="modal-panel">
@@ -520,7 +523,7 @@ function showRaw(id) {
     toolsBlock.style.display = 'none';
   }
 
-  document.getElementById('modal-response').textContent = respText || '(sin respuesta)';
+  document.getElementById('modal-response').textContent = respText || '(no response)';
 
   const corrBanner = document.getElementById('modal-correction-banner');
   if (l._correction_applied) {
@@ -538,7 +541,7 @@ function showRaw(id) {
     if (ttu.context_size != null) parts.push('Ctx: ' + ttu.context_size);
     if (ttu.context_utilization_pct != null) {
       const pc = ttu.context_utilization_pct >= 90 ? '#f55' : ttu.context_utilization_pct >= 70 ? '#ffa040' : '#4fc3f7';
-      parts.push('<span style="color:' + pc + '">' + ttu.context_utilization_pct + '% de contexto</span>');
+      parts.push('<span style="color:' + pc + '">' + ttu.context_utilization_pct + '% of context</span>');
     }
     if (ttu.offload) {
       const offloadLabel = ttu.offload === 'gpu' ? '&#x1F7E2; GPU' : ttu.offload === 'cpu' ? '&#x1F7E1; CPU' : '&#x1F7E0; GPU+CPU';
@@ -558,12 +561,12 @@ function showRaw(id) {
   if (sc && sc >= 400) {
     const labels = {
       400: 'Bad Request',
-      408: 'Request Timeout — tiempo de espera agotado',
-      413: 'Context Window Exceeded — contexto agotado',
-      500: 'Internal Server Error — error interno del proxy',
-      502: 'Bad Gateway — no se puede conectar a Ollama',
-      503: 'Service Unavailable — Ollama no disponible',
-      504: 'Gateway Timeout — Ollama tardó demasiado',
+      408: 'Request Timeout — the request took too long',
+      413: 'Context Window Exceeded — context window full',
+      500: 'Internal Server Error — proxy failure',
+      502: 'Bad Gateway — cannot connect to Ollama',
+      503: 'Service Unavailable — Ollama is not available',
+      504: 'Gateway Timeout — Ollama took too long',
     };
     document.getElementById('modal-error-code').textContent = 'HTTP ' + sc;
     document.getElementById('modal-error-label').textContent = labels[sc] || 'Error';
@@ -657,7 +660,7 @@ function renderLogsTable(logs) {
   const tbody = document.getElementById('logs-body');
   document.getElementById('stat-requests').textContent = logs.length;
   if (!logs.length) {
-    tbody.innerHTML = '<tr><td colspan="9" class="empty">No requests yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">No requests yet.</td></tr>';
     document.getElementById('stat-ctx').textContent = '-';
     document.getElementById('stat-ctx').style.color = '';
     document.getElementById('ctx-warn-banner').style.display = 'none';
@@ -731,7 +734,7 @@ function renderLogsTable(logs) {
     }
     const isDropped = l.status_code === 204 && rb?.status === 'dropped';
     const respPreview = isDropped
-      ? '<span style="color:#f55;font-weight:600">[descartado]</span>'
+      ? '<span style="color:#f55;font-weight:600">[dropped]</span>'
       : (respText ? esc(respText.slice(0, 100)) + (respText.length > 100 ? '…' : '') : '<span class="empty">-</span>');
     const statusCode = l.status_code ? `<span class="badge ${isDropped || l.status_code >= 400 ? 'red' : 'green'}">${l.status_code}</span>` : '';
     const typeTag = l.type === 'response'
@@ -742,13 +745,13 @@ function renderLogsTable(logs) {
       : '';
     let interceptBadge = '';
     if (_pendingCache[l.request_id]) {
-      interceptBadge = '<span class="badge" style="background:#2a2000;color:#ffa040;border:1px solid #5a4000;font-size:.75em">&#x23F3; interceptando</span>';
+      interceptBadge = '<span class="badge" style="background:#2a2000;color:#ffa040;border:1px solid #5a4000;font-size:.75em">&#x23F3; intercepting</span>';
     } else if (isDropped) {
-      interceptBadge = '<span class="badge" style="background:#3a0808;color:#f55;border:1px solid #6a1818;font-size:.75em">&#x2715; descartado</span>';
+      interceptBadge = '<span class="badge" style="background:#3a0808;color:#f55;border:1px solid #6a1818;font-size:.75em">&#x2715; dropped</span>';
     } else if (l._intercepted_modified) {
-      interceptBadge = '<span class="badge" style="background:#0d3b66;color:#4fc3f7;border:1px solid #1a5b8a;font-size:.75em">&#x270E; editado</span>';
+      interceptBadge = '<span class="badge" style="background:#0d3b66;color:#4fc3f7;border:1px solid #1a5b8a;font-size:.75em">&#x270E; edited</span>';
     } else if (l._intercepted_forwarded) {
-      interceptBadge = '<span class="badge" style="background:#1a2a1a;color:#7dcc7d;border:1px solid #2a4a2a;font-size:.75em">&#x2713; enviado</span>';
+      interceptBadge = '<span class="badge" style="background:#1a2a1a;color:#7dcc7d;border:1px solid #2a4a2a;font-size:.75em">&#x2713; forwarded</span>';
     }
     const tu = l._tokens_usage;
     let tokenCell = '<span class="empty">-</span>';
@@ -764,16 +767,28 @@ function renderLogsTable(logs) {
         tokenCell = totStr;
       }
     }
+    // Hidden while an intercept is pending: log_response would recreate the file.
+    const delBtn = (l.request_id && !_pendingCache[l.request_id])
+      ? ` <button class="link-del" title="Delete this message" onclick="deleteLog('${esc(String(l.request_id))}')">&#x2715;</button>`
+      : '';
+    const dur = l._duration_ms;
+    let durCell = '<span class="empty">-</span>';
+    if (dur != null) {
+      const durStr = dur < 1000 ? dur + ' ms' : (dur/1000).toFixed(1) + ' s';
+      const durColor = dur >= 20000 ? '#f55' : dur >= 5000 ? '#ffa040' : '#9a9ac0';
+      durCell = '<span style="color:' + durColor + '">' + durStr + '</span>';
+    }
     return `<tr>
       <td>${ts}</td>
       <td>${esc(method)}</td>
       <td><code>${esc(path)}</code></td>
-      <td><code>${esc(model)}</code>${modelModified ? ' <span class="badge blue">&#x270E; editado</span>' : ''}</td>
+      <td><code>${esc(model)}</code>${modelModified ? ' <span class="badge blue">&#x270E; edited</span>' : ''}</td>
       <td style="white-space:nowrap;text-align:right;font-size:.85em">${tokenCell}</td>
       <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(preview)}</td>
       <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${respPreview}</td>
+      <td style="white-space:nowrap;text-align:right;font-size:.85em">${durCell}</td>
       <td>${typeTag} ${statusCode} ${corrBadge} ${interceptBadge}</td>
-      <td><button class="link-show" onclick="showRaw('${esc(String(cacheKey))}')">show</button></td>
+      <td style="white-space:nowrap"><button class="link-show" onclick="showRaw('${esc(String(cacheKey))}')">show</button>${delBtn}</td>
     </tr>`;
   }).join('');
   if (maxCtxPct !== null) {
@@ -801,7 +816,7 @@ async function loadLogs() {
     renderLogsTable(data.logs || []);
   } catch(e) {
     const tb = document.getElementById('logs-body');
-    tb.innerHTML = '<tr><td colspan="9" id="_logs-err"></td></tr>';
+    tb.innerHTML = '<tr><td colspan="10" id="_logs-err"></td></tr>';
     document.getElementById('_logs-err').textContent = 'Error: ' + e.message;
   }
 }
@@ -891,6 +906,12 @@ async function deleteRule(index) {
   loadStatus();
 }
 
+async function deleteLog(requestId) {
+  await fetch(`/api/logs/${requestId}`, {method: 'DELETE'});
+  delete _logsCache[requestId];
+  loadLogs();
+}
+
 async function addModifier() {
   const matchPath = document.getElementById('f-match-path').value.trim();
   const matchJp   = document.getElementById('f-match-jp').value.trim();
@@ -949,7 +970,7 @@ async function submitEditModal() {
   if (!_editModalId) return;
   const ta = document.getElementById('edit-modal-ta');
   let body;
-  try { body = JSON.parse(ta.value); } catch(e) { alert('JSON inválido: ' + e.message); return; }
+  try { body = JSON.parse(ta.value); } catch(e) { alert('Invalid JSON: ' + e.message); return; }
   await fetch(`/api/intercept/${_editModalId}/edit`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -965,7 +986,7 @@ async function dropRequest(id) {
 }
 
 async function clearLogs() {
-  if (!confirm('¿Limpiar todos los logs de la sesión actual?')) return;
+  if (!confirm('Clear all logs from the current session?')) return;
   await fetch('/api/reset', {method: 'POST'});
   Object.keys(_logsCache).forEach(k => delete _logsCache[k]);
   loadLogs();
@@ -1155,6 +1176,14 @@ async def reset_session():
 @router.get("/logs")
 async def logs(limit: int = 20):
     return {"logs": _logger.get_logs(limit=limit)}
+
+
+@router.delete("/logs/{request_id}")
+async def delete_log(request_id: str):
+    """Delete a single traffic log entry by request id."""
+    if _logger.delete_log(request_id):
+        return JSONResponse(status_code=200, content={"status": "deleted"})
+    return JSONResponse(status_code=404, content={"status": "not_found"})
 
 
 @router.get("/raw-logs")

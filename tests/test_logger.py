@@ -339,6 +339,119 @@ def test_get_all_logs_skips_unreadable_file(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# start_timer / _duration_ms
+# ---------------------------------------------------------------------------
+
+def test_start_timer_records_duration(tl, cfg):
+    """log_response stores _duration_ms when the request was timed."""
+    rid = tl.log_request("POST", "/api/chat", {}, None)
+    tl.start_timer(rid)
+    time.sleep(0.01)
+    tl.log_response(rid, 200, {}, {"done": True})
+
+    data = json.loads((tl._get_date_dir() / f"req_{rid}.json").read_text())
+    assert isinstance(data["_duration_ms"], int)
+    assert data["_duration_ms"] >= 0
+
+
+def test_no_duration_field_without_start_timer(tl, cfg):
+    """_duration_ms is omitted entirely when the request was never timed."""
+    rid = tl.log_request("POST", "/api/chat", {}, None)
+    tl.log_response(rid, 200, {}, {"done": True})
+
+    data = json.loads((tl._get_date_dir() / f"req_{rid}.json").read_text())
+    assert "_duration_ms" not in data
+
+
+def test_start_timer_ignores_empty_request_id(tl):
+    """start_timer is a no-op for a missing request id (passthrough w/o logger id)."""
+    tl.start_timer(None)
+    tl.start_timer("")
+    assert tl._forward_start == {}
+
+
+def test_start_timer_dict_is_bounded(tl):
+    """Requests that never reach log_response must not grow the dict forever."""
+    from prompt_interceptor.logger import _MAX_TIMERS
+
+    for i in range(_MAX_TIMERS + 50):
+        tl.start_timer(f"{i:012x}")
+
+    assert len(tl._forward_start) <= _MAX_TIMERS
+
+
+def test_start_timer_evicts_oldest_first(tl):
+    """The bound drops the oldest mark, keeping the most recent ones."""
+    from prompt_interceptor.logger import _MAX_TIMERS
+
+    for i in range(_MAX_TIMERS + 1):
+        tl.start_timer(f"{i:012x}")
+
+    assert f"{0:012x}" not in tl._forward_start
+    assert f"{_MAX_TIMERS:012x}" in tl._forward_start
+
+
+# ---------------------------------------------------------------------------
+# delete_log
+# ---------------------------------------------------------------------------
+
+def test_delete_log_removes_only_that_entry(tl):
+    """delete_log removes the requested file and leaves the others alone."""
+    rids = [tl.log_request("GET", f"/path/{i}", {}, None) for i in range(3)]
+    date_dir = tl._get_date_dir()
+
+    assert tl.delete_log(rids[1]) is True
+
+    remaining = {f.name for f in date_dir.glob("req_*.json")}
+    assert remaining == {f"req_{rids[0]}.json", f"req_{rids[2]}.json"}
+
+
+def test_delete_log_missing_file_returns_false(tl):
+    """A well-formed but unknown request id is a no-op."""
+    assert tl.delete_log("abcdef123456") is False
+
+
+@pytest.mark.parametrize("bad_id", [
+    "../../etc/passwd",
+    "..",
+    "",
+    None,
+    "req_abcdef123456",
+    "ABCDEF123456",      # uppercase is not what _generate_request_id emits
+    "abcdef12345",       # too short
+    "abcdef1234567",     # too long
+    "abcdef12345/",
+])
+def test_delete_log_rejects_malformed_ids(tl, bad_id):
+    """delete_log refuses anything that is not a 12-char hex id, untouched disk."""
+    rid = tl.log_request("GET", "/api/chat", {}, None)
+    date_dir = tl._get_date_dir()
+    before = {f.name for f in date_dir.glob("*")}
+
+    assert tl.delete_log(bad_id) is False
+    assert {f.name for f in date_dir.glob("*")} == before
+    assert (date_dir / f"req_{rid}.json").exists()
+
+
+def test_delete_log_does_not_escape_log_dir(tl, tmp_path):
+    """A traversal attempt cannot reach a file outside the log directory."""
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me")
+
+    assert tl.delete_log(f"../../{victim.name}") is False
+    assert victim.exists()
+
+
+def test_delete_log_then_get_logs_excludes_it(tl):
+    """The deleted entry no longer shows up in get_logs."""
+    rids = [tl.log_request("GET", f"/path/{i}", {}, None) for i in range(3)]
+    tl.delete_log(rids[0])
+
+    got = {entry["request_id"] for entry in tl.get_logs(limit=10)}
+    assert got == {rids[1], rids[2]}
+
+
+# ---------------------------------------------------------------------------
 # clear_logs
 # ---------------------------------------------------------------------------
 
