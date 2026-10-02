@@ -3944,3 +3944,72 @@ async def test_v1_non_streaming_xml_tool_call_reaches_client(cfg, engine_and_log
     assert msg["content"] == "Season: 2027"
     assert msg["tool_calls"][0]["function"]["name"] == "task"
     assert payload["choices"][0]["finish_reason"] == "tool_calls"
+
+
+# ---------------------------------------------------------------------------
+# num_ctx override logging + vision requests
+# ---------------------------------------------------------------------------
+
+_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg=="
+
+
+def _vision_body(num_ctx=8192):
+    return {
+        "model": "qwen2.5vl:7b",
+        "stream": False,
+        "options": {"temperature": 0.1, "num_ctx": num_ctx},
+        "messages": [{"role": "user", "content": "what is this?", "images": [_PNG_B64]}],
+    }
+
+
+async def test_handle_chat_vision_logs_num_ctx_override(cfg, engine_and_logger, monkeypatch):
+    """Images are forwarded intact and the overridden num_ctx is visible in the log."""
+    engine, logger = engine_and_logger
+    cfg.context_size = 32768
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    crash = {"error": "llama-server process has terminated: exit status 0xc0000409: CUDA error"}
+    fetch = AsyncMock(return_value=(500, {"content-type": "application/json"}, json.dumps(crash).encode()))
+    with patch("prompt_interceptor.proxy._fetch_from_ollama", new=fetch):
+        resp = await handle_chat_request(make_req(_vision_body()), engine, logger)
+
+    assert resp.status_code == 500
+    sent = json.loads(fetch.call_args.args[4])
+    assert sent["messages"][0]["images"] == [_PNG_B64]
+    assert sent["options"]["num_ctx"] == 32768
+
+    entry = logger.get_logs(limit=1)[0]
+    assert entry["_num_ctx_override"] == {"client": 8192, "sent": 32768}
+    assert entry["body"]["options"]["num_ctx"] == 32768
+    assert entry["response_body"] == crash
+
+
+async def test_handle_chat_no_override_when_num_ctx_matches(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    cfg.context_size = 8192
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    fetch = AsyncMock(return_value=(200, {"content-type": "application/json"}, b'{"done": true}'))
+    with patch("prompt_interceptor.proxy._fetch_from_ollama", new=fetch):
+        await handle_chat_request(make_req(_vision_body(8192)), engine, logger)
+
+    assert "_num_ctx_override" not in logger.get_logs(limit=1)[0]
+
+
+async def test_handle_stream_chat_logs_num_ctx_override(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    cfg.context_size = 16384
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    body = _vision_body()
+    del body["options"]["num_ctx"]
+    with patch(
+        "prompt_interceptor.proxy._start_streaming_request",
+        new=AsyncMock(side_effect=httpx.ConnectError("down")),
+    ):
+        await handle_stream_chat(make_req(body), engine, logger)
+
+    assert logger.get_logs(limit=1)[0]["_num_ctx_override"] == {"client": None, "sent": 16384}

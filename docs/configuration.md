@@ -66,9 +66,14 @@ Configuration is stored in `prompt_interceptor/config.json`. All fields are opti
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `context_size` | int | `32768` | Context window size passed as `OLLAMA_NUM_CTX` when launching Ollama from the desktop launcher. Does not affect the proxy itself. |
+| `context_size` | int | `32768` | Context window injected as `options.num_ctx` into every `/api/chat`, `/api/generate` and `/v1/chat/completions` request. **It overrides the `num_ctx` sent by the client.** Set to `0` to leave requests untouched. |
 
 Available options: `4096`, `8192`, `16384`, `32768`, `65536`, `131072`, `262144` (4k–256k).
+
+When the override changes the client's value, the log entry records it in `_num_ctx_override` and the
+dashboard shows a `⚠ ctx` badge. A larger context needs more VRAM for the KV cache. Vision models (e.g.
+`qwen2.5vl:7b`) also load an image encoder, so a large `context_size` can make Ollama crash while loading
+the model (`llama-server process has terminated … CUDA error`). For vision models start with `8192`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|

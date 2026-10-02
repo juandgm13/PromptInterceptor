@@ -62,7 +62,7 @@ Ollama (target: 11434)
 - Web dashboard UI (port 9090)
 - Modifier management (create/enable/disable/delete)
 - Mode switching (passthrough/intercept)
-- Live prompt viewer
+- Live prompt viewer (image badge + thumbnails/lightbox for vision requests)
 - Intercept queue (forward/edit/drop)
 - Statistics display
 
@@ -98,7 +98,7 @@ Edit `prompt_interceptor/config.json`:
 - `proxy_port`: Port for proxy server (default: 8080)
 - `target`: Ollama target URL (default: http://localhost:11434)
 - `mode`: `"passthrough"` or `"intercept"`
-- `context_size`: Context window for Ollama server (passed as OLLAMA_NUM_CTX)
+- `context_size`: Context window injected as `options.num_ctx` into requests (overrides the client value; 0 = off)
 - `rules`: List of matching/replacement modifiers
 - `dashboard_enabled`: Enable web dashboard
 - `dashboard_port`: Dashboard port (default: 9090)
@@ -126,7 +126,9 @@ Edit `prompt_interceptor/config.json`:
 - `/api/rules/{index}` - Delete modifier (DELETE)
 - `/api/enable-rule/{index}` - Enable modifier
 - `/api/disable-rule/{index}` - Disable modifier
-- `/api/logs` - Recent traffic logs
+- `/api/logs` - Recent traffic logs (base64 images replaced by placeholders)
+- `/api/logs/{id}` - One full log entry (images included)
+- `/api/logs/{id}/images` - Images sent in a request (data URIs / URLs)
 - `/api/raw-logs` - All logs (no limit)
 - `/api/reset` - Clear logs and reset session (POST)
 - `/api/intercept/pending` - Pending intercepts

@@ -710,3 +710,94 @@ def test_update_request_body_intercepted_modified_flag(tl, cfg):
     filepath = date_dir / f"req_{rid}.json"
     data = json.loads(filepath.read_text(encoding="utf-8"))
     assert data.get("_intercepted_modified") is True
+
+
+# ---------------------------------------------------------------------------
+# Image helpers (vision requests)
+# ---------------------------------------------------------------------------
+
+from prompt_interceptor.logger import extract_images, strip_images  # noqa: E402
+
+_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg=="
+_JPEG = "/9j/4AAQSkZJRgABAQAAAQABAAD"
+
+
+def test_extract_images_ollama_chat_and_generate():
+    chat = {"messages": [{"role": "system", "content": "s"},
+                         {"role": "user", "content": "q", "images": [_PNG, _JPEG]}]}
+    imgs = extract_images(chat)
+    assert [i["mime"] for i in imgs] == ["image/png", "image/jpeg"]
+    assert imgs[0]["data"] == _PNG
+    assert imgs[0]["location"] == "messages[1]"
+
+    gen = extract_images({"prompt": "q", "images": ["R0lGODlhAQABAAAAACw="]})
+    assert gen == [{"mime": "image/gif", "data": "R0lGODlhAQABAAAAACw=", "location": "prompt"}]
+
+
+def test_extract_images_openai_formats():
+    body = {"messages": [{"role": "user", "content": [
+        {"type": "text", "text": "q"},
+        {"type": "image_url", "image_url": {"url": f"data:image/webp;base64,{_PNG}"}},
+        {"type": "image_url", "image_url": "https://example.com/a.png"},
+    ]}]}
+    imgs = extract_images(body)
+    assert imgs[0] == {"mime": "image/webp", "data": _PNG, "location": "messages[0]"}
+    assert imgs[1] == {"mime": None, "url": "https://example.com/a.png", "location": "messages[0]"}
+
+
+def test_extract_images_anthropic_formats():
+    body = {"messages": [{"role": "user", "content": [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": _JPEG}},
+        {"type": "image", "source": {"type": "url", "url": "https://example.com/b.jpg"}},
+    ]}]}
+    imgs = extract_images(body)
+    assert imgs[0]["mime"] == "image/jpeg" and imgs[0]["data"] == _JPEG
+    assert imgs[1]["url"] == "https://example.com/b.jpg"
+
+
+def test_extract_images_none_and_text_only():
+    assert extract_images(None) == []
+    assert extract_images({"messages": [{"role": "user", "content": "hi"}]}) == []
+
+
+def test_strip_images_replaces_payloads_without_mutating():
+    body = {"messages": [
+        {"role": "user", "content": "q", "images": [_PNG]},
+        {"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_PNG}"}},
+            {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": _JPEG}},
+        ]},
+    ]}
+    original = json.dumps(body)
+    stripped, count = strip_images(body)
+
+    assert count == 4
+    assert json.dumps(body) == original
+    assert stripped["messages"][0]["images"][0].startswith("<image #1,")
+    blocks = stripped["messages"][1]["content"]
+    assert blocks[0]["image_url"]["url"].startswith("<image #2,")
+    assert blocks[1]["image_url"]["url"] == "https://example.com/a.png"
+    assert blocks[2]["source"]["data"].startswith("<image #4,")
+    assert _PNG not in json.dumps(stripped)
+
+
+def test_strip_images_no_images_returns_same_object():
+    body = {"messages": [{"role": "user", "content": "hi"}]}
+    stripped, count = strip_images(body)
+    assert stripped is body and count == 0
+
+
+def test_update_request_body_stores_num_ctx_override(tl):
+    rid = tl.log_request("POST", "/api/chat", {}, {"options": {"num_ctx": 8192}})
+    tl.update_request_body(rid, {"options": {"num_ctx": 32768}},
+                           num_ctx_override={"client": 8192, "sent": 32768})
+    tl.log_response(rid, 500, {}, {"error": "boom"})
+    entry = tl.get_log(rid)
+    assert entry["_num_ctx_override"] == {"client": 8192, "sent": 32768}
+    assert entry["body"]["options"]["num_ctx"] == 32768
+
+
+def test_get_log_rejects_bad_ids(tl):
+    assert tl.get_log("../../etc/passwd") is None
+    assert tl.get_log("abcdef123456") is None
