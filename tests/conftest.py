@@ -139,6 +139,11 @@ def proxy_app(test_config, monkeypatch):
     for mod in (main_mod, proxy_mod, re_mod, logger_mod, cors_mod, health_mod):
         monkeypatch.setattr(mod, "get_config", lambda: test_config)
 
+    # test_config runs in intercept mode and no dashboard resolves the requests,
+    # so each one would wait intercept_timeout (30 s) before auto-forwarding.
+    from prompt_interceptor.interceptor import interceptor
+    monkeypatch.setattr(interceptor, "_timeout_override", 0)
+
     from prompt_interceptor.main import create_app
     return create_app()
 
