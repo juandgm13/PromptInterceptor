@@ -363,6 +363,19 @@ def test_warn_if_bash_missing_returns_early_when_not_windows_bash_mode():
     mock_which.assert_not_called()
 
 
+def test_warn_if_bash_missing_silent_when_bash_found():
+    """Windows bash mode with bash on PATH: no dialog, no print."""
+    import prompt_interceptor.main as main_mod
+
+    with patch("prompt_interceptor.main.is_windows_bash_mode", return_value=True), \
+         patch("prompt_interceptor.main.shutil.which", return_value="C:/Git/bin/bash.exe") as mock_which, \
+         patch("builtins.print") as mock_print:
+        main_mod._warn_if_bash_missing()
+
+    mock_which.assert_called_once_with("bash")
+    mock_print.assert_not_called()
+
+
 def test_warn_if_bash_missing_shows_tkinter_messagebox_when_bash_absent(monkeypatch):
     """Lines 123-136: when windows_bash_mode=True and bash not in PATH, shows a tkinter warning."""
     import prompt_interceptor.main as main_mod
@@ -424,16 +437,21 @@ def test_warn_if_bash_missing_prints_when_tkinter_unavailable(capsys):
 # Running main.py directly (python prompt_interceptor/main.py)
 # ---------------------------------------------------------------------------
 
-def test_main_py_runs_as_a_script():
-    """Executing the file directly must not fail on its relative imports."""
-    import subprocess
+def test_main_py_runs_as_a_script(monkeypatch):
+    """Executing the file directly must not fail on its relative imports.
+
+    Runs in-process (not in a subprocess) so coverage sees the __package__ bootstrap.
+    run_name != "__main__" executes the imports without starting the servers.
+    """
+    import runpy
     import sys
     from pathlib import Path
 
-    repo_root = Path(__file__).resolve().parent.parent
-    result = subprocess.run(
-        [sys.executable, "-c",
-         "import runpy; runpy.run_path('prompt_interceptor/main.py', run_name='not_main')"],
-        cwd=repo_root, capture_output=True, text=True, timeout=60,
-    )
-    assert result.returncode == 0, result.stderr
+    import prompt_interceptor.main as main_mod
+
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    namespace = runpy.run_path(main_mod.__file__, run_name="not_main")
+
+    assert namespace["__package__"] == "prompt_interceptor"
+    assert str(Path(main_mod.__file__).resolve().parent.parent) in sys.path
+    assert isinstance(namespace["app"], FastAPI)

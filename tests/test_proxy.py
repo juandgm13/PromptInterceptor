@@ -4013,3 +4013,14 @@ async def test_handle_stream_chat_logs_num_ctx_override(cfg, engine_and_logger, 
         await handle_stream_chat(make_req(body), engine, logger)
 
     assert logger.get_logs(limit=1)[0]["_num_ctx_override"] == {"client": None, "sent": 16384}
+
+
+@pytest.mark.parametrize("original, injected", [
+    (None, {"options": {"num_ctx": 8192}}),
+    ({"options": {"num_ctx": 8192}}, None),
+    ({"options": {"num_ctx": 8192}}, {"options": {"num_ctx": 8192}}),
+    ({"model": "x"}, {"model": "x"}),
+])
+def test_num_ctx_override_info_none_when_nothing_changed(original, injected):
+    from prompt_interceptor.proxy import _num_ctx_override_info
+    assert _num_ctx_override_info(original, injected) is None

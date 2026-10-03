@@ -25,6 +25,14 @@ for _mod in ("tkinter", "tkinter.ttk", "tkinter.filedialog", "tkinter.messagebox
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
+def _windows_creationflags(monkeypatch):
+    """The launcher passes subprocess.CREATE_NEW_PROCESS_GROUP, which only exists on
+    Windows. Provide it elsewhere so the (Popen-mocked) launcher tests run on Linux/macOS."""
+    import subprocess
+    monkeypatch.setattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_config_file(tmp_path_factory, monkeypatch):
     """Point config.json at a temp file so tests never overwrite the user's real config."""
     monkeypatch.setattr(

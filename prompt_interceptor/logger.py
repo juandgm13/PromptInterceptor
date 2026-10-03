@@ -4,13 +4,12 @@ Traffic logging for PyProxy.
 
 import copy
 import json
-import os
 import re
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
-import hashlib
+import uuid
 import shutil
 
 import httpx
@@ -208,10 +207,13 @@ class TrafficLogger:
         return date_dir
 
     def _generate_request_id(self) -> str:
-        """Generate unique request ID."""
-        return hashlib.md5(
-            f"{datetime.now().isoformat()}:{os.getpid()}".encode()
-        ).hexdigest()[:12]
+        """Generate a unique request ID (12 lowercase hex chars).
+
+        Random rather than derived from the clock: on Windows datetime.now() can
+        return the same value for requests in the same tick, which made two
+        requests share an ID and overwrite each other's log file.
+        """
+        return uuid.uuid4().hex[:12]
 
     def start_timer(self, request_id: Optional[str]) -> None:
         """

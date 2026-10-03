@@ -801,3 +801,49 @@ def test_update_request_body_stores_num_ctx_override(tl):
 def test_get_log_rejects_bad_ids(tl):
     assert tl.get_log("../../etc/passwd") is None
     assert tl.get_log("abcdef123456") is None
+
+
+def test_request_ids_unique_when_clock_does_not_advance(tl):
+    """Requests logged in the same clock tick (common on Windows) get distinct ids."""
+    import re
+    from datetime import datetime as real_datetime
+
+    frozen = real_datetime(2026, 10, 3, 12, 0, 0)
+
+    class FrozenDatetime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen
+
+    with patch("prompt_interceptor.logger.datetime", FrozenDatetime):
+        ids = [tl.log_request("GET", f"/p/{i}", {}, None) for i in range(200)]
+
+    assert len(set(ids)) == 200
+    assert all(re.fullmatch(r"[0-9a-f]{12}", i) for i in ids)
+    assert len(list(tl._get_date_dir().glob("req_*.json"))) == 200
+
+
+def test_image_helpers_skip_malformed_entries():
+    """Non-dict messages/blocks and non-string payloads are ignored, not crashed on."""
+    body = {"messages": [
+        "not a message",
+        {"role": "user", "images": [None, "AAAAunknownsignature"], "content": [
+            "not a block",
+            {"type": "image_url", "image_url": {"url": 123}},
+            {"type": "image", "source": {"type": "url", "url": "https://example.com/c.png"}},
+        ]},
+    ]}
+    imgs = extract_images(body)
+    # unknown base64 signature falls back to PNG
+    assert imgs[0] == {"mime": "image/png", "data": "AAAAunknownsignature", "location": "messages[1]"}
+    assert imgs[1] == {"mime": None, "url": "https://example.com/c.png", "location": "messages[1]"}
+    assert len(imgs) == 2
+
+    stripped, count = strip_images(body)
+    assert count == 2
+    msg = stripped["messages"][1]
+    assert msg["images"][0] is None
+    assert msg["images"][1].startswith("<image #1,")
+    assert msg["content"][1]["image_url"]["url"] == 123
+    # anthropic URL images are counted but kept as-is
+    assert msg["content"][2]["source"]["url"] == "https://example.com/c.png"

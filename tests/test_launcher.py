@@ -2877,6 +2877,8 @@ def test_parse_ollama_host_keeps_localhost_detectable():
     ("http://192.168.1.50:8000", "192.168.1.50:8000"),
     ("http://localhost:11434", "localhost"),
     ("", "127.0.0.1"),
+    ("http://192.168.1.50:99999", "192.168.1.50"),   # out-of-range port: shown without it
+    ("http://192.168.1.50:abc", "192.168.1.50"),     # non-numeric port
 ])
 def test_format_ollama_host(target, expected):
     from prompt_interceptor.launcher import _format_ollama_host
