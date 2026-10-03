@@ -222,6 +222,67 @@ async def test_delete_log_leaves_other_entries(client):
 
 
 # ---------------------------------------------------------------------------
+# Images in logs
+# ---------------------------------------------------------------------------
+
+_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg=="
+
+
+def _log_vision_request():
+    from prompt_interceptor.dashboard import _logger
+    body = {"model": "qwen2.5vl:7b",
+            "messages": [{"role": "user", "content": "what?", "images": [_PNG_B64]}]}
+    return _logger.log_request("POST", "/api/chat", {}, body)
+
+
+async def test_api_logs_strips_image_payloads(client):
+    rid = _log_vision_request()
+    resp = await client.get("/api/logs?limit=100")
+    entry = next(e for e in resp.json()["logs"] if e["request_id"] == rid)
+    assert entry["_image_count"] == 1
+    assert _PNG_B64 not in json.dumps(entry)
+    assert entry["body"]["messages"][0]["images"][0].startswith("<image #1,")
+
+
+async def test_api_log_images_returns_data_uris(client):
+    rid = _log_vision_request()
+    resp = await client.get(f"/api/logs/{rid}/images")
+    assert resp.status_code == 200
+    assert resp.json()["images"] == [{
+        "mime": "image/png",
+        "src": f"data:image/png;base64,{_PNG_B64}",
+        "location": "messages[0]",
+    }]
+
+
+@pytest.mark.parametrize("bad_id", ["abcdef123456", "not-hex-here"])
+async def test_api_log_images_not_found(client, bad_id):
+    resp = await client.get(f"/api/logs/{bad_id}/images")
+    assert resp.status_code == 404
+
+
+async def test_api_get_log_returns_full_entry_with_images(client):
+    rid = _log_vision_request()
+    resp = await client.get(f"/api/logs/{rid}")
+    assert resp.status_code == 200
+    assert resp.json()["body"]["messages"][0]["images"] == [_PNG_B64]
+    assert (await client.get("/api/logs/abcdef123456")).status_code == 404
+
+
+async def test_api_raw_logs_keeps_images(client):
+    rid = _log_vision_request()
+    resp = await client.get("/api/raw-logs")
+    entry = next(e for e in resp.json()["logs"] if e["request_id"] == rid)
+    assert entry["body"]["messages"][0]["images"] == [_PNG_B64]
+
+
+async def test_root_contains_image_viewer(client):
+    resp = await client.get("/")
+    assert 'id="modal-images"' in resp.text
+    assert 'id="img-lightbox"' in resp.text
+
+
+# ---------------------------------------------------------------------------
 # /api/raw-logs
 # ---------------------------------------------------------------------------
 

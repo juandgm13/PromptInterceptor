@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
 from ._version import __version__
 from .config import get_config, save_config
 from .interceptor import interceptor
-from .logger import TrafficLogger
+from .logger import TrafficLogger, extract_images, strip_images
 from .rules_engine import RuleEngine
 from .health import check_proxy_health, check_target_health, get_models, get_status
 
@@ -154,6 +154,21 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .modal-prompt-pre{background:#0d0d1e;padding:14px;border-radius:6px;font-size:.78em;
     overflow:auto;max-height:calc(80vh - 40px);line-height:1.5;
     white-space:pre-wrap;word-break:break-word}
+  .img-badge{background:#2a1a3a;color:#c89bff;border:1px solid #4a2a6a;font-size:.75em;margin-right:4px}
+  .ctx-badge{background:#2a2000;color:#ffa040;border:1px solid #5a4000;font-size:.75em}
+  .modal-images-block{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
+  .modal-images-title{color:#c89bff;font-size:.78em;font-weight:600}
+  .modal-images-grid{display:flex;flex-wrap:wrap;gap:8px}
+  .modal-thumb{display:flex;flex-direction:column;align-items:center;gap:3px;
+    background:#0d0d1e;border:1px solid #2a2a4a;border-radius:6px;padding:6px;cursor:zoom-in}
+  .modal-thumb:hover{border-color:#c89bff}
+  .modal-thumb img{max-height:160px;max-width:220px;object-fit:contain;display:block}
+  .modal-thumb span{color:#9a9ac0;font-size:.72em}
+  .img-lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:2000;
+    align-items:center;justify-content:center;flex-direction:column;gap:10px;cursor:zoom-out}
+  .img-lightbox img{max-width:95vw;max-height:88vh;object-fit:contain;background:#fff1}
+  .img-lightbox a{color:#4fc3f7;font-size:.85em}
+  .crash-hint{margin-top:8px;padding-top:8px;border-top:1px solid #4a1a1a;color:#ffa040}
 </style>
 </head>
 <body>
@@ -291,6 +306,12 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Full-size image viewer -->
+<div class="img-lightbox" id="img-lightbox" onclick="closeLightbox()">
+  <img id="img-lightbox-img" alt="">
+  <a id="img-lightbox-link" target="_blank" rel="noopener" onclick="event.stopPropagation()">Open in new tab</a>
+</div>
+
 <!-- Raw data modal -->
 <div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal()">
   <div class="modal-box">
@@ -311,6 +332,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         <span style="color:#c77;font-weight:600" id="modal-error-label"></span>
       </div>
       <div id="modal-error-msg" style="color:#daa;margin-top:2px;word-break:break-word"></div>
+      <div id="modal-error-hint" class="crash-hint" style="display:none"></div>
     </div>
     <div id="modal-dropped-banner" style="display:none;background:#3a0808;border:1px solid #6a1818;border-radius:5px;padding:10px 14px;margin-bottom:12px;color:#f55;font-size:.83em">
       &#x2715; Request dropped &mdash; Ollama never received it (204 No Content)
@@ -318,6 +340,10 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="modal-split">
       <div class="modal-panel">
         <div class="modal-panel-title">Prompt</div>
+        <div id="modal-images" class="modal-images-block" style="display:none">
+          <div class="modal-images-title" id="modal-images-title"></div>
+          <div class="modal-images-grid" id="modal-images-grid"></div>
+        </div>
         <pre class="modal-prompt-pre" id="modal-prompt"></pre>
       </div>
       <div class="modal-panel">
@@ -360,6 +386,132 @@ function esc(s) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+// --- Images (vision models) ---
+// Mirrors extract_images() in logger.py: Ollama "images" lists (bare base64),
+// OpenAI "image_url" blocks and Anthropic "image" blocks.
+const _IMG_SIGS = [['iVBOR', 'image/png'], ['/9j/', 'image/jpeg'], ['R0lG', 'image/gif'], ['UklG', 'image/webp'], ['Qk', 'image/bmp']];
+const _IMG_ICON = String.fromCodePoint(0x1F5BC);
+
+function sniffImageMime(data) {
+  for (const [prefix, mime] of _IMG_SIGS) if (data.startsWith(prefix)) return mime;
+  return 'image/png';
+}
+
+// Only image data URIs and http(s) URLs are ever assigned to <img>/<a>.
+function safeImageSrc(src) {
+  return typeof src === 'string' && (/^data:image\\/[\\w.+-]+;base64,/.test(src) || /^https?:\\/\\//.test(src));
+}
+
+// Server placeholder that replaces a base64 payload in /api/logs bodies.
+function isImagePlaceholder(v) { return typeof v === 'string' && v.startsWith('<image #'); }
+
+// Images whose payload is present in the body (logs loaded from a file, image URLs).
+function extractImagesClient(body) {
+  const out = [];
+  if (!body || typeof body !== 'object') return out;
+  const addStr = (v, location, bare) => {
+    if (typeof v !== 'string' || isImagePlaceholder(v)) return;
+    if (v.startsWith('data:') || /^https?:/.test(v)) out.push({src: v, location});
+    else if (bare) out.push({src: 'data:' + sniffImageMime(v) + ';base64,' + v, location});
+  };
+  if (Array.isArray(body.images)) body.images.forEach(v => addStr(v, 'prompt', true));
+  (Array.isArray(body.messages) ? body.messages : []).forEach((m, i) => {
+    if (!m || typeof m !== 'object') return;
+    const location = 'messages[' + i + ']';
+    if (Array.isArray(m.images)) m.images.forEach(v => addStr(v, location, true));
+    if (!Array.isArray(m.content)) return;
+    m.content.forEach(b => {
+      if (!b || typeof b !== 'object') return;
+      if (b.type === 'image_url') {
+        addStr(typeof b.image_url === 'string' ? b.image_url : b.image_url?.url, location, false);
+      } else if (b.type === 'image' && b.source) {
+        const src = b.source;
+        if (src.type === 'base64' && typeof src.data === 'string' && !isImagePlaceholder(src.data)) {
+          out.push({src: 'data:' + (src.media_type || sniffImageMime(src.data)) + ';base64,' + src.data, location});
+        } else if (src.type === 'url') {
+          addStr(src.url, location, false);
+        }
+      }
+    });
+  });
+  return out.filter(im => safeImageSrc(im.src));
+}
+
+function messageImageCount(m) {
+  if (!m || typeof m !== 'object') return 0;
+  let n = Array.isArray(m.images) ? m.images.length : 0;
+  if (Array.isArray(m.content)) n += m.content.filter(b => b && (b.type === 'image_url' || b.type === 'image')).length;
+  return n;
+}
+
+function logImageCount(l) {
+  if (l._image_count != null) return l._image_count;
+  const b = l.body;
+  if (!b || typeof b !== 'object') return 0;
+  let n = Array.isArray(b.images) ? b.images.length : 0;
+  (Array.isArray(b.messages) ? b.messages : []).forEach(m => { n += messageImageCount(m); });
+  return n;
+}
+
+function renderModalImages(images) {
+  const block = document.getElementById('modal-images');
+  const grid = document.getElementById('modal-images-grid');
+  grid.textContent = '';
+  const safe = (images || []).filter(im => safeImageSrc(im.src));
+  if (!safe.length) { block.style.display = 'none'; return; }
+  document.getElementById('modal-images-title').textContent = _IMG_ICON + ' Images (' + safe.length + ')';
+  safe.forEach((im, i) => {
+    const card = document.createElement('div');
+    card.className = 'modal-thumb';
+    card.title = 'Click to enlarge';
+    const img = document.createElement('img');
+    img.alt = 'image #' + (i + 1);
+    const cap = document.createElement('span');
+    cap.textContent = '#' + (i + 1) + (im.location ? ' · ' + im.location : '');
+    img.onload = () => { cap.textContent += ' · ' + img.naturalWidth + '×' + img.naturalHeight; };
+    img.src = im.src;
+    card.append(img, cap);
+    card.onclick = () => openLightbox(im.src);
+    grid.appendChild(card);
+  });
+  block.style.display = '';
+}
+
+// Inline payloads are shown at once; base64 stripped from live logs is fetched on demand.
+function loadModalImages(l, id) {
+  renderModalImages([]);
+  const total = logImageCount(l);
+  if (!total) return;
+  const inline = extractImagesClient(l.body);
+  renderModalImages(inline);
+  if (_fileMode || !l.request_id || inline.length >= total) return;
+  fetchJSON('/api/logs/' + encodeURIComponent(l.request_id) + '/images')
+    .then(d => { if (_currentModalId === id && Array.isArray(d.images)) renderModalImages(d.images); })
+    .catch(() => {});
+}
+
+function openLightbox(src) {
+  if (!safeImageSrc(src)) return;
+  document.getElementById('img-lightbox-img').src = src;
+  document.getElementById('img-lightbox-link').href = src;
+  document.getElementById('img-lightbox').style.display = 'flex';
+}
+
+function closeLightbox() {
+  const box = document.getElementById('img-lightbox');
+  box.style.display = 'none';
+  document.getElementById('img-lightbox-img').removeAttribute('src');
+  document.getElementById('img-lightbox-link').removeAttribute('href');
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && document.getElementById('img-lightbox').style.display === 'flex') closeLightbox();
+});
+
+function numCtxOverrideText(ov) {
+  return 'num_ctx: client ' + (ov.client ?? 'not set') + ' → sent ' + ov.sent;
 }
 
 // Extract <tool_call>...</tool_call> blocks embedded in text (e.g. inside <think>)
@@ -411,6 +563,8 @@ function showRaw(id) {
 
   // --- Extract prompt ---
   let promptText = '';
+  let imgNo = 0;
+  const imgMarkers = n => Array.from({length: n}, () => '[' + _IMG_ICON + ' image #' + (++imgNo) + ']').join(' ');
   const msgs = l.body?.messages;
   if (msgs && msgs.length) {
     promptText = msgs.map(m => {
@@ -424,11 +578,15 @@ function showRaw(id) {
           .map(b => b.text || '')
           .join('\\n');
       }
+      const nImg = messageImageCount(m);
+      if (nImg) content = imgMarkers(nImg) + (content ? '\\n' + content : '');
       return `[${role}]\\n${content}`;
     }).join('\\n\\n---\\n\\n');
   } else if (l.body?.prompt) {
-    promptText = String(l.body.prompt);
+    const nImg = Array.isArray(l.body.images) ? l.body.images.length : 0;
+    promptText = (nImg ? imgMarkers(nImg) + '\\n' : '') + String(l.body.prompt);
   }
+  loadModalImages(l, id);
   document.getElementById('modal-prompt').textContent = promptText || '(sin prompt)';
 
   // --- Extract response and thinking ---
@@ -534,6 +692,8 @@ function showRaw(id) {
   }
   const tokenBanner = document.getElementById('modal-token-banner');
   const ttu = l._tokens_usage;
+  const ctxOv = l._num_ctx_override;
+  const ctxOvHtml = ctxOv ? '<span style="color:#ffa040">' + esc(numCtxOverrideText(ctxOv)) + ' &#x26A0;</span>' : '';
   if (ttu && ttu.total_tokens != null) {
     const parts = ['Total: ' + ttu.total_tokens];
     if (ttu.prompt_tokens != null) parts.push('Prompt: ' + ttu.prompt_tokens);
@@ -548,7 +708,11 @@ function showRaw(id) {
       const vramMB = ttu.size_vram ? Math.round(ttu.size_vram / 1024 / 1024) + ' MB VRAM' : '';
       parts.push(offloadLabel + (vramMB ? ' (' + vramMB + ')' : ''));
     }
+    if (ctxOvHtml) parts.push(ctxOvHtml);
     document.getElementById('modal-token-text').innerHTML = parts.join(' &nbsp;|&nbsp; ');
+    tokenBanner.style.display = '';
+  } else if (ctxOvHtml) {
+    document.getElementById('modal-token-text').innerHTML = ctxOvHtml;
     tokenBanner.style.display = '';
   } else {
     tokenBanner.style.display = 'none';
@@ -568,9 +732,27 @@ function showRaw(id) {
       503: 'Service Unavailable — Ollama is not available',
       504: 'Gateway Timeout — Ollama took too long',
     };
+    // Ollama's runner dies (e.g. out of VRAM) and Ollama relays it as a 500
+    const isCrash = /llama-server process has terminated|CUDA error/i.test(String(errMsg));
     document.getElementById('modal-error-code').textContent = 'HTTP ' + sc;
-    document.getElementById('modal-error-label').textContent = labels[sc] || 'Error';
+    document.getElementById('modal-error-label').textContent =
+      isCrash ? 'Ollama crashed while loading the model' : (labels[sc] || 'Error');
     document.getElementById('modal-error-msg').textContent = errMsg || '';
+    const hintEl = document.getElementById('modal-error-hint');
+    if (isCrash) {
+      const sent = ctxOv?.sent ?? l.body?.options?.num_ctx;
+      let hint = 'Ollama crashed while loading the model (usually out of VRAM).';
+      if (sent != null) {
+        hint += ' num_ctx sent: ' + sent;
+        if (ctxOv) hint += ' (client requested ' + (ctxOv.client ?? 'not set') + ')';
+        hint += '.';
+      }
+      hint += ' Try a smaller Context Size in the launcher or a smaller model.';
+      hintEl.textContent = hint;
+      hintEl.style.display = '';
+    } else {
+      hintEl.style.display = 'none';
+    }
     errorBanner.style.display = '';
   } else {
     errorBanner.style.display = 'none';
@@ -615,6 +797,8 @@ function closeModal() {
   document.getElementById('modal-raw-btn').textContent = 'Raw';
   document.querySelector('.modal-split').style.display = '';
   document.getElementById('modal-dropped-banner').style.display = 'none';
+  renderModalImages([]);
+  closeLightbox();
 }
 
 async function fetchJSON(url, opts) {
@@ -692,6 +876,11 @@ function renderLogsTable(logs) {
     } else if (l.body?.prompt) {
       preview = l.body.prompt.toString().slice(0, 80);
     }
+    const imgCount = logImageCount(l);
+    if (imgCount && preview === '-') preview = '[image]';
+    const imgBadge = imgCount
+      ? `<span class="badge img-badge" title="${imgCount} image(s)">&#x1F5BC; ${imgCount}</span>`
+      : '';
     // Extract LLM response text from response_body
     let respText = '';
     const rb = l.response_body;
@@ -743,6 +932,9 @@ function renderLogsTable(logs) {
     const corrBadge = l._correction_applied
       ? `<span class="badge" style="background:#0a2a1a;color:#5dba8a;border:1px solid #1a4a2a;font-size:.75em" title="Auto-corrected: ${esc(l._correction_applied)}">&#x2714; fixed</span>`
       : '';
+    const ctxBadge = l._num_ctx_override
+      ? `<span class="badge ctx-badge" title="${esc('num_ctx overridden by proxy: ' + numCtxOverrideText(l._num_ctx_override).replace('num_ctx: ', ''))}">&#x26A0; ctx</span>`
+      : '';
     let interceptBadge = '';
     if (_pendingCache[l.request_id]) {
       interceptBadge = '<span class="badge" style="background:#2a2000;color:#ffa040;border:1px solid #5a4000;font-size:.75em">&#x23F3; intercepting</span>';
@@ -784,10 +976,10 @@ function renderLogsTable(logs) {
       <td><code>${esc(path)}</code></td>
       <td><code>${esc(model)}</code>${modelModified ? ' <span class="badge blue">&#x270E; edited</span>' : ''}</td>
       <td style="white-space:nowrap;text-align:right;font-size:.85em">${tokenCell}</td>
-      <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(preview)}</td>
+      <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${imgBadge}${esc(preview)}</td>
       <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${respPreview}</td>
       <td style="white-space:nowrap;text-align:right;font-size:.85em">${durCell}</td>
-      <td>${typeTag} ${statusCode} ${corrBadge} ${interceptBadge}</td>
+      <td>${typeTag} ${statusCode} ${corrBadge} ${ctxBadge} ${interceptBadge}</td>
       <td style="white-space:nowrap"><button class="link-show" onclick="showRaw('${esc(String(cacheKey))}')">show</button>${delBtn}</td>
     </tr>`;
   }).join('');
@@ -993,9 +1185,16 @@ async function clearLogs() {
   loadStatus();
 }
 
-function saveLogs() {
-  const logs = Object.values(_logsCache);
-  if (!logs.length) { alert('No hay logs para guardar.'); return; }
+async function saveLogs() {
+  const cached = Object.values(_logsCache);
+  if (!cached.length) { alert('No logs to save.'); return; }
+  // Live logs carry image placeholders; fetch the full entries so the export keeps the images.
+  const logs = await Promise.all(cached.map(l =>
+    (!_fileMode && l._image_count && l.request_id)
+      ? fetchJSON('/api/logs/' + encodeURIComponent(l.request_id))
+          .then(full => (full && full.request_id ? full : l))
+          .catch(() => l)
+      : l));
   const blob = new Blob([JSON.stringify(logs, null, 2)], {type: 'application/json'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -1017,7 +1216,7 @@ function loadFile() {
       try {
         const data = JSON.parse(ev.target.result);
         const logs = Array.isArray(data) ? data : (data.logs || []);
-        if (!logs.length) { alert('No se encontraron logs en el archivo.'); return; }
+        if (!logs.length) { alert('No logs found in the file.'); return; }
         _loadedLogs = logs;
         _fileMode = true;
         Object.keys(_logsCache).forEach(k => delete _logsCache[k]);
@@ -1026,7 +1225,7 @@ function loadFile() {
         document.getElementById('file-mode-banner').style.display = 'flex';
         renderLogsTable(logs);
       } catch(err) {
-        alert('Error al leer el archivo: ' + err.message);
+        alert('Error reading the file: ' + err.message);
       }
     };
     reader.readAsText(file);
@@ -1173,9 +1372,44 @@ async def reset_session():
     return {"status": "reset", "deleted": deleted}
 
 
+def _without_image_payloads(entry):
+    """Replace base64 images in a log's request body with placeholders.
+
+    The table polls /api/logs every few seconds; shipping each image again
+    (hundreds of KB apiece) would make the dashboard crawl. The modal fetches
+    them on demand from /api/logs/{request_id}/images.
+    """
+    body, count = strip_images(entry.get("body"))
+    if not count:
+        return entry
+    return {**entry, "body": body, "_image_count": count}
+
+
 @router.get("/logs")
 async def logs(limit: int = 20):
-    return {"logs": _logger.get_logs(limit=limit)}
+    return {"logs": [_without_image_payloads(e) for e in _logger.get_logs(limit=limit)]}
+
+
+@router.get("/logs/{request_id}")
+async def get_log(request_id: str):
+    """Full log entry, images included (used by Save, since /api/logs strips them)."""
+    entry = _logger.get_log(request_id)
+    if entry is None:
+        return JSONResponse(status_code=404, content={"status": "not_found"})
+    return entry
+
+
+@router.get("/logs/{request_id}/images")
+async def log_images(request_id: str):
+    """Images sent in a logged request, as data URIs or URLs ready for <img src>."""
+    entry = _logger.get_log(request_id)
+    if entry is None:
+        return JSONResponse(status_code=404, content={"status": "not_found"})
+    images = []
+    for img in extract_images(entry.get("body")):
+        src = img.get("url") or f"data:{img['mime']};base64,{img['data']}"
+        images.append({"mime": img.get("mime"), "src": src, "location": img["location"]})
+    return {"images": images}
 
 
 @router.delete("/logs/{request_id}")

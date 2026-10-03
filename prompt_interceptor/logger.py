@@ -2,14 +2,14 @@
 Traffic logging for PyProxy.
 """
 
+import copy
 import json
-import os
 import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any
-import hashlib
+from typing import Optional, Dict, Any, List, Tuple
+import uuid
 import shutil
 
 import httpx
@@ -18,6 +18,129 @@ from .config import get_config
 
 # Max in-flight request timers kept in memory (see TrafficLogger.start_timer).
 _MAX_TIMERS = 512
+
+# Base64 signatures of the image formats vision models accept. Ollama's native
+# API sends bare base64 (no data: URI), so the MIME type must be sniffed.
+_IMAGE_SIGNATURES = (
+    ("iVBOR", "image/png"),
+    ("/9j/", "image/jpeg"),
+    ("R0lG", "image/gif"),
+    ("UklG", "image/webp"),
+    ("Qk", "image/bmp"),
+)
+
+_DATA_URI_RE = re.compile(r"^data:(image/[\w.+-]+);base64,(.*)$", re.DOTALL)
+
+
+def _sniff_image_mime(data: str) -> str:
+    for prefix, mime in _IMAGE_SIGNATURES:
+        if data.startswith(prefix):
+            return mime
+    return "image/png"
+
+
+def _iter_image_slots(body: Any):
+    """Yield (container, key, kind, location) for every image in a request body.
+
+    kind is "ollama" (bare base64 string in an images list), "openai" (image_url
+    block) or "anthropic" (image block with a source). container[key] is the
+    value to read or replace.
+    """
+    if not isinstance(body, dict):
+        return
+    if isinstance(body.get("images"), list):
+        for j in range(len(body["images"])):
+            yield body["images"], j, "ollama", "prompt"
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            continue
+        location = f"messages[{i}]"
+        if isinstance(msg.get("images"), list):
+            for j in range(len(msg["images"])):
+                yield msg["images"], j, "ollama", location
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "image_url":
+                if isinstance(block.get("image_url"), dict):
+                    yield block["image_url"], "url", "openai", location
+                elif "image_url" in block:
+                    yield block, "image_url", "openai", location
+            elif block.get("type") == "image" and isinstance(block.get("source"), dict):
+                yield block, "source", "anthropic", location
+
+
+def extract_images(body: Any) -> List[Dict[str, Any]]:
+    """Return every image in an Ollama, OpenAI or Anthropic request body.
+
+    Each item is {"mime", "location"} plus either "data" (base64) or "url".
+    """
+    images: List[Dict[str, Any]] = []
+    for container, key, kind, location in _iter_image_slots(body):
+        value = container[key]
+        if kind == "anthropic":
+            src = value
+            if src.get("type") == "base64" and isinstance(src.get("data"), str):
+                images.append({
+                    "mime": src.get("media_type") or _sniff_image_mime(src["data"]),
+                    "data": src["data"],
+                    "location": location,
+                })
+            elif src.get("type") == "url" and isinstance(src.get("url"), str):
+                images.append({"mime": None, "url": src["url"], "location": location})
+            continue
+        if not isinstance(value, str):
+            continue
+        match = _DATA_URI_RE.match(value)
+        if match:
+            images.append({"mime": match.group(1), "data": match.group(2), "location": location})
+        elif kind == "openai" or value.startswith(("http://", "https://")):
+            images.append({"mime": None, "url": value, "location": location})
+        else:
+            images.append({"mime": _sniff_image_mime(value), "data": value, "location": location})
+    return images
+
+
+def _image_placeholder(n: int, data: str) -> str:
+    # base64 encodes 3 bytes in 4 chars
+    return f"<image #{n}, {max(1, len(data) * 3 // 4 // 1024)} KB>"
+
+
+def strip_images(body: Any) -> Tuple[Any, int]:
+    """Return (copy of body with base64 image payloads replaced by placeholders, image count).
+
+    Image URLs are kept as-is. The original body is never mutated; it is only
+    copied when it actually contains images.
+    """
+    if not extract_images(body):
+        return body, 0
+    stripped = copy.deepcopy(body)
+    count = 0
+    for container, key, kind, _location in _iter_image_slots(stripped):
+        value = container[key]
+        # Count exactly the slots extract_images reports, so "#n" matches its order.
+        if kind == "anthropic":
+            if value.get("type") == "base64" and isinstance(value.get("data"), str):
+                count += 1
+                value["data"] = _image_placeholder(count, value["data"])
+            elif value.get("type") == "url" and isinstance(value.get("url"), str):
+                count += 1
+            continue
+        if not isinstance(value, str):
+            continue
+        count += 1
+        match = _DATA_URI_RE.match(value)
+        if match:
+            container[key] = _image_placeholder(count, match.group(2))
+        elif kind == "ollama" and not value.startswith(("http://", "https://")):
+            container[key] = _image_placeholder(count, value)
+    return stripped, count
 
 
 def _get_ollama_ps_info(model: str, target: str) -> Dict[str, Any]:
@@ -84,10 +207,13 @@ class TrafficLogger:
         return date_dir
 
     def _generate_request_id(self) -> str:
-        """Generate unique request ID."""
-        return hashlib.md5(
-            f"{datetime.now().isoformat()}:{os.getpid()}".encode()
-        ).hexdigest()[:12]
+        """Generate a unique request ID (12 lowercase hex chars).
+
+        Random rather than derived from the clock: on Windows datetime.now() can
+        return the same value for requests in the same tick, which made two
+        requests share an ID and overwrite each other's log file.
+        """
+        return uuid.uuid4().hex[:12]
 
     def start_timer(self, request_id: Optional[str]) -> None:
         """
@@ -317,6 +443,7 @@ class TrafficLogger:
         rule_applied: Optional[Dict[str, Any]] = None,
         intercepted_modified: bool = False,
         intercepted_forwarded: bool = False,
+        num_ctx_override: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Update the body of an existing request log entry without changing its type to 'response'.
 
@@ -343,6 +470,9 @@ class TrafficLogger:
             existing["_intercepted_modified"] = True
         if intercepted_forwarded:
             existing["_intercepted_forwarded"] = True
+        if num_ctx_override:
+            # {"client": <num_ctx the client asked for, or None>, "sent": <num_ctx forwarded>}
+            existing["_num_ctx_override"] = num_ctx_override
 
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(existing, f, indent=2, default=str)
@@ -420,6 +550,17 @@ class TrafficLogger:
                 continue
 
         return all_logs
+
+    def get_log(self, request_id: str) -> Optional[Dict[str, Any]]:
+        """Return a single log entry by request id, or None if missing or malformed."""
+        if not re.fullmatch(r"[0-9a-f]{12}", request_id or ""):
+            return None
+        filepath = self._get_date_dir() / f"req_{request_id}.json"
+        try:
+            with open(filepath, encoding="utf-8") as fp:
+                return json.load(fp)
+        except (OSError, json.JSONDecodeError):
+            return None
 
     def delete_log(self, request_id: str) -> bool:
         """

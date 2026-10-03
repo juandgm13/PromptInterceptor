@@ -104,9 +104,37 @@ Content-Type: application/json
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/logs?limit=20` | Recent traffic logs (default limit: 20) |
-| `GET` | `/api/raw-logs` | All available logs (no limit) |
+| `GET` | `/api/logs?limit=20` | Recent traffic logs (default limit: 20). Base64 images in request bodies are replaced by placeholders such as `"<image #1, 356 KB>"` and the entry gets `_image_count` |
+| `GET` | `/api/logs/{request_id}` | One full log entry, images included |
+| `GET` | `/api/logs/{request_id}/images` | Images sent in that request, ready for `<img src>` |
+| `DELETE` | `/api/logs/{request_id}` | Delete one log entry |
+| `GET` | `/api/raw-logs` | All available logs (no limit), images included |
 | `POST` | `/api/reset` | Clear all logs and reset session statistics |
+
+#### Images (vision models)
+
+Images are detected in the three request formats the proxy handles:
+
+| Format | Location |
+|--------|----------|
+| Ollama native (`/api/chat`, `/api/generate`) | `messages[].images[]` / `images[]` (bare base64; the MIME type is sniffed) |
+| OpenAI-compatible (`/v1/chat/completions`) | `{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}` |
+| Anthropic-compatible (`/v1/messages`) | `{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "..."}}` |
+
+```json
+GET /api/logs/69f41bc4992e/images
+
+{"images": [{"mime": "image/png", "src": "data:image/png;base64,iVBOR...", "location": "messages[1]"}]}
+```
+
+Image URLs (`http(s)://`) are returned as-is in `src`, with `mime: null`.
+
+#### Log entry fields
+
+| Field | Description |
+|-------|-------------|
+| `_image_count` | Number of images in the request (only in `/api/logs`, when the request has images) |
+| `_num_ctx_override` | `{"client": 8192, "sent": 32768}` when the proxy replaced the client's `options.num_ctx` with `context_size` (`client` is `null` if the client sent none). `body` then shows the body actually forwarded |
 
 ### Intercept
 

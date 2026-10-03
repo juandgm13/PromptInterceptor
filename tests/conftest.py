@@ -24,6 +24,23 @@ for _mod in ("tkinter", "tkinter.ttk", "tkinter.filedialog", "tkinter.messagebox
 # Config fixtures
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _windows_creationflags(monkeypatch):
+    """The launcher passes subprocess.CREATE_NEW_PROCESS_GROUP, which only exists on
+    Windows. Provide it elsewhere so the (Popen-mocked) launcher tests run on Linux/macOS."""
+    import subprocess
+    monkeypatch.setattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_config_file(tmp_path_factory, monkeypatch):
+    """Point config.json at a temp file so tests never overwrite the user's real config."""
+    monkeypatch.setattr(
+        "prompt_interceptor.config.CONFIG_PATH",
+        tmp_path_factory.mktemp("config") / "config.json",
+    )
+
+
 @pytest.fixture
 def test_config(tmp_path):
     """Config with one model-switching rule, using tmp_path for logs."""
@@ -129,6 +146,11 @@ def proxy_app(test_config, monkeypatch):
 
     for mod in (main_mod, proxy_mod, re_mod, logger_mod, cors_mod, health_mod):
         monkeypatch.setattr(mod, "get_config", lambda: test_config)
+
+    # test_config runs in intercept mode and no dashboard resolves the requests,
+    # so each one would wait intercept_timeout (30 s) before auto-forwarding.
+    from prompt_interceptor.interceptor import interceptor
+    monkeypatch.setattr(interceptor, "_timeout_override", 0)
 
     from prompt_interceptor.main import create_app
     return create_app()

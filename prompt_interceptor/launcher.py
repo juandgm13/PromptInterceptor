@@ -200,12 +200,12 @@ def _warn_wsl_firewall(host_ip: str, port: int) -> None:
         f'protocol=TCP dir=in localport={port} action=allow'
     )
     mb.showwarning(
-        "WSL no puede alcanzar el proxy",
-        f"WSL no puede conectarse a {host_ip}:{port}.\n\n"
-        f"Causa habitual: Windows Firewall bloquea el puerto {port} desde WSL2.\n\n"
-        f"Solución — ejecuta esto en PowerShell como Administrador:\n\n"
+        "WSL cannot reach the proxy",
+        f"WSL cannot connect to {host_ip}:{port}.\n\n"
+        f"Common cause: Windows Firewall blocks port {port} from WSL2.\n\n"
+        f"Fix — run this in PowerShell as Administrator:\n\n"
         f"{rule_cmd}\n\n"
-        f"Después vuelve a lanzar Open Code (WSL)."
+        f"Then launch Open Code (WSL) again."
     )
 
 

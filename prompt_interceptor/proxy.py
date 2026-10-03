@@ -63,6 +63,36 @@ def _inject_num_ctx(body_json: Optional[Dict[str, Any]]) -> Optional[Dict[str, A
     return {**body_json, "options": options}
 
 
+def _num_ctx_override_info(
+    original: Optional[Dict[str, Any]],
+    injected: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Describe a num_ctx override, or None when the forwarded value is unchanged."""
+    if not original or not injected:
+        return None
+    client = (original.get("options") or {}).get("num_ctx")
+    sent = (injected.get("options") or {}).get("num_ctx")
+    if sent is None or sent == client:
+        return None
+    return {"client": client, "sent": sent}
+
+
+def _inject_num_ctx_logged(
+    body_json: Optional[Dict[str, Any]],
+    logger: TrafficLogger,
+    request_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Inject num_ctx and, if it changed the request, log the body actually sent.
+
+    The request was logged before injection, so without this the dashboard would
+    show the client's num_ctx instead of the (often much larger) one Ollama got.
+    """
+    injected = _inject_num_ctx(body_json)
+    override = _num_ctx_override_info(body_json, injected)
+    if override:
+        logger.update_request_body(request_id, injected, num_ctx_override=override)
+    return injected
+
 def _parse_sse_response(chunks: list) -> Optional[Dict[str, Any]]:
     """Parse Anthropic SSE streaming chunks (/v1/messages) into a loggable response body."""
     full_content = ""
@@ -576,7 +606,7 @@ async def handle_v1_chat_completions(
         "POST", request.url.path, dict(request.headers), body_json
     )
 
-    body_json = _inject_num_ctx(body_json)
+    body_json = _inject_num_ctx_logged(body_json, logger, request_id)
 
     is_stream = bool(body_json.get("stream", False)) if body_json else False
 
@@ -721,8 +751,8 @@ def _error_response(status_code: int, message: str) -> JSONResponse:
 
 
 _CONTEXT_OVERFLOW_MSG = (
-    "Contexto agotado: el modelo truncó su respuesta al alcanzar el límite de contexto. "
-    "Reduce la longitud de la conversación o aumenta el tamaño de contexto."
+    "Context exhausted: the model truncated its response at the context limit. "
+    "Shorten the conversation or increase the context size."
 )
 
 
@@ -819,7 +849,7 @@ async def handle_chat_request(
     if modified:
         body_json = body
 
-    body_json = _inject_num_ctx(body_json)
+    body_json = _inject_num_ctx_logged(body_json, logger, request_id)
 
     if config.mode == "intercept":
         drop, body_json, _was_edited = await _apply_intercept(
@@ -897,7 +927,7 @@ async def handle_generate_request(
     if modified:
         body_json = body
 
-    body_json = _inject_num_ctx(body_json)
+    body_json = _inject_num_ctx_logged(body_json, logger, request_id)
 
     if config.mode == "intercept":
         drop, body_json, _was_edited = await _apply_intercept(
@@ -975,7 +1005,7 @@ async def handle_stream_chat(
     if modified:
         body_json = body
 
-    body_json = _inject_num_ctx(body_json)
+    body_json = _inject_num_ctx_logged(body_json, logger, request_id)
 
     if config.mode == "intercept":
         drop, body_json, _was_edited = await _apply_intercept(
@@ -1074,7 +1104,7 @@ async def handle_stream_generate(
     if modified:
         body_json = body
 
-    body_json = _inject_num_ctx(body_json)
+    body_json = _inject_num_ctx_logged(body_json, logger, request_id)
 
     if config.mode == "intercept":
         drop, body_json, _was_edited = await _apply_intercept(
