@@ -1187,7 +1187,7 @@ async function clearLogs() {
 
 async function saveLogs() {
   const cached = Object.values(_logsCache);
-  if (!cached.length) { alert('No hay logs para guardar.'); return; }
+  if (!cached.length) { alert('No logs to save.'); return; }
   // Live logs carry image placeholders; fetch the full entries so the export keeps the images.
   const logs = await Promise.all(cached.map(l =>
     (!_fileMode && l._image_count && l.request_id)
@@ -1216,7 +1216,7 @@ function loadFile() {
       try {
         const data = JSON.parse(ev.target.result);
         const logs = Array.isArray(data) ? data : (data.logs || []);
-        if (!logs.length) { alert('No se encontraron logs en el archivo.'); return; }
+        if (!logs.length) { alert('No logs found in the file.'); return; }
         _loadedLogs = logs;
         _fileMode = true;
         Object.keys(_logsCache).forEach(k => delete _logsCache[k]);
@@ -1225,7 +1225,7 @@ function loadFile() {
         document.getElementById('file-mode-banner').style.display = 'flex';
         renderLogsTable(logs);
       } catch(err) {
-        alert('Error al leer el archivo: ' + err.message);
+        alert('Error reading the file: ' + err.message);
       }
     };
     reader.readAsText(file);

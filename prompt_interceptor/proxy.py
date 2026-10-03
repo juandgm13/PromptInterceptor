@@ -751,8 +751,8 @@ def _error_response(status_code: int, message: str) -> JSONResponse:
 
 
 _CONTEXT_OVERFLOW_MSG = (
-    "Contexto agotado: el modelo truncó su respuesta al alcanzar el límite de contexto. "
-    "Reduce la longitud de la conversación o aumenta el tamaño de contexto."
+    "Context exhausted: the model truncated its response at the context limit. "
+    "Shorten the conversation or increase the context size."
 )
 
 

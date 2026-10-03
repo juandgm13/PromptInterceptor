@@ -418,3 +418,22 @@ def test_warn_if_bash_missing_prints_when_tkinter_unavailable(capsys):
     assert "WARNING" in captured.out or "bash" in captured.out.lower()
 
 
+
+
+# ---------------------------------------------------------------------------
+# Running main.py directly (python prompt_interceptor/main.py)
+# ---------------------------------------------------------------------------
+
+def test_main_py_runs_as_a_script():
+    """Executing the file directly must not fail on its relative imports."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import runpy; runpy.run_path('prompt_interceptor/main.py', run_name='not_main')"],
+        cwd=repo_root, capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stderr

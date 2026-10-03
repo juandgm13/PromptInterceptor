@@ -85,17 +85,27 @@ def test_load_config_with_rules(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_save_config_round_trip():
-    """save_config writes valid JSON; restore config.json afterwards."""
+    """save_config writes valid JSON that load_config reads back from the same path."""
     import prompt_interceptor.config as cfg_mod
-    config_path = Path(cfg_mod.__file__).parent / "config.json"
-    original = config_path.read_text()
-    try:
-        cfg = Config(proxy_port=7777)
-        save_config(cfg)
-        loaded = load_config()   # uses the same path
-        assert loaded.proxy_port == 7777
-    finally:
-        config_path.write_text(original)
+    save_config(Config(proxy_port=7777))
+    assert json.loads(cfg_mod.CONFIG_PATH.read_text())["proxy_port"] == 7777
+    assert load_config().proxy_port == 7777
+
+
+def test_tests_never_touch_the_packaged_config():
+    """The autouse conftest fixture keeps CONFIG_PATH out of the package directory."""
+    import prompt_interceptor.config as cfg_mod
+    package_dir = Path(cfg_mod.__file__).resolve().parent
+    assert package_dir not in cfg_mod.CONFIG_PATH.resolve().parents
+
+
+def test_config_path_redirects_load_and_save(tmp_path, monkeypatch):
+    import prompt_interceptor.config as cfg_mod
+    target = tmp_path / "custom.json"
+    monkeypatch.setattr(cfg_mod, "CONFIG_PATH", target)
+    save_config(Config(proxy_port=6543))
+    assert target.exists()
+    assert load_config().proxy_port == 6543
 
 
 # ---------------------------------------------------------------------------

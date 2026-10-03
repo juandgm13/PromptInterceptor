@@ -89,7 +89,7 @@ pip install -r prompt_interceptor/requirements.txt
 python -m prompt_interceptor
 
 # Proxy server only (headless)
-python prompt_interceptor/main.py
+python prompt_interceptor/main.py   # or: python -m prompt_interceptor.main
 ```
 
 ## Configuration

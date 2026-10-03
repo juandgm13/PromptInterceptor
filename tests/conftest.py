@@ -24,6 +24,15 @@ for _mod in ("tkinter", "tkinter.ttk", "tkinter.filedialog", "tkinter.messagebox
 # Config fixtures
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _isolated_config_file(tmp_path_factory, monkeypatch):
+    """Point config.json at a temp file so tests never overwrite the user's real config."""
+    monkeypatch.setattr(
+        "prompt_interceptor.config.CONFIG_PATH",
+        tmp_path_factory.mktemp("config") / "config.json",
+    )
+
+
 @pytest.fixture
 def test_config(tmp_path):
     """Config with one model-switching rule, using tmp_path for logs."""

@@ -83,9 +83,13 @@ class Config(BaseModel):
     python_app_env_var: str = "OLLAMA_HOST"
 
 
+# Location of config.json. Read at call time so tests can point it elsewhere.
+CONFIG_PATH = Path(__file__).parent / "config.json"
+
+
 def load_config(path: Optional[Path] = None) -> Config:
     """Load configuration from JSON file."""
-    config_path = path or Path(__file__).parent / "config.json"
+    config_path = path or CONFIG_PATH
 
     if not config_path.exists():
         return Config()
@@ -104,7 +108,7 @@ def save_config(config: Config) -> None:
     Raises:
         OSError: if the file cannot be written (e.g. permission denied).
     """
-    config_path = Path(__file__).parent / "config.json"
+    config_path = CONFIG_PATH
     try:
         with open(config_path, "w") as f:
             json.dump(config.model_dump(), f, indent=2)
