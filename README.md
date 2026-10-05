@@ -67,7 +67,7 @@ If the check fails, start Ollama manually and click **Check Ollama** again.
 | Option | Description |
 |---|---|
 | **Only Proxy** _(default)_ | Starts the proxy without launching any client. Point your own tool at `http://localhost:8080`. |
-| **Open Code (CLI)** | Auto-configures opencode to use the proxy and opens a terminal. Supported versions: **1.17.4–1.17.7** (defined in `prompt_interceptor/client_versions.py`). If an incompatible version is detected the entry shows `[unsupported: vX.Y.Z]` but can still be selected. |
+| **Open Code (CLI)** | Auto-configures opencode to use the proxy and opens a terminal. Supported versions: **1.17.4–1.18.34** (defined in `prompt_interceptor/client_versions.py`). If an incompatible version is detected the entry shows `[unsupported: vX.Y.Z]` but can still be selected. |
 | **Python App (Ollama)** | Launches a Python app with the Ollama host env var set to the proxy URL. |
 
 | Field | Description |

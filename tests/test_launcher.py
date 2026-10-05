@@ -157,7 +157,7 @@ def test_detect_clients_opencode_version_at_max(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/opencode" if cmd == "opencode" else None)
     from prompt_interceptor import launcher
     monkeypatch.setattr(launcher, "_is_opencode_in_wsl", lambda: False)
-    monkeypatch.setattr(launcher, "_get_opencode_version", lambda cmd="opencode": "1.17.7")
+    monkeypatch.setattr(launcher, "_get_opencode_version", lambda cmd="opencode": "1.18.34")
     clients, warnings = launcher._detect_clients()
     assert clients[1] == ("Open Code (CLI)", "opencode")
     assert warnings == []

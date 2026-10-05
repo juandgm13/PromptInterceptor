@@ -80,7 +80,7 @@ The desktop launcher (`python -m prompt_interceptor`) uses a sequential 3-step w
 
 | Field / Button | Behaviour |
 |----------------|-----------|
-| **AI Client** | Detected at startup. Available options: **Only Proxy** (always), **Open Code (CLI)** (if `opencode` is in PATH; supported versions **1.17.4–1.17.7**, defined in `prompt_interceptor/client_versions.py`; out-of-range versions appear with an `[unsupported: vX.Y.Z]` label but remain selectable), **Python App (Ollama)** (always). |
+| **AI Client** | Detected at startup. Available options: **Only Proxy** (always), **Open Code (CLI)** (if `opencode` is in PATH; supported versions **1.17.4–1.18.34**, defined in `prompt_interceptor/client_versions.py`; out-of-range versions appear with an `[unsupported: vX.Y.Z]` label but remain selectable), **Python App (Ollama)** (always). |
 | **Model** | Disabled until Ollama is ready. Populated from `GET /api/tags` (downloaded models only). |
 | **Work Dir** *(Open Code CLI)* | Working directory where the client terminal opens. |
 | **App Dir** *(Python App)* | Working directory for the Python app. |
