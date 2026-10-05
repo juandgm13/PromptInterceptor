@@ -994,6 +994,11 @@ class LauncherWindow:
             self.status_var.set("Error: Proxy Port must be a number.")
             return None
         config.context_size = _CTX_OPTIONS.get(self.ctx_var.get(), 4096)
+        # Only the Python App gets the num_ctx override; Only Proxy / Open Code keep
+        # whatever context Ollama is configured with by default.
+        name = self.client_var.get()
+        cmd_name = next((c for n, c in self._clients if n == name), "")
+        config.inject_context_size = cmd_name == "__python_app__"
         model = self.model_var.get().strip()
         if model:
             config.default_model = model

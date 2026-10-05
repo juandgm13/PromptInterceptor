@@ -61,8 +61,12 @@ class Config(BaseModel):
     # Model names to watch for rules
     model_names: List[str] = Field(default_factory=lambda: ["llama3", "mistral"])
 
-    # Context size for the Ollama server (passed as OLLAMA_NUM_CTX env var on start)
+    # Context window injected as options.num_ctx (only when inject_context_size is True)
     context_size: int = 32768
+
+    # Override the client's num_ctx with context_size. The launcher enables it only for
+    # "Python App (Ollama)"; Only Proxy / Open Code / headless keep Ollama's default.
+    inject_context_size: bool = False
 
     # Default model selected in the launcher
     default_model: str = ""
@@ -137,6 +141,13 @@ def reload_config():
     """Reload configuration from disk."""
     global _config
     _config = load_config()
+
+
+def effective_context_size(config: Config) -> Optional[int]:
+    """context_size when the num_ctx override is active, else None (Ollama's default applies)."""
+    if config.inject_context_size and config.context_size > 0:
+        return config.context_size
+    return None
 
 
 def config_to_json(config: Config) -> dict:

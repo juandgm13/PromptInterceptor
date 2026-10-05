@@ -3,4 +3,4 @@
 # and documentation references these values by citing this file path.
 
 OPENCODE_MIN_VERSION = "1.17.4"
-OPENCODE_MAX_VERSION = "1.17.8"
+OPENCODE_MAX_VERSION = "1.18.34"

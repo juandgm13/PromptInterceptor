@@ -47,7 +47,7 @@ Ollama (target: 11434)
 - Configuration management
 - Loads config.json
 - Provides config getter/setter
-- Fields include: proxy_port, target, mode, context_size, rules, dashboard_*
+- Fields include: proxy_port, target, mode, context_size, inject_context_size, rules, dashboard_*
 
 ### `prompt_interceptor/health.py`
 - Health check endpoints
@@ -99,6 +99,7 @@ Edit `prompt_interceptor/config.json`:
 - `target`: Ollama target URL (default: http://localhost:11434)
 - `mode`: `"passthrough"` or `"intercept"`
 - `context_size`: Context window injected as `options.num_ctx` into requests (overrides the client value; 0 = off)
+- `inject_context_size`: Enables the `context_size` override; the launcher sets it only for Python App (Only Proxy / Open Code / headless keep Ollama's default)
 - `rules`: List of matching/replacement modifiers
 - `dashboard_enabled`: Enable web dashboard
 - `dashboard_port`: Dashboard port (default: 9090)

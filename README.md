@@ -67,7 +67,7 @@ If the check fails, start Ollama manually and click **Check Ollama** again.
 | Option | Description |
 |---|---|
 | **Only Proxy** _(default)_ | Starts the proxy without launching any client. Point your own tool at `http://localhost:8080`. |
-| **Open Code (CLI)** | Auto-configures opencode to use the proxy and opens a terminal. Supported versions: **1.17.4–1.17.7** (defined in `prompt_interceptor/client_versions.py`). If an incompatible version is detected the entry shows `[unsupported: vX.Y.Z]` but can still be selected. |
+| **Open Code (CLI)** | Auto-configures opencode to use the proxy and opens a terminal. Supported versions: **1.17.4–1.18.34** (defined in `prompt_interceptor/client_versions.py`). If an incompatible version is detected the entry shows `[unsupported: vX.Y.Z]` but can still be selected. |
 | **Python App (Ollama)** | Launches a Python app with the Ollama host env var set to the proxy URL. |
 
 | Field | Description |
@@ -77,7 +77,7 @@ If the check fails, start Ollama manually and click **Check Ollama** again.
 | **Command** _(Python App)_ | Command to run the app (default: `python main.py`). |
 | **Use venv** _(Python App)_ | Checkbox: auto-detects a `.venv` or `venv` folder in the App Dir and runs the command with that interpreter instead of the system Python. |
 | **Ollama Env Var** _(Python App)_ | Env var the app uses for the Ollama host (e.g. `OLLAMA_HOST`). Set automatically to the proxy URL. |
-| **Context Size** _(Python App)_ | Size of Ollama's context window passed as `OLLAMA_NUM_CTX` when launching Ollama. Options: 4k, 8k, 16k, 32k _(default)_, 64k, 128k, 256k. |
+| **Context Size** _(Python App)_ | Context window injected as `options.num_ctx` into the Python App's requests. Options: 4k, 8k, 16k, 32k _(default)_, 64k, 128k, 256k. Only applies to the Python App: with Only Proxy and Open Code requests keep Ollama's default context. |
 
 ---
 
@@ -171,6 +171,7 @@ Edit `prompt_interceptor/config.json` with your settings:
   "target": "http://localhost:11434",
   "mode": "passthrough",
   "context_size": 32768,
+  "inject_context_size": false,
   "default_model": "",
   "dashboard_enabled": true,
   "dashboard_port": 9090,

@@ -49,6 +49,7 @@
     "deepseek-coder"
   ],
   "context_size": 32768,
+  "inject_context_size": false,
   "context_alert_enabled": true,
   "context_alert_threshold": 80,
   "default_model": "llama3",

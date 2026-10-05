@@ -24,6 +24,7 @@ Configuration is stored in `prompt_interceptor/config.json`. All fields are opti
   "dashboard_port": 9090,
   "model_names": ["llama3", "mistral"],
   "context_size": 32768,
+  "inject_context_size": false,
   "context_alert_enabled": true,
   "context_alert_threshold": 80,
   "default_model": "",
@@ -66,7 +67,8 @@ Configuration is stored in `prompt_interceptor/config.json`. All fields are opti
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `context_size` | int | `32768` | Context window injected as `options.num_ctx` into every `/api/chat`, `/api/generate` and `/v1/chat/completions` request. **It overrides the `num_ctx` sent by the client.** Set to `0` to leave requests untouched. |
+| `context_size` | int | `32768` | Context window injected as `options.num_ctx` into every `/api/chat`, `/api/generate` and `/v1/chat/completions` request when `inject_context_size` is `true`. **It overrides the `num_ctx` sent by the client.** Set to `0` to leave requests untouched. |
+| `inject_context_size` | bool | `false` | Enables the `context_size` override. The launcher sets it to `true` only when launching **Python App (Ollama)**; with **Only Proxy**, **Open Code** or the headless proxy it is `false`, so requests use the context Ollama is configured with. |
 
 Available options: `4096`, `8192`, `16384`, `32768`, `65536`, `131072`, `262144` (4k–256k).
 
