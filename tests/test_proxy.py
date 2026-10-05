@@ -139,7 +139,7 @@ def test_httpx_recomputes_host_when_absent():
 # ---------------------------------------------------------------------------
 
 def test_inject_num_ctx_adds_option(monkeypatch):
-    cfg = Config(context_size=16384)
+    cfg = Config(context_size=16384, inject_context_size=True)
     import prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
     body = {"model": "llama3", "messages": []}
@@ -150,7 +150,7 @@ def test_inject_num_ctx_adds_option(monkeypatch):
 
 
 def test_inject_num_ctx_overwrites_existing(monkeypatch):
-    cfg = Config(context_size=16384)
+    cfg = Config(context_size=16384, inject_context_size=True)
     import prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
     body = {"model": "llama3", "options": {"num_ctx": 4096, "temperature": 0.7}}
@@ -169,12 +169,22 @@ def test_inject_num_ctx_none_body(monkeypatch):
 
 
 def test_inject_num_ctx_zero_context_size(monkeypatch):
-    cfg = Config(context_size=0)
+    cfg = Config(context_size=0, inject_context_size=True)
     import prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
     body = {"model": "llama3"}
     result = _inject_num_ctx(body)
     assert "options" not in result
+
+
+def test_inject_num_ctx_disabled_keeps_client_value(monkeypatch):
+    """Without inject_context_size (Only Proxy / Open Code) num_ctx is left to Ollama."""
+    cfg = Config(context_size=16384)
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    body = {"model": "llama3", "options": {"num_ctx": 4096}}
+    assert _inject_num_ctx(body) == body
+    assert "options" not in _inject_num_ctx({"model": "llama3"})
 
 
 # ---------------------------------------------------------------------------
@@ -3966,6 +3976,7 @@ async def test_handle_chat_vision_logs_num_ctx_override(cfg, engine_and_logger, 
     """Images are forwarded intact and the overridden num_ctx is visible in the log."""
     engine, logger = engine_and_logger
     cfg.context_size = 32768
+    cfg.inject_context_size = True
     import prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
 
@@ -4001,6 +4012,7 @@ async def test_handle_chat_no_override_when_num_ctx_matches(cfg, engine_and_logg
 async def test_handle_stream_chat_logs_num_ctx_override(cfg, engine_and_logger, monkeypatch):
     engine, logger = engine_and_logger
     cfg.context_size = 16384
+    cfg.inject_context_size = True
     import prompt_interceptor.proxy as proxy_mod
     monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
 
@@ -4024,3 +4036,18 @@ async def test_handle_stream_chat_logs_num_ctx_override(cfg, engine_and_logger, 
 def test_num_ctx_override_info_none_when_nothing_changed(original, injected):
     from prompt_interceptor.proxy import _num_ctx_override_info
     assert _num_ctx_override_info(original, injected) is None
+
+
+async def test_handle_chat_no_override_when_injection_disabled(cfg, engine_and_logger, monkeypatch):
+    """Only Proxy / Open Code: the client's num_ctx is forwarded untouched."""
+    engine, logger = engine_and_logger
+    cfg.context_size = 32768
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    fetch = AsyncMock(return_value=(200, {"content-type": "application/json"}, b'{"done": true}'))
+    with patch("prompt_interceptor.proxy._fetch_from_ollama", new=fetch):
+        await handle_chat_request(make_req(_vision_body(8192)), engine, logger)
+
+    assert json.loads(fetch.call_args.args[4])["options"]["num_ctx"] == 8192
+    assert "_num_ctx_override" not in logger.get_logs(limit=1)[0]

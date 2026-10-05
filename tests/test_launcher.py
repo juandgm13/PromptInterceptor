@@ -3170,3 +3170,35 @@ def test_apply_window_height_grows_to_fit_content(tmp_path):
     win._apply_window_height()
 
     mock_root.geometry.assert_called_with("540x640")
+
+
+# ---------------------------------------------------------------------------
+# _persist_ui_config — num_ctx override only for the Python App
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("client_name, cmd, expected", [
+    ("Python App (Ollama)", "__python_app__", True),
+    ("Only Proxy", "__only_proxy__", False),
+    ("Open Code (CLI)", "opencode", False),
+])
+def test_persist_ui_config_inject_context_size_per_client(tmp_path, monkeypatch, client_name, cmd, expected):
+    cfg = Config(log_dir=str(tmp_path / "logs"), context_size=4096, inject_context_size=not expected)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    saved = []
+    monkeypatch.setattr("prompt_interceptor.launcher.save_config", lambda c: saved.append(c))
+
+    clients = [("Only Proxy", "__only_proxy__"), ("Open Code (CLI)", "opencode"),
+               ("Python App (Ollama)", "__python_app__")]
+    win, _ = _make_headless_win(cfg, clients=clients)
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = client_name
+    win.ctx_var = MagicMock()
+    win.ctx_var.get.return_value = "4k  (4096)"
+    win.proxy_port_var = MagicMock()
+    win.proxy_port_var.get.return_value = "8080"
+    win.status_var = MagicMock()
+
+    win._persist_ui_config()
+
+    assert saved[0].inject_context_size is expected
+    assert saved[0].context_size == 4096

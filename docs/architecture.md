@@ -87,7 +87,7 @@ The desktop launcher (`python -m prompt_interceptor`) uses a sequential 3-step w
 | **Command** *(Python App)* | Command to run (default: `python main.py`). |
 | **Use venv** *(Python App)* | Checkbox: auto-detects `.venv` or `venv` in App Dir and uses that interpreter. |
 | **Ollama Env Var** *(Python App)* | Env var the app reads for the Ollama host (e.g. `OLLAMA_HOST`). Set to `http://localhost:<proxy_port>` at launch. |
-| **Context Size** *(Python App)* | Sets `OLLAMA_NUM_CTX` passed to Ollama (4k–256k, default 32k). |
+| **Context Size** *(Python App)* | Injected as `options.num_ctx` into the Python App's requests (4k–256k, default 32k). Only Proxy / Open Code keep Ollama's default. |
 | **Launch Client** | Opens a terminal with the correct command and environment. **Open Code (CLI)**: writes `~/.config/opencode/opencode.json` with the proxy URL, launches `opencode` in a terminal. **Python App**: sets the configured env var to the proxy URL and runs the command. Unlocks Step 3. |
 
 ### Step 3 — Dashboard

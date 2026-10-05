@@ -601,6 +601,7 @@ def test_extract_token_usage_no_token_fields(tl):
 
 
 def test_extract_token_usage_ollama_native(tl, cfg):
+    cfg.inject_context_size = True
     body = {"done": True, "prompt_eval_count": 100, "eval_count": 50}
     result = tl._extract_token_usage(body)
     assert result["prompt_tokens"] == 100
@@ -639,11 +640,21 @@ def test_extract_token_usage_uses_ollama_ps_ctx_when_available(tl):
 
 
 def test_extract_token_usage_falls_back_to_config_when_ps_empty(tl, cfg):
+    cfg.inject_context_size = True
     body = {"prompt_eval_count": 100, "eval_count": 50}
     with patch("prompt_interceptor.logger._get_ollama_ps_info", return_value={}):
         result = tl._extract_token_usage(body, model_name="llama3")
     assert result["context_size"] == cfg.context_size
     assert "offload" not in result
+
+
+def test_extract_token_usage_no_config_fallback_when_injection_disabled(tl):
+    """Without the num_ctx override the configured size is not Ollama's, so it is not used."""
+    body = {"prompt_eval_count": 100, "eval_count": 50}
+    with patch("prompt_interceptor.logger._get_ollama_ps_info", return_value={}):
+        result = tl._extract_token_usage(body, model_name="llama3")
+    assert result["context_size"] is None
+    assert result["context_utilization_pct"] is None
 
 
 # ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@ import shutil
 
 import httpx
 
-from .config import get_config
+from .config import get_config, effective_context_size
 
 # Max in-flight request timers kept in memory (see TrafficLogger.start_timer).
 _MAX_TIMERS = 512
@@ -287,7 +287,7 @@ class TrafficLogger:
         if model_name:
             ps_info = _get_ollama_ps_info(model_name, self.config.target)
 
-        ctx = ps_info.get("context_size") or self.config.context_size
+        ctx = ps_info.get("context_size") or effective_context_size(self.config)
         # Use prompt_tokens as numerator: measures context fill *before* generation,
         # avoiding >100% artifacts from adding completion tokens to total.
         pct = round(((prompt_tokens or 0) / ctx) * 100, 1) if ctx else None

@@ -13,7 +13,7 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .bash_wrapper import patch_anthropic_body, patch_openai_body, is_windows_bash_mode
-from .config import get_config
+from .config import get_config, effective_context_size
 from .interceptor import interceptor
 from .logger import TrafficLogger, _get_ollama_ps_info
 from .response_normalizer import (
@@ -55,11 +55,11 @@ def _inject_num_ctx(body_json: Optional[Dict[str, Any]]) -> Optional[Dict[str, A
     """Inject num_ctx into request options based on configured context_size."""
     if not body_json:
         return body_json
-    config = get_config()
-    if not config.context_size:
+    ctx = effective_context_size(get_config())
+    if not ctx:
         return body_json
     options = dict(body_json.get("options") or {})
-    options["num_ctx"] = config.context_size
+    options["num_ctx"] = ctx
     return {**body_json, "options": options}
 
 
@@ -646,7 +646,7 @@ async def handle_v1_chat_completions(
             return await _handle_error_stream(resp, http_client, resp.status_code, logger, request_id)
 
         model_name = (body_json or {}).get("model")
-        resolved_ctx = await _resolve_context_size(model_name, config.target, config.context_size)
+        resolved_ctx = await _resolve_context_size(model_name, config.target, effective_context_size(config))
 
         async def generate() -> AsyncIterator[bytes]:
             accumulated = []
@@ -709,7 +709,7 @@ async def handle_v1_chat_completions(
         if isinstance(response_json, dict):
             ctx = await _resolve_context_size(
                 response_json.get("model") or (body_json or {}).get("model"),
-                config.target, config.context_size,
+                config.target, effective_context_size(config),
             )
             if _detect_context_overflow(response_json, ctx):
                 logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG}, token_source_body=response_json)
@@ -880,7 +880,7 @@ async def handle_chat_request(
         if isinstance(response_json, dict):
             ctx = await _resolve_context_size(
                 response_json.get("model") or (body_json or {}).get("model"),
-                config.target, config.context_size,
+                config.target, effective_context_size(config),
             )
             if _detect_context_overflow(response_json, ctx):
                 logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG}, token_source_body=response_json)
@@ -958,7 +958,7 @@ async def handle_generate_request(
         if isinstance(response_json, dict):
             ctx = await _resolve_context_size(
                 response_json.get("model") or (body_json or {}).get("model"),
-                config.target, config.context_size,
+                config.target, effective_context_size(config),
             )
             if _detect_context_overflow(response_json, ctx):
                 logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG}, token_source_body=response_json)
@@ -1042,7 +1042,7 @@ async def handle_stream_chat(
         return await _handle_error_stream(resp, http_client, resp.status_code, logger, request_id)
 
     model_name = (body_json or {}).get("model")
-    resolved_ctx = await _resolve_context_size(model_name, config.target, config.context_size)
+    resolved_ctx = await _resolve_context_size(model_name, config.target, effective_context_size(config))
 
     async def generate() -> AsyncIterator[bytes]:
         accumulated = []
@@ -1141,7 +1141,7 @@ async def handle_stream_generate(
         return await _handle_error_stream(resp, http_client, resp.status_code, logger, request_id)
 
     model_name = (body_json or {}).get("model")
-    resolved_ctx = await _resolve_context_size(model_name, config.target, config.context_size)
+    resolved_ctx = await _resolve_context_size(model_name, config.target, effective_context_size(config))
 
     async def generate() -> AsyncIterator[bytes]:
         accumulated = []
