@@ -828,10 +828,12 @@ def test_request_ids_unique_when_clock_does_not_advance(tl):
 
     with patch("prompt_interceptor.logger.datetime", FrozenDatetime):
         ids = [tl.log_request("GET", f"/p/{i}", {}, None) for i in range(200)]
+        # Resolve the dir under the frozen clock too, or it points at today's date.
+        date_dir = tl._get_date_dir()
 
     assert len(set(ids)) == 200
     assert all(re.fullmatch(r"[0-9a-f]{12}", i) for i in ids)
-    assert len(list(tl._get_date_dir().glob("req_*.json"))) == 200
+    assert len(list(date_dir.glob("req_*.json"))) == 200
 
 
 def test_image_helpers_skip_malformed_entries():
