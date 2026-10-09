@@ -4051,3 +4051,138 @@ async def test_handle_chat_no_override_when_injection_disabled(cfg, engine_and_l
 
     assert json.loads(fetch.call_args.args[4])["options"]["num_ctx"] == 8192
     assert "_num_ctx_override" not in logger.get_logs(limit=1)[0]
+
+
+# ---------------------------------------------------------------------------
+# Error paths close the log entry (dashboard must not show them as pending)
+# ---------------------------------------------------------------------------
+
+def _only_log(logger):
+    logs = logger.get_logs(10)
+    assert len(logs) == 1
+    return logs[0]
+
+
+@pytest.mark.parametrize("handler,path,body", [
+    (handle_chat_request, "/api/chat", {"model": "llama3", "messages": []}),
+    (handle_generate_request, "/api/generate", {"model": "llama3", "prompt": "hi"}),
+    (handle_v1_messages, "/v1/messages", {"model": "llama3", "max_tokens": 10, "messages": []}),
+    (handle_v1_chat_completions, "/v1/chat/completions", {"model": "llama3", "messages": []}),
+])
+@pytest.mark.parametrize("exc,status", [
+    (httpx.TimeoutException("timeout"), 408),
+    (httpx.ConnectError("refused"), 502),
+    (RuntimeError("boom"), 500),
+])
+async def test_non_streaming_error_is_logged(cfg, engine_and_logger, monkeypatch, handler, path, body, exc, status):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+
+    with patch("prompt_interceptor.proxy._fetch_from_ollama", new=AsyncMock(side_effect=exc)):
+        resp = await handler(make_req(body, path=path), engine, logger)
+
+    assert resp.status_code == status
+    entry = _only_log(logger)
+    assert entry["status_code"] == status
+    assert entry["response_body"]["error"] == json.loads(resp.body)["error"]
+
+
+@pytest.mark.parametrize("exc,status", [
+    (httpx.TimeoutException("timeout"), 408),
+    (httpx.ConnectError("refused"), 502),
+    (RuntimeError("boom"), 500),
+])
+async def test_passthrough_error_is_logged(cfg, monkeypatch, exc, status):
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    logger = TrafficLogger(cfg)
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.request = AsyncMock(side_effect=exc)
+
+    with patch("prompt_interceptor.proxy.httpx.AsyncClient", return_value=mock_client):
+        resp = await handle_passthrough(_make_passthrough_req({"model": "llama3"}, "/api/show"), logger)
+
+    assert resp.status_code == status
+    assert _only_log(logger)["status_code"] == status
+
+
+async def test_passthrough_streaming_timeout_is_logged(cfg, monkeypatch):
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(proxy_mod, "_start_streaming_request", AsyncMock(side_effect=httpx.TimeoutException("t")))
+    logger = TrafficLogger(cfg)
+
+    resp = await handle_passthrough(_make_passthrough_req({"model": "llama3", "stream": True}, "/api/show"), logger)
+
+    assert resp.status_code == 408
+    assert _only_log(logger)["status_code"] == 408
+
+
+def _make_failing_stream_mock(chunks: list, exc: BaseException):
+    """Like _make_start_streaming_mock, but the body raises *exc* after *chunks*."""
+    async def fake_aiter_bytes():
+        for c in chunks:
+            yield c
+        raise exc
+
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.aiter_bytes = fake_aiter_bytes
+    fake_resp.aclose = AsyncMock()
+    fake_client = MagicMock()
+    fake_client.aclose = AsyncMock()
+    return AsyncMock(return_value=(fake_client, fake_resp))
+
+
+@pytest.mark.parametrize("handler,path,body", [
+    (handle_stream_chat, "/api/chat", {"model": "llama3", "messages": []}),
+    (handle_stream_generate, "/api/generate", {"model": "llama3", "prompt": "hi"}),
+    (handle_v1_messages, "/v1/messages", {"model": "llama3", "max_tokens": 10, "messages": [], "stream": True}),
+    (handle_v1_chat_completions, "/v1/chat/completions", {"model": "llama3", "messages": [], "stream": True}),
+])
+async def test_stream_read_timeout_is_logged_as_408(cfg, engine_and_logger, monkeypatch, handler, path, body):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(
+        proxy_mod, "_start_streaming_request",
+        _make_failing_stream_mock([b'{"done":false}\n'], httpx.ReadTimeout("read timed out")),
+    )
+
+    resp = await handler(make_req(body, path=path), engine, logger)
+    out = b"".join([chunk async for chunk in resp.body_iterator])
+
+    assert b"Request timeout" in out
+    entry = _only_log(logger)
+    assert entry["status_code"] == 408
+    assert entry["response_body"] == {"error": "Request timeout"}
+
+
+async def test_stream_client_disconnect_is_logged_as_499(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(
+        proxy_mod, "_start_streaming_request",
+        _make_start_streaming_mock([b'{"done":false}\n', b'{"done":true}\n']),
+    )
+
+    resp = await handle_stream_chat(make_req({"model": "llama3", "messages": []}), engine, logger)
+    gen = resp.body_iterator
+    await gen.__anext__()  # client reads one chunk, then goes away
+    await gen.aclose()
+
+    entry = _only_log(logger)
+    assert entry["status_code"] == 499
+
+
+def test_httpx_timeout_zero_disables_read_limit():
+    from prompt_interceptor.proxy import _httpx_timeout
+    t = _httpx_timeout(0)
+    assert t.read is None and t.connect == 10.0
+    t = _httpx_timeout(300)
+    assert t.read == 300 and t.connect == 10.0
