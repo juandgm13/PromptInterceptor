@@ -51,6 +51,12 @@ def _cannot_connect_msg() -> str:
     return f"Cannot connect to Ollama at {get_config().target}"
 
 
+def _httpx_timeout(timeout: float) -> httpx.Timeout:
+    """Upstream timeout: connect fails fast; ``timeout`` <= 0 means no read/write/pool limit."""
+    limit = timeout if timeout and timeout > 0 else None
+    return httpx.Timeout(limit, connect=10.0)
+
+
 def _inject_num_ctx(body_json: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Inject num_ctx into request options based on configured context_size."""
     if not body_json:
@@ -253,7 +259,7 @@ async def _fetch_from_ollama(
         (status_code, headers, body_bytes)
     """
     async with httpx.AsyncClient(
-        timeout=httpx.Timeout(timeout),
+        timeout=_httpx_timeout(timeout),
         follow_redirects=True,
     ) as client:
         response = await client.request(
@@ -283,7 +289,7 @@ async def _stream_from_ollama(
     Yields raw byte chunks as received.
     """
     async with httpx.AsyncClient(
-        timeout=httpx.Timeout(timeout),
+        timeout=_httpx_timeout(timeout),
         follow_redirects=True,
     ) as client:
         async with client.stream(
@@ -311,7 +317,7 @@ async def _start_streaming_request(
     The caller is responsible for closing http_client and reading the body.
     Raises httpx exceptions on connection failure.
     """
-    http_client = httpx.AsyncClient(timeout=httpx.Timeout(timeout), follow_redirects=True)
+    http_client = httpx.AsyncClient(timeout=_httpx_timeout(timeout), follow_redirects=True)
     try:
         req = http_client.build_request(method, url, headers=headers, content=body)
         resp = await http_client.send(req, stream=True)
@@ -384,14 +390,12 @@ async def handle_passthrough(request: Request, logger: Optional[TrafficLogger] =
             http_client, resp = await _start_streaming_request(
                 method, url, forward_headers, body, config.timeout
             )
+        except httpx.TimeoutException:
+            return _log_and_error(logger, request_id, 408, "Request timeout")
         except httpx.ConnectError:
-            if logger and request_id:
-                logger.log_response(request_id, 502, {}, {"error": _cannot_connect_msg()})
-            return _error_response(502, _cannot_connect_msg())
+            return _log_and_error(logger, request_id, 502, _cannot_connect_msg())
         except Exception as exc:
-            if logger and request_id:
-                logger.log_response(request_id, 500, {}, {"error": str(exc)})
-            return _error_response(500, str(exc))
+            return _log_and_error(logger, request_id, 500, str(exc))
 
         if resp.status_code >= 400:
             return await _handle_error_stream(resp, http_client, resp.status_code, logger, request_id)
@@ -426,7 +430,7 @@ async def handle_passthrough(request: Request, logger: Optional[TrafficLogger] =
 
     try:
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(config.timeout), follow_redirects=True
+            timeout=_httpx_timeout(config.timeout), follow_redirects=True
         ) as client:
             resp = await client.request(method, url, headers=forward_headers, content=body)
         print(f"[PromptInterceptor] PASSTHROUGH response {resp.status_code} from {path}")
@@ -447,11 +451,11 @@ async def handle_passthrough(request: Request, logger: Optional[TrafficLogger] =
             media_type=resp.headers.get("content-type"),
         )
     except httpx.TimeoutException:
-        return _error_response(408, "Request timeout")
+        return _log_and_error(logger, request_id, 408, "Request timeout")
     except httpx.ConnectError:
-        return _error_response(502, _cannot_connect_msg())
+        return _log_and_error(logger, request_id, 502, _cannot_connect_msg())
     except Exception as exc:
-        return _error_response(500, str(exc))
+        return _log_and_error(logger, request_id, 500, str(exc))
 
 
 async def handle_v1_messages(
@@ -510,19 +514,25 @@ async def handle_v1_messages(
         async def generate() -> AsyncIterator[bytes]:
             accumulated = []
             error_str = None
+            error_status = 500
             try:
                 async for chunk in resp.aiter_bytes():
                     if chunk:
                         accumulated.append(chunk)
+            except httpx.TimeoutException:
+                error_status, error_str = 408, "Request timeout"
             except Exception as exc:
-                error_str = str(exc)
+                error_status, error_str = 500, str(exc)
+            except (asyncio.CancelledError, GeneratorExit):
+                logger.log_response(request_id, 499, {}, {"error": "Client disconnected"})
+                raise
             finally:
                 await resp.aclose()
                 await http_client.aclose()
 
             if error_str:
+                logger.log_response(request_id, error_status, {}, {"error": error_str})
                 yield json.dumps({"error": error_str}).encode()
-                logger.log_response(request_id, 500, {}, {"error": error_str})
                 return
 
             parsed = _parse_sse_response(accumulated)
@@ -542,12 +552,12 @@ async def handle_v1_messages(
                     was_corrected = True
                     fix_desc = (fix_desc + ', bash→bash -c') if fix_desc else 'bash→bash -c'
             if was_corrected:
-                yield emit_anthropic_sse(corrected)
                 logger.log_response(request_id, 200, {}, corrected, correction_applied=fix_desc)
+                yield emit_anthropic_sse(corrected)
             else:
+                logger.log_response(request_id, 200, {}, parsed)
                 for chunk in accumulated:
                     yield chunk
-                logger.log_response(request_id, 200, {}, parsed)
 
         return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -583,11 +593,11 @@ async def handle_v1_messages(
             media_type=response_headers.get("content-type", "application/json"),
         )
     except httpx.TimeoutException:
-        return _error_response(408, "Request timeout")
+        return _log_and_error(logger, request_id, 408, "Request timeout")
     except httpx.ConnectError:
-        return _error_response(502, _cannot_connect_msg())
+        return _log_and_error(logger, request_id, 502, _cannot_connect_msg())
     except Exception as exc:
-        return _error_response(500, str(exc))
+        return _log_and_error(logger, request_id, 500, str(exc))
 
 
 async def handle_v1_chat_completions(
@@ -651,19 +661,25 @@ async def handle_v1_chat_completions(
         async def generate() -> AsyncIterator[bytes]:
             accumulated = []
             error_str = None
+            error_status = 500
             try:
                 async for chunk in resp.aiter_bytes():
                     if chunk:
                         accumulated.append(chunk)
+            except httpx.TimeoutException:
+                error_status, error_str = 408, "Request timeout"
             except Exception as exc:
-                error_str = str(exc)
+                error_status, error_str = 500, str(exc)
+            except (asyncio.CancelledError, GeneratorExit):
+                logger.log_response(request_id, 499, {}, {"error": "Client disconnected"})
+                raise
             finally:
                 await resp.aclose()
                 await http_client.aclose()
 
             if error_str:
+                logger.log_response(request_id, error_status, {}, {"error": error_str})
                 yield json.dumps({"error": error_str}).encode()
-                logger.log_response(request_id, 500, {}, {"error": error_str})
                 return
 
             parsed = _parse_openai_sse_response(accumulated)
@@ -674,8 +690,8 @@ async def handle_v1_chat_completions(
                     pass
 
             if _detect_context_overflow(parsed, resolved_ctx):
-                yield json.dumps({"error": _CONTEXT_OVERFLOW_MSG}).encode()
                 logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG}, token_source_body=parsed)
+                yield json.dumps({"error": _CONTEXT_OVERFLOW_MSG}).encode()
                 return
 
             corrected, was_corrected, fix_desc = (
@@ -688,12 +704,12 @@ async def handle_v1_chat_completions(
                     was_corrected = True
                     fix_desc = (fix_desc + ', bash→bash -c') if fix_desc else 'bash→bash -c'
             if was_corrected:
-                yield emit_openai_sse(corrected)
                 logger.log_response(request_id, 200, {}, corrected, correction_applied=fix_desc)
+                yield emit_openai_sse(corrected)
             else:
+                logger.log_response(request_id, 200, {}, parsed)
                 for chunk in accumulated:
                     yield chunk
-                logger.log_response(request_id, 200, {}, parsed)
 
         return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -736,11 +752,11 @@ async def handle_v1_chat_completions(
             media_type=response_headers.get("content-type", "application/json"),
         )
     except httpx.TimeoutException:
-        return _error_response(408, "Request timeout")
+        return _log_and_error(logger, request_id, 408, "Request timeout")
     except httpx.ConnectError:
-        return _error_response(502, _cannot_connect_msg())
+        return _log_and_error(logger, request_id, 502, _cannot_connect_msg())
     except Exception as exc:
-        return _error_response(500, str(exc))
+        return _log_and_error(logger, request_id, 500, str(exc))
 
 
 def _error_response(status_code: int, message: str) -> JSONResponse:
@@ -748,6 +764,18 @@ def _error_response(status_code: int, message: str) -> JSONResponse:
         status_code=status_code,
         content={"error": message},
     )
+
+
+def _log_and_error(
+    logger: Optional[TrafficLogger],
+    request_id: Optional[str],
+    status_code: int,
+    message: str,
+) -> JSONResponse:
+    """Close the request's log entry with the error so the dashboard stops showing it as pending."""
+    if logger and request_id:
+        logger.log_response(request_id, status_code, {}, {"error": message})
+    return _error_response(status_code, message)
 
 
 _CONTEXT_OVERFLOW_MSG = (
@@ -902,11 +930,13 @@ async def handle_chat_request(
         )
 
     except httpx.TimeoutException:
-        return _error_response(408, "Request timeout")
+        return _log_and_error(logger, request_id, 408, "Request timeout")
+    except httpx.ConnectError:
+        return _log_and_error(logger, request_id, 502, _cannot_connect_msg())
     except httpx.HTTPStatusError as e:
-        return _error_response(e.response.status_code, str(e))
+        return _log_and_error(logger, request_id, e.response.status_code, str(e))
     except Exception as e:
-        return _error_response(500, str(e))
+        return _log_and_error(logger, request_id, 500, str(e))
 
 
 async def handle_generate_request(
@@ -980,11 +1010,13 @@ async def handle_generate_request(
         )
 
     except httpx.TimeoutException:
-        return _error_response(408, "Request timeout")
+        return _log_and_error(logger, request_id, 408, "Request timeout")
+    except httpx.ConnectError:
+        return _log_and_error(logger, request_id, 502, _cannot_connect_msg())
     except httpx.HTTPStatusError as e:
-        return _error_response(e.response.status_code, str(e))
+        return _log_and_error(logger, request_id, e.response.status_code, str(e))
     except Exception as e:
-        return _error_response(500, str(e))
+        return _log_and_error(logger, request_id, 500, str(e))
 
 
 async def handle_stream_chat(
@@ -1047,20 +1079,26 @@ async def handle_stream_chat(
     async def generate() -> AsyncIterator[bytes]:
         accumulated = []
         error_str = None
+        error_status = 500
         try:
             async for chunk in resp.aiter_bytes():
                 if chunk:
                     accumulated.append(chunk)
                     yield chunk  # stream to client immediately; accumulate for post-processing
+        except httpx.TimeoutException:
+            error_status, error_str = 408, "Request timeout"
         except Exception as exc:
-            error_str = str(exc)
+            error_status, error_str = 500, str(exc)
+        except (asyncio.CancelledError, GeneratorExit):
+            logger.log_response(request_id, 499, {}, {"error": "Client disconnected"})
+            raise
         finally:
             await resp.aclose()
             await http_client.aclose()
 
         if error_str:
+            logger.log_response(request_id, error_status, {}, {"error": error_str})
             yield json.dumps({"error": error_str}).encode()
-            logger.log_response(request_id, 500, {}, {"error": error_str})
             return
 
         parsed = _parse_stream_response(accumulated)
@@ -1071,8 +1109,8 @@ async def handle_stream_chat(
                 pass
 
         if _detect_context_overflow(parsed, resolved_ctx):
-            yield json.dumps({"error": _CONTEXT_OVERFLOW_MSG}).encode() + b"\n"
             logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG}, token_source_body=parsed)
+            yield json.dumps({"error": _CONTEXT_OVERFLOW_MSG}).encode() + b"\n"
             return
 
         corrected, was_corrected, fix_desc = (
@@ -1146,20 +1184,26 @@ async def handle_stream_generate(
     async def generate() -> AsyncIterator[bytes]:
         accumulated = []
         error_str = None
+        error_status = 500
         try:
             async for chunk in resp.aiter_bytes():
                 if chunk:
                     accumulated.append(chunk)
                     yield chunk  # stream to client immediately; accumulate for post-processing
+        except httpx.TimeoutException:
+            error_status, error_str = 408, "Request timeout"
         except Exception as exc:
-            error_str = str(exc)
+            error_status, error_str = 500, str(exc)
+        except (asyncio.CancelledError, GeneratorExit):
+            logger.log_response(request_id, 499, {}, {"error": "Client disconnected"})
+            raise
         finally:
             await resp.aclose()
             await http_client.aclose()
 
         if error_str:
+            logger.log_response(request_id, error_status, {}, {"error": error_str})
             yield json.dumps({"error": error_str}).encode()
-            logger.log_response(request_id, 500, {}, {"error": error_str})
             return
 
         parsed = _parse_stream_response(accumulated)
@@ -1170,8 +1214,8 @@ async def handle_stream_generate(
                 pass
 
         if _detect_context_overflow(parsed, resolved_ctx):
-            yield json.dumps({"error": _CONTEXT_OVERFLOW_MSG}).encode() + b"\n"
             logger.log_response(request_id, 413, {}, {"error": _CONTEXT_OVERFLOW_MSG}, token_source_body=parsed)
+            yield json.dumps({"error": _CONTEXT_OVERFLOW_MSG}).encode() + b"\n"
             return
 
         corrected, was_corrected, fix_desc = (

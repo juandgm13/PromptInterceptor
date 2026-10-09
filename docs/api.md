@@ -133,6 +133,7 @@ Image URLs (`http(s)://`) are returned as-is in `src`, with `mime: null`.
 
 | Field | Description |
 |-------|-------------|
+| `status_code` | Response status. Missing while the request is still in flight. Proxy-side failures also set it: `408` (Ollama read timeout), `502` (cannot connect), `500` (other error), `499` (client disconnected mid-stream), with `response_body: {"error": "..."}` |
 | `_image_count` | Number of images in the request (only in `/api/logs`, when the request has images) |
 | `_num_ctx_override` | `{"client": 8192, "sent": 32768}` when the proxy replaced the client's `options.num_ctx` with `context_size` (`client` is `null` if the client sent none). `body` then shows the body actually forwarded |
 

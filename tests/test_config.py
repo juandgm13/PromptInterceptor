@@ -25,7 +25,7 @@ def test_config_defaults():
     assert c.proxy_port == 8080
     assert c.target == "http://localhost:11434"
     assert c.mode == "passthrough"
-    assert c.timeout == 120
+    assert c.timeout == 300
     assert c.dashboard_port == 9090
     assert c.debug is False
     assert c.project_name == "PromptInterceptor"

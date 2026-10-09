@@ -28,8 +28,8 @@ class Config(BaseModel):
     # Proxy mode: "passthrough" or "intercept"
     mode: str = "passthrough"
 
-    # Timeout in seconds for forwarding requests to Ollama
-    timeout: int = 120
+    # Read timeout in seconds for forwarding requests to Ollama (0 = no limit; connect is always 10s)
+    timeout: int = 300
 
     # Seconds to hold an intercepted request waiting for a dashboard decision before auto-forwarding
     intercept_timeout: float = 30.0

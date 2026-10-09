@@ -13,7 +13,7 @@ Configuration is stored in `prompt_interceptor/config.json`. All fields are opti
   "target": "http://localhost:11434",
   "target_port": 11434,
   "mode": "passthrough",
-  "timeout": 120,
+  "timeout": 300,
   "log_dir": "logs",
   "log_size_limit": 1048576,
   "max_log_files": 10,
@@ -47,7 +47,7 @@ Configuration is stored in `prompt_interceptor/config.json`. All fields are opti
 | `proxy_host` | string | `"0.0.0.0"` | Host to bind the proxy |
 | `target` | string | `"http://localhost:11434"` | Ollama server URL |
 | `target_port` | int | `11434` | Ollama port (informational) |
-| `timeout` | int | `120` | Request timeout in seconds |
+| `timeout` | int | `300` | Read timeout in seconds for requests forwarded to Ollama (`0` = no limit; connecting always times out after 10 s). On expiry the client gets `408 Request timeout` and the dashboard log entry is closed with that status |
 | `health_timeout` | float | `5.0` | Timeout for health-check requests to Ollama |
 
 ### Mode
