@@ -1229,3 +1229,11 @@ async def test_dashboard_html_has_ctx_overflow_badge(client):
     html = (await client.get("/")).text
     assert "l._error_hint === 'context_overflow'" in html
     assert "ctx overflow" in html
+
+
+async def test_dashboard_modal_prompt_sections(client):
+    html = (await client.get("/")).text
+    assert '<div class="modal-prompt-sections" id="modal-prompt">' in html
+    assert "function buildPromptSections(" in html
+    assert "function estTokens(" in html
+    assert "setPromptSectionsOpen(true)" in html

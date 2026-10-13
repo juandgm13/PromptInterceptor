@@ -157,6 +157,21 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .modal-prompt-pre{background:#0d0d1e;padding:14px;border-radius:6px;font-size:.78em;
     overflow:auto;max-height:calc(80vh - 40px);line-height:1.5;
     white-space:pre-wrap;word-break:break-word}
+  .modal-prompt-bar{display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:.75em;color:#9a9ac0}
+  .modal-prompt-bar button{background:transparent;border:1px solid #2a2a4e;color:#9a9ac0;padding:2px 8px}
+  .modal-prompt-sections{overflow:auto;max-height:calc(80vh - 60px);display:flex;flex-direction:column;gap:4px}
+  .psec{background:#0d0d1e;border:1px solid #1f1f3a;border-radius:6px}
+  .psec>summary{cursor:pointer;padding:6px 10px;display:flex;align-items:center;gap:8px;
+    list-style:none;user-select:none}
+  .psec>summary::-webkit-details-marker{display:none}
+  .psec>summary::before{content:'▸';color:#666;font-size:.8em;transition:transform .1s}
+  .psec[open]>summary::before{transform:rotate(90deg)}
+  .psec-title{font-size:.78em;font-weight:600;text-transform:uppercase;letter-spacing:.04em;
+    flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .psec-est{font-size:.72em;color:#9a9ac0;font-style:italic;white-space:nowrap}
+  .psec-children{padding:0 6px 6px 14px;display:flex;flex-direction:column;gap:4px}
+  .psec-pre{margin:0;padding:8px 12px 12px;font-size:.76em;line-height:1.5;white-space:pre-wrap;
+    word-break:break-word;max-height:360px;overflow:auto;border-top:1px solid #1f1f3a}
   .img-badge{background:#2a1a3a;color:#c89bff;border:1px solid #4a2a6a;font-size:.75em;margin-right:4px}
   .ctx-badge{background:#2a2000;color:#ffa040;border:1px solid #5a4000;font-size:.75em}
   .modal-images-block{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
@@ -350,7 +365,13 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
           <div class="modal-images-title" id="modal-images-title"></div>
           <div class="modal-images-grid" id="modal-images-grid"></div>
         </div>
-        <pre class="modal-prompt-pre" id="modal-prompt"></pre>
+        <div class="modal-prompt-bar">
+          <span id="modal-prompt-est" title="Estimate (~4 chars/token), not Ollama's count"></span>
+          <span style="flex:1"></span>
+          <button onclick="setPromptSectionsOpen(true)">Expand all</button>
+          <button onclick="setPromptSectionsOpen(false)">Collapse all</button>
+        </div>
+        <div class="modal-prompt-sections" id="modal-prompt"></div>
       </div>
       <div class="modal-panel">
         <div id="modal-thinking-block" class="modal-thinking-block" style="display:none">
@@ -560,6 +581,179 @@ function stripEmbeddedToolCalls(text) {
   return text ? text.replace(/<tool_call>[\\s\\S]*?<\\/tool_call>/g, '').trim() : text;
 }
 
+// --- Prompt sections (modal) -------------------------------------------------
+// Token counts here are a display-only estimate (~4 chars/token); nothing else uses them.
+function estTokens(text) {
+  return Math.ceil(String(text || '').length / 4);
+}
+
+function fmtEst(n) {
+  return '≈' + (n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n)) + ' tok';
+}
+
+function _textOf(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map(b => {
+      if (!b || typeof b !== 'object') return '';
+      if (b.type === 'text') return b.text || '';
+      if (b.type === 'tool_result') return _textOf(b.content);
+      if (b.type === 'tool_use') return (b.name || 'tool') + '(' + JSON.stringify(b.input || {}, null, 2) + ')';
+      return '';
+    }).filter(Boolean).join('\\n');
+  }
+  return content == null ? '' : JSON.stringify(content, null, 2);
+}
+
+function _fmtToolCall(tc) {
+  const fn = tc.function || {};
+  let args = fn.arguments !== undefined ? fn.arguments : (tc.input || tc.arguments || '');
+  try {
+    if (typeof args === 'string' && args) args = JSON.stringify(JSON.parse(args), null, 2);
+    else if (typeof args === 'object') args = JSON.stringify(args, null, 2);
+  } catch (_) {}
+  return (fn.name || tc.name || 'tool') + '(\\n' + args + '\\n)';
+}
+
+function _toolDef(t) {
+  const fn = t.function || t;
+  const params = fn.parameters || fn.input_schema || t.input_schema || {};
+  return {
+    name: fn.name || t.name || 'tool',
+    text: (fn.description || '') + '\\n\\nParameters:\\n' + JSON.stringify(params, null, 2),
+  };
+}
+
+function _leaf(title, color, text, open) {
+  return {title, color, text, est: estTokens(text), open: !!open};
+}
+
+function _group(title, color, children, open) {
+  return {title, color, children, est: children.reduce((s, c) => s + c.est, 0), open: !!open};
+}
+
+// Splits what was sent to Ollama into collapsible sections: System, Skills, Tools, Messages, Options.
+function buildPromptSections(body) {
+  if (!body || typeof body !== 'object') return [];
+  const sections = [];
+  const msgs = Array.isArray(body.messages) ? body.messages : [];
+
+  const systems = [];
+  if (body.system) systems.push(_textOf(body.system));
+  msgs.filter(m => m && (m.role === 'system' || m.role === 'developer'))
+      .forEach(m => systems.push(_textOf(m.content)));
+  if (systems.length === 1) sections.push(_leaf('System', '#9fb3d1', systems[0]));
+  else if (systems.length > 1) {
+    sections.push(_group('System (' + systems.length + ')', '#9fb3d1',
+      systems.map((t, i) => _leaf('System #' + (i + 1), '#9fb3d1', t))));
+  }
+
+  const tools = Array.isArray(body.tools) ? body.tools.map(_toolDef) : [];
+  const skills = tools.filter(t => /skill/i.test(t.name));
+  const others = tools.filter(t => !/skill/i.test(t.name));
+  if (skills.length) {
+    sections.push(_group('Skills (' + skills.length + ')', '#c89bff',
+      skills.map(t => _leaf(t.name, '#c89bff', t.text))));
+  }
+  if (others.length) {
+    sections.push(_group('Tools (' + others.length + ')', '#4caf88',
+      others.map(t => _leaf(t.name, '#4caf88', t.text))));
+  }
+
+  const convo = msgs.filter(m => m && m.role !== 'system' && m.role !== 'developer');
+  if (convo.length) {
+    let lastUser = -1;
+    convo.forEach((m, i) => { if (m.role === 'user') lastUser = i; });
+    let imgNo = 0;
+    const items = convo.map((m, i) => {
+      const role = m.role || 'user';
+      let text = _textOf(m.content);
+      const nImg = messageImageCount(m);
+      if (nImg) {
+        const marks = Array.from({length: nImg}, () => '[' + _IMG_ICON + ' image #' + (++imgNo) + ']').join(' ');
+        text = marks + (text ? '\\n' + text : '');
+      }
+      if (Array.isArray(m.tool_calls) && m.tool_calls.length) {
+        text += (text ? '\\n\\n' : '') + m.tool_calls.map(_fmtToolCall).join('\\n\\n');
+      }
+      let title = '[' + role.toUpperCase() + ']';
+      if (role === 'tool' && (m.name || m.tool_name || m.tool_call_id)) {
+        title += ' ' + (m.name || m.tool_name || m.tool_call_id);
+      }
+      const color = role === 'user' ? '#4fc3f7' : role === 'assistant' ? '#f0a500' : '#7dcc9a';
+      return _leaf(title, color, text || '(empty)', i === lastUser || i === convo.length - 1);
+    });
+    sections.push(_group('Messages (' + convo.length + ')', '#4fc3f7', items, true));
+  }
+
+  if (body.prompt != null) sections.push(_leaf('Prompt', '#4fc3f7', String(body.prompt), true));
+
+  const opts = {};
+  ['model', 'options', 'format', 'think', 'temperature', 'max_tokens', 'stream'].forEach(k => {
+    if (body[k] !== undefined) opts[k] = body[k];
+  });
+  if (Object.keys(opts).length) {
+    const text = JSON.stringify(opts, null, 2);
+    sections.push({title: 'Options', color: '#888', text, est: null, open: false});
+  }
+  return sections;
+}
+
+function _renderSection(s) {
+  const det = document.createElement('details');
+  det.className = 'psec';
+  det.open = s.open;
+  const sum = document.createElement('summary');
+  const title = document.createElement('span');
+  title.className = 'psec-title';
+  title.style.color = s.color;
+  title.textContent = s.title;
+  sum.appendChild(title);
+  if (s.est != null) {
+    const est = document.createElement('span');
+    est.className = 'psec-est';
+    est.title = "Estimate (~4 chars/token), not Ollama's count";
+    est.textContent = fmtEst(s.est);
+    sum.appendChild(est);
+  }
+  det.appendChild(sum);
+  if (s.children) {
+    const box = document.createElement('div');
+    box.className = 'psec-children';
+    s.children.forEach(c => box.appendChild(_renderSection(c)));
+    det.appendChild(box);
+  } else {
+    const pre = document.createElement('pre');
+    pre.className = 'psec-pre';
+    pre.textContent = s.text;
+    det.appendChild(pre);
+  }
+  return det;
+}
+
+function renderPromptSections(l) {
+  const box = document.getElementById('modal-prompt');
+  box.textContent = '';
+  const sections = buildPromptSections(l.body);
+  const total = sections.reduce((s, c) => s + (c.est || 0), 0);
+  const realTokens = l._tokens_usage && l._tokens_usage.prompt_tokens;
+  document.getElementById('modal-prompt-est').textContent = sections.length
+    ? fmtEst(total) + ' (estimate)' + (realTokens != null ? ' · real: ' + realTokens : '')
+    : '';
+  if (!sections.length) {
+    const pre = document.createElement('pre');
+    pre.className = 'modal-prompt-pre';
+    pre.textContent = '(sin prompt)';
+    box.appendChild(pre);
+    return;
+  }
+  sections.forEach(s => box.appendChild(_renderSection(s)));
+}
+
+function setPromptSectionsOpen(open) {
+  document.querySelectorAll('#modal-prompt details').forEach(d => { d.open = open; });
+}
+
 function showRaw(id) {
   const l = _logsCache[id];
   if (!l) return;
@@ -572,33 +766,9 @@ function showRaw(id) {
   document.getElementById('modal-title').textContent =
     (l.method || '') + ' ' + (l.path || '') + ' — ' + (l.timestamp || l.response_timestamp || '');
 
-  // --- Extract prompt ---
-  let promptText = '';
-  let imgNo = 0;
-  const imgMarkers = n => Array.from({length: n}, () => '[' + _IMG_ICON + ' image #' + (++imgNo) + ']').join(' ');
-  const msgs = l.body?.messages;
-  if (msgs && msgs.length) {
-    promptText = msgs.map(m => {
-      const role = (m.role || 'user').toUpperCase();
-      let content = '';
-      if (typeof m.content === 'string') {
-        content = m.content;
-      } else if (Array.isArray(m.content)) {
-        content = m.content
-          .filter(b => b.type === 'text')
-          .map(b => b.text || '')
-          .join('\\n');
-      }
-      const nImg = messageImageCount(m);
-      if (nImg) content = imgMarkers(nImg) + (content ? '\\n' + content : '');
-      return `[${role}]\\n${content}`;
-    }).join('\\n\\n---\\n\\n');
-  } else if (l.body?.prompt) {
-    const nImg = Array.isArray(l.body.images) ? l.body.images.length : 0;
-    promptText = (nImg ? imgMarkers(nImg) + '\\n' : '') + String(l.body.prompt);
-  }
+  // --- Prompt, split into collapsible sections ---
   loadModalImages(l, id);
-  document.getElementById('modal-prompt').textContent = promptText || '(sin prompt)';
+  renderPromptSections(l);
 
   // --- Extract response and thinking ---
   let thinkingText = '';

@@ -40,7 +40,7 @@ flowchart TD
 | `proxy.py` | HTTP forwarding, streaming support, error handling |
 | `rules_engine.py` | JSONPath-based rule matching and value replacement |
 | `config.py` | Pydantic config model, load/save config.json |
-| `dashboard.py` | Web UI FastAPI app (port 9090), management API. Live Prompts table (rows awaiting a response tinted light blue, GPU column with GPU / GPU+CPU / CPU offload) with a split-panel message detail modal (prompt left, thinking + response right). Raw toggle shows the complete JSON log entry. |
+| `dashboard.py` | Web UI FastAPI app (port 9090), management API. Live Prompts table (rows awaiting a response tinted light blue, GPU column with GPU / GPU+CPU / CPU offload) with a split-panel message detail modal (prompt left, thinking + response right). The prompt is split into collapsible sections — System, Skills (tools named `*skill*`), Tools, Messages (one per message, tool calls included) and Options — each with a token estimate (~4 chars/token, display only; the real `prompt_tokens` is shown next to the total when available). Raw toggle shows the complete JSON log entry. |
 | `launcher.py` | tkinter desktop launcher: 3-step sequential UI (Ollama → Client → Dashboard), model list from Ollama `/api/tags`, work-dir or Python app configuration |
 | `interceptor.py` | Async pause/resume of in-flight requests |
 | `logger.py` | Traffic logging to JSON files, rotation, stats |
