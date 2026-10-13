@@ -134,10 +134,19 @@ Running Open Code on Windows with a local model? **No configuration needed** —
 
 1. Start Ollama: `ollama serve`
 2. Run `python -m prompt_interceptor`
-3. Step 1: click **Check Ollama** — pick a model from the dropdown
+3. Step 1: click **Check Ollama** — pick a model from the dropdown (OpenCode 1.x only; 2.0+ lists Ollama's models itself)
 4. Step 2: select **Open Code (CLI)**, choose a work directory → click **Launch Client**
 5. Step 3: click **Open Dashboard**
 6. Open Code starts with the proxy as its Ollama backend. All traffic is visible in the dashboard.
+
+> **`500 No user query found in messages` after a few tool calls?** The conversation no longer
+> fits in Ollama's context window. Ollama drops the oldest messages — your request included —
+> keeping only the system prompt and the latest tool result, and the model's chat template then
+> fails. The dashboard still shows `[user]` because it logs the request before Ollama trims it.
+> Open Code talks to Ollama's OpenAI-compatible endpoint, which ignores a per-request `num_ctx`,
+> so raise the context in Ollama itself: `OLLAMA_CONTEXT_LENGTH=32768 ollama serve` (or
+> *Settings → Context length* in the Ollama app). The proxy rewrites this error into a clear
+> "Context exhausted" message and tags the row with a **⚠ ctx overflow** badge.
 
 ### Ollama + custom Python app
 

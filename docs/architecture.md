@@ -50,6 +50,15 @@ flowchart TD
 | `utils/json_utils.py` | JSONPath get/set, safe JSON parsing |
 | `utils/streaming_utils.py` | Async streaming utilities (NDJSON) |
 
+## Error explanations
+
+Some Ollama errors hide their real cause. `_explain_ollama_error` (`proxy.py`) rewrites them
+before they reach the client, keeping Ollama's status code, body shape and original text:
+
+| Ollama error | Real cause | Logged hint |
+|---|---|---|
+| `No user query found in messages` (500) | The conversation outgrew `num_ctx`: Ollama trimmed the oldest messages (keeping system + latest, usually a tool result), so the chat template saw no user turn | `_error_hint: "context_overflow"` → **⚠ ctx overflow** badge |
+
 ## Proxy Modes
 
 ### `passthrough` (default)

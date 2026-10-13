@@ -1223,3 +1223,9 @@ async def test_dashboard_html_has_gpu_column_and_awaiting_rows(client):
     assert "tr.awaiting td" in html
     assert "l.type !== 'response'" in html
     assert 'colspan="10"' not in html
+
+
+async def test_dashboard_html_has_ctx_overflow_badge(client):
+    html = (await client.get("/")).text
+    assert "l._error_hint === 'context_overflow'" in html
+    assert "ctx overflow" in html

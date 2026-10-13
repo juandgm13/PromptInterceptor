@@ -952,6 +952,11 @@ function renderLogsTable(logs) {
     const corrBadge = l._correction_applied
       ? `<span class="badge" style="background:#0a2a1a;color:#5dba8a;border:1px solid #1a4a2a;font-size:.75em" title="Auto-corrected: ${esc(l._correction_applied)}">&#x2714; fixed</span>`
       : '';
+    // Ollama's "No user query found" 500: the conversation outgrew num_ctx (see proxy._explain_ollama_error).
+    const errMsg = typeof rb?.error === 'string' ? rb.error : (rb?.error?.message || '');
+    const overflowBadge = l._error_hint === 'context_overflow'
+      ? `<span class="badge red" title="${esc(errMsg)}">&#x26A0; ctx overflow</span>`
+      : '';
     const ctxBadge = l._num_ctx_override
       ? `<span class="badge ctx-badge" title="${esc('num_ctx overridden by proxy: ' + numCtxOverrideText(l._num_ctx_override).replace('num_ctx: ', ''))}">&#x26A0; ctx</span>`
       : '';
@@ -1002,7 +1007,7 @@ function renderLogsTable(logs) {
       <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${imgBadge}${esc(preview)}</td>
       <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${respPreview}</td>
       <td style="white-space:nowrap;text-align:right;font-size:.85em">${durCell}</td>
-      <td>${typeTag} ${statusCode} ${corrBadge} ${ctxBadge} ${interceptBadge}</td>
+      <td>${typeTag} ${statusCode} ${overflowBadge} ${corrBadge} ${ctxBadge} ${interceptBadge}</td>
       <td style="white-space:nowrap"><button class="link-show" onclick="showRaw('${esc(String(cacheKey))}')">show</button>${delBtn}</td>
     </tr>`;
   }).join('');

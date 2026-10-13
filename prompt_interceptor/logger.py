@@ -357,6 +357,7 @@ class TrafficLogger:
         body: Optional[Dict[str, Any]] = None,
         correction_applied: Optional[str] = None,
         token_source_body: Optional[Dict[str, Any]] = None,
+        error_hint: Optional[str] = None,
     ) -> None:
         """
         Log a response, merging into the existing request log entry if present.
@@ -369,6 +370,8 @@ class TrafficLogger:
             correction_applied: Description of auto-corrections applied, or None
             token_source_body: Alternative body to extract token usage from (e.g. the
                 original Ollama response when body is an error dict like for 413s).
+            error_hint: Known cause of an error response (e.g. "context_overflow"),
+                shown as a badge in the dashboard.
         """
         date_dir = self._get_date_dir()
         filepath = date_dir / f"req_{request_id}.json"
@@ -395,6 +398,8 @@ class TrafficLogger:
             log_entry["_duration_ms"] = round((time.monotonic() - started) * 1000)
         if correction_applied:
             log_entry["_correction_applied"] = correction_applied
+        if error_hint:
+            log_entry["_error_hint"] = error_hint
         # Extract model name from response or request body for context size lookup
         model_name: Optional[str] = None
         token_src = token_source_body if token_source_body is not None else body
