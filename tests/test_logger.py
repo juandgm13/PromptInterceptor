@@ -860,3 +860,19 @@ def test_image_helpers_skip_malformed_entries():
     assert msg["content"][1]["image_url"]["url"] == 123
     # anthropic URL images are counted but kept as-is
     assert msg["content"][2]["source"]["url"] == "https://example.com/c.png"
+
+
+def test_get_logs_exclude_paths_applied_before_limit(tl):
+    """Frequent discovery calls must not push real traffic out of the limit."""
+    chat_ids = []
+    for i in range(3):
+        chat_ids.append(tl.log_request("POST", "/api/chat", {}, {"n": i}))
+        for _ in range(4):
+            tl.log_request("GET", "/api/tags", {}, None)
+            tl.log_request("POST", "/api/show", {}, {"model": "x"})
+
+    logs = tl.get_logs(limit=2, exclude_paths=["/api/tags", "/api/show"])
+    assert [e["request_id"] for e in logs] == chat_ids[-2:]
+
+    unfiltered = tl.get_logs(limit=2)
+    assert all(e["path"] in ("/api/tags", "/api/show") for e in unfiltered)

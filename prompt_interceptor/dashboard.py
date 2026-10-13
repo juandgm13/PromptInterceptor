@@ -270,6 +270,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
       <h2 style="margin-bottom:0">Live Prompts</h2>
       <div style="display:flex;gap:6px">
+        <label title="/api/tags, /api/show — polled by OpenCode 2.0+ to list models" style="display:flex;align-items:center;gap:4px;font-size:.8em;color:#aaa;cursor:pointer;margin-right:6px">
+          <input type="checkbox" id="show-discovery" onchange="toggleDiscovery(this.checked)"> Show model discovery
+        </label>
         <button class="btn-add" onclick="loadFile()" style="background:#0d3b66;border-color:#1a5b8a;color:#4fc3f7">&#128193; Load</button>
         <button class="btn-add" onclick="saveLogs()" style="background:#1a4d1a;border-color:#2a6b2a;color:#5f5">&#8595; Save</button>
         <button class="btn-add" onclick="clearLogs()" style="background:#4d1a1a;border-color:#6b2a2a;color:#f88">&#x2715; Clear</button>
@@ -372,6 +375,11 @@ let _editModalId = null;
 let _proxyStatusData = null;
 let _fileMode = false;
 let _loadedLogs = null;
+// Model discovery calls (/api/tags, /api/show) are hidden unless the viewer opts in.
+let _showDiscovery = false;
+try { _showDiscovery = localStorage.getItem('pi.showDiscovery') === '1'; } catch (e) {}
+// Server-provided list (config.dashboard_hidden_paths); also applied to loaded files.
+let _hiddenPaths = ['/api/tags', '/api/show'];
 let _currentModalLog = null;
 let _currentModalId = null;
 let _alertSettings = { context_alert_enabled: true, context_alert_threshold: 80 };
@@ -1001,10 +1009,21 @@ function renderLogsTable(logs) {
   }
 }
 
+function toggleDiscovery(on) {
+  _showDiscovery = on;
+  try { localStorage.setItem('pi.showDiscovery', on ? '1' : '0'); } catch (e) {}
+  loadLogs();
+}
+
+function visibleLogs(logs) {
+  return _showDiscovery ? logs : logs.filter(l => !_hiddenPaths.includes(l.path));
+}
+
 async function loadLogs() {
-  if (_fileMode) { renderLogsTable(_loadedLogs || []); return; }
+  if (_fileMode) { renderLogsTable(visibleLogs(_loadedLogs || [])); return; }
   try {
-    const data = await fetchJSON('/api/logs?limit=50');
+    const data = await fetchJSON('/api/logs?limit=50' + (_showDiscovery ? '&include_discovery=true' : ''));
+    if (Array.isArray(data.hidden_paths)) _hiddenPaths = data.hidden_paths;
     renderLogsTable(data.logs || []);
   } catch(e) {
     const tb = document.getElementById('logs-body');
@@ -1223,7 +1242,7 @@ function loadFile() {
         logs.forEach((l, i) => { _logsCache[l.request_id || i] = l; });
         document.getElementById('file-mode-name').textContent = file.name;
         document.getElementById('file-mode-banner').style.display = 'flex';
-        renderLogsTable(logs);
+        renderLogsTable(visibleLogs(logs));
       } catch(err) {
         alert('Error reading the file: ' + err.message);
       }
@@ -1287,6 +1306,7 @@ function dismissAlert() {
 function refreshAll() { loadStatus(); loadRules(); loadLogs(); loadPending(); }
 
 loadAlertSettings();
+document.getElementById('show-discovery').checked = _showDiscovery;
 refreshAll();
 setInterval(refreshAll, 5000);
 setInterval(loadPending, 1000);
@@ -1386,8 +1406,17 @@ def _without_image_payloads(entry):
 
 
 @router.get("/logs")
-async def logs(limit: int = 20):
-    return {"logs": [_without_image_payloads(e) for e in _logger.get_logs(limit=limit)]}
+async def logs(limit: int = 20, include_discovery: bool = False):
+    """
+    Recent traffic. Model discovery calls (config.dashboard_hidden_paths, e.g.
+    /api/tags and /api/show) are left out unless include_discovery is set.
+    """
+    hidden = get_config().dashboard_hidden_paths
+    entries = _logger.get_logs(limit=limit, exclude_paths=None if include_discovery else hidden)
+    return {
+        "logs": [_without_image_payloads(e) for e in entries],
+        "hidden_paths": hidden,
+    }
 
 
 @router.get("/logs/{request_id}")

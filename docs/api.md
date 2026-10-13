@@ -104,7 +104,7 @@ Content-Type: application/json
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/logs?limit=20` | Recent traffic logs (default limit: 20). Base64 images in request bodies are replaced by placeholders such as `"<image #1, 356 KB>"` and the entry gets `_image_count` |
+| `GET` | `/api/logs?limit=20` | Recent traffic logs (default limit: 20). Paths in `dashboard_hidden_paths` (model discovery: `/api/tags`, `/api/show`) are skipped before the limit unless `include_discovery=true`; the response also carries `hidden_paths`. Base64 images in request bodies are replaced by placeholders such as `"<image #1, 356 KB>"` and the entry gets `_image_count` |
 | `GET` | `/api/logs/{request_id}` | One full log entry, images included |
 | `GET` | `/api/logs/{request_id}/images` | Images sent in that request, ready for `<img src>` |
 | `DELETE` | `/api/logs/{request_id}` | Delete one log entry |

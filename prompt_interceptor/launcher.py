@@ -17,7 +17,11 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 from pathlib import Path
 
-from .client_versions import OPENCODE_MIN_VERSION, OPENCODE_MAX_VERSION
+from .client_versions import (
+    OPENCODE_AUTO_MODELS_VERSION,
+    OPENCODE_MAX_VERSION,
+    OPENCODE_MIN_VERSION,
+)
 from .config import get_config, save_config
 from ._version import __version__
 
@@ -118,6 +122,16 @@ def _parse_version(v: str) -> tuple:
 def _is_version_compatible(version: str, min_v: str, max_v: str) -> bool:
     """Return True if min_v <= version <= max_v (inclusive, tuple comparison)."""
     return _parse_version(min_v) <= _parse_version(version) <= _parse_version(max_v)
+
+
+def _opencode_auto_models(version: str | None) -> bool:
+    """Return True if this OpenCode version discovers Ollama models by itself.
+
+    An undetectable version keeps the model selector (the 1.x behaviour).
+    """
+    if version is None:
+        return False
+    return _parse_version(version) >= _parse_version(OPENCODE_AUTO_MODELS_VERSION)
 
 
 def _get_opencode_version(cmd: str = "opencode") -> str | None:
@@ -230,7 +244,8 @@ def _write_opencode_config_wsl(model: str, proxy_url: str) -> None:
         "name": "Ollama",
     })
     ollama.setdefault("options", {})["baseURL"] = f"{proxy_url}/v1"
-    ollama.setdefault("models", {})[model] = {"name": model}
+    if model:
+        ollama.setdefault("models", {})[model] = {"name": model}
     existing.setdefault("$schema", "https://opencode.ai/config.json")
 
     config_json = json.dumps(existing, indent=2)
@@ -245,6 +260,11 @@ def _write_opencode_config_wsl(model: str, proxy_url: str) -> None:
         print(f"[PromptInterceptor] Failed to write opencode WSL config: {exc}")
 
 
+# Versions found by _detect_clients, keyed by client command (None = undetectable).
+# Kept so the UI can adapt to a version without re-running "<client> --version".
+_CLIENT_VERSIONS: dict = {}
+
+
 def _detect_clients() -> tuple:
     """Detect installed AI clients.
 
@@ -254,11 +274,13 @@ def _detect_clients() -> tuple:
     """
     clients = [("Only Proxy", "__only_proxy__")]
     version_warnings = []
+    _CLIENT_VERSIONS.clear()
     # Claude Code disabled for now — proxy translation not yet stable for this client.
     # if shutil.which("claude"):
     #     clients.append(("Claude Code", "claude"))
     if shutil.which("opencode"):
         ver = _get_opencode_version()
+        _CLIENT_VERSIONS["opencode"] = ver
         if ver is not None and not _is_version_compatible(ver, OPENCODE_MIN_VERSION, OPENCODE_MAX_VERSION):
             version_warnings.append(
                 f"OpenCode is installed (version {ver}), but this version may not be "
@@ -375,7 +397,9 @@ def _write_opencode_config(model: str, proxy_url: str, work_dir: str = "") -> No
         "name": "Ollama",
     })
     ollama.setdefault("options", {})["baseURL"] = f"{proxy_url}/v1"
-    ollama.setdefault("models", {})[model] = {"name": model}
+    # OpenCode 2.0+ lists Ollama's models itself, so no model is pinned here.
+    if model:
+        ollama.setdefault("models", {})[model] = {"name": model}
 
     # Enforce key order: $schema first, then shell (Windows only), then the rest
     existing.pop("$schema", None)
@@ -811,7 +835,8 @@ class LauncherWindow:
             self._env_var_entry.config(state=field_state)
             self._launch_client_btn.config(text="Launch Client", state=field_state)
         else:
-            self._row_model.pack(fill="x", padx=20, pady=2)
+            if not self._client_picks_model(cmd_name):
+                self._row_model.pack(fill="x", padx=20, pady=2)
             self._row_workdir.pack(fill="x", padx=20, pady=2)
             self._row_launch.pack(fill="x", padx=20, pady=(2, 10))
             self._model_cb.config(state="readonly" if self._step2_enabled else "disabled")
@@ -820,6 +845,12 @@ class LauncherWindow:
             self._launch_client_btn.config(text="Launch Client", state=field_state)
 
         self._apply_window_height()
+
+    @staticmethod
+    def _client_picks_model(cmd_name: str) -> bool:
+        """True if the client discovers Ollama's models itself (OpenCode 2.0+)."""
+        # Only the native CLI: the detected version says nothing about a WSL install.
+        return cmd_name == "opencode" and _opencode_auto_models(_CLIENT_VERSIONS.get("opencode"))
 
     def _on_client_change(self, event=None) -> None:
         self._refresh_client_rows()
@@ -844,7 +875,8 @@ class LauncherWindow:
         name = self.client_var.get()
         cmd_name = next((c for n, c in self._clients if n == name), "")
         work_dir = self.work_dir_var.get().strip() or None
-        model = self.model_var.get().strip()
+        # Hidden model row (OpenCode 2.0+): let the client choose among Ollama's models.
+        model = "" if self._client_picks_model(cmd_name) else self.model_var.get().strip()
         proxy_url = f"http://localhost:{config.proxy_port}"
         env = os.environ.copy()
 

@@ -8,7 +8,7 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, Iterable, List, Tuple
 import uuid
 import shutil
 
@@ -508,19 +508,31 @@ class TrafficLogger:
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(entry, f, indent=2, default=str)
 
-    def get_logs(self, limit: int = 10) -> list:
-        """Get recent log entries."""
+    def get_logs(self, limit: int = 10, exclude_paths: Optional[Iterable[str]] = None) -> list:
+        """
+        Get the most recent log entries, oldest first.
+
+        Entries whose path is in exclude_paths are skipped before the limit is
+        applied, so frequent background calls cannot push real traffic out.
+        """
         date_dir = self._get_date_dir()
         files = sorted(date_dir.glob("req_*.json"), key=lambda f: f.stat().st_mtime)
+        excluded = set(exclude_paths or ())
         logs = []
 
-        for f in files[-limit:]:
+        for f in reversed(files):
+            if len(logs) >= limit:
+                break
             try:
                 with open(f) as fp:
-                    logs.append(json.load(fp))
+                    entry = json.load(fp)
             except (json.JSONDecodeError, IOError):
                 continue
+            if excluded and entry.get("path") in excluded:
+                continue
+            logs.append(entry)
 
+        logs.reverse()
         return logs
 
     def get_stats(self) -> Dict[str, Any]:

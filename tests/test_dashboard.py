@@ -1187,3 +1187,30 @@ async def test_disable_rule_success(client):
         assert resp.json()["status"] == "disabled"
     finally:
         dash_mod._rule_engine.delete_rule(idx)
+
+
+# ---------------------------------------------------------------------------
+# /api/logs hides model discovery (/api/tags, /api/show) unless asked
+# ---------------------------------------------------------------------------
+
+async def test_api_logs_hides_model_discovery_by_default(client):
+    from prompt_interceptor.dashboard import _logger
+    chat = _logger.log_request("POST", "/api/chat", {}, {"model": "m"})
+    tags = _logger.log_request("GET", "/api/tags", {}, None)
+    show = _logger.log_request("POST", "/api/show", {}, {"model": "m"})
+
+    data = (await client.get("/api/logs?limit=100")).json()
+    ids = {e["request_id"] for e in data["logs"]}
+    assert chat in ids
+    assert tags not in ids and show not in ids
+    assert data["hidden_paths"] == ["/api/tags", "/api/show"]
+
+    data = (await client.get("/api/logs?limit=100&include_discovery=true")).json()
+    ids = {e["request_id"] for e in data["logs"]}
+    assert {chat, tags, show} <= ids
+
+
+async def test_dashboard_html_has_discovery_toggle(client):
+    html = (await client.get("/")).text
+    assert 'id="show-discovery"' in html
+    assert "include_discovery=true" in html
