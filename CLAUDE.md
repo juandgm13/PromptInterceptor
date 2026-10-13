@@ -63,6 +63,7 @@ Ollama (target: 11434)
 - Modifier management (create/enable/disable/delete)
 - Mode switching (passthrough/intercept)
 - Live prompt viewer (image badge + thumbnails/lightbox for vision requests)
+- Rows still waiting for a response are tinted light blue; GPU column shows GPU / GPU+CPU / CPU offload (as in the modal)
 - Intercept queue (forward/edit/drop)
 - Statistics display
 

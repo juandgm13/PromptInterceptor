@@ -1214,3 +1214,12 @@ async def test_dashboard_html_has_discovery_toggle(client):
     html = (await client.get("/")).text
     assert 'id="show-discovery"' in html
     assert "include_discovery=true" in html
+
+
+async def test_dashboard_html_has_gpu_column_and_awaiting_rows(client):
+    html = (await client.get("/")).text
+    assert "<th>Tokens / Ctx%</th><th>GPU</th>" in html
+    assert "function offloadLabel(" in html
+    assert "tr.awaiting td" in html
+    assert "l.type !== 'response'" in html
+    assert 'colspan="10"' not in html

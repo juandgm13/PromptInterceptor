@@ -61,6 +61,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .green{background:#1a6b1a;color:#0f0}
   .red{background:#6b1a1a;color:#f66}
   .blue{background:#0d3b66;color:#4fc3f7}
+  /* Traffic log rows still waiting for the response from Ollama */
+  tr.awaiting td{background:rgba(79,195,247,.14)}
+  tr.awaiting td:first-child{box-shadow:inset 3px 0 0 #4fc3f7}
   .section{background:#16213e;border-radius:8px;padding:20px;margin-bottom:20px}
   table{width:100%;border-collapse:collapse;font-size:.9em}
   th,td{text-align:left;padding:8px 12px;border-bottom:1px solid #2a2a4e}
@@ -288,9 +291,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
     <table>
       <thead><tr>
-        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Tokens / Ctx%</th><th>Prompt</th><th>Response</th><th>Duration</th><th>Status</th><th></th>
+        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Tokens / Ctx%</th><th>GPU</th><th>Prompt</th><th>Response</th><th>Duration</th><th>Status</th><th></th>
       </tr></thead>
-      <tbody id="logs-body"><tr><td colspan="10" class="empty">Loading...</td></tr></tbody>
+      <tbody id="logs-body"><tr><td colspan="11" class="empty">Loading...</td></tr></tbody>
     </table>
   </div>
 
@@ -712,9 +715,8 @@ function showRaw(id) {
       parts.push('<span style="color:' + pc + '">' + ttu.context_utilization_pct + '% of context</span>');
     }
     if (ttu.offload) {
-      const offloadLabel = ttu.offload === 'gpu' ? '&#x1F7E2; GPU' : ttu.offload === 'cpu' ? '&#x1F7E1; CPU' : '&#x1F7E0; GPU+CPU';
-      const vramMB = ttu.size_vram ? Math.round(ttu.size_vram / 1024 / 1024) + ' MB VRAM' : '';
-      parts.push(offloadLabel + (vramMB ? ' (' + vramMB + ')' : ''));
+      const vramMB = vramText(ttu);
+      parts.push(offloadLabel(ttu.offload) + (vramMB ? ' (' + vramMB + ')' : ''));
     }
     if (ctxOvHtml) parts.push(ctxOvHtml);
     document.getElementById('modal-token-text').innerHTML = parts.join(' &nbsp;|&nbsp; ');
@@ -848,11 +850,21 @@ function closeProxyModal() {
   document.getElementById('proxy-modal-overlay').style.display = 'none';
 }
 
+// Where Ollama runs the model, from /api/ps at response time ('gpu' | 'partial' | 'cpu').
+function offloadLabel(offload) {
+  if (!offload) return '';
+  return offload === 'gpu' ? '&#x1F7E2; GPU' : offload === 'cpu' ? '&#x1F7E1; CPU' : '&#x1F7E0; GPU+CPU';
+}
+
+function vramText(tu) {
+  return tu && tu.size_vram ? Math.round(tu.size_vram / 1024 / 1024) + ' MB VRAM' : '';
+}
+
 function renderLogsTable(logs) {
   const tbody = document.getElementById('logs-body');
   document.getElementById('stat-requests').textContent = logs.length;
   if (!logs.length) {
-    tbody.innerHTML = '<tr><td colspan="10" class="empty">No requests yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="empty">No requests yet.</td></tr>';
     document.getElementById('stat-ctx').textContent = '-';
     document.getElementById('stat-ctx').style.color = '';
     document.getElementById('ctx-warn-banner').style.display = 'none';
@@ -978,12 +990,15 @@ function renderLogsTable(logs) {
       const durColor = dur >= 20000 ? '#f55' : dur >= 5000 ? '#ffa040' : '#9a9ac0';
       durCell = '<span style="color:' + durColor + '">' + durStr + '</span>';
     }
-    return `<tr>
+    const offloadCell = offloadLabel(tu?.offload) || '<span class="empty">-</span>';
+    const awaiting = l.type !== 'response';
+    return `<tr${awaiting ? ' class="awaiting" title="Waiting for response"' : ''}>
       <td>${ts}</td>
       <td>${esc(method)}</td>
       <td><code>${esc(path)}</code></td>
       <td><code>${esc(model)}</code>${modelModified ? ' <span class="badge blue">&#x270E; edited</span>' : ''}</td>
       <td style="white-space:nowrap;text-align:right;font-size:.85em">${tokenCell}</td>
+      <td style="white-space:nowrap;font-size:.85em" title="${esc(vramText(tu))}">${offloadCell}</td>
       <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${imgBadge}${esc(preview)}</td>
       <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${respPreview}</td>
       <td style="white-space:nowrap;text-align:right;font-size:.85em">${durCell}</td>
@@ -1027,7 +1042,7 @@ async function loadLogs() {
     renderLogsTable(data.logs || []);
   } catch(e) {
     const tb = document.getElementById('logs-body');
-    tb.innerHTML = '<tr><td colspan="10" id="_logs-err"></td></tr>';
+    tb.innerHTML = '<tr><td colspan="11" id="_logs-err"></td></tr>';
     document.getElementById('_logs-err').textContent = 'Error: ' + e.message;
   }
 }
