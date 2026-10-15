@@ -1187,3 +1187,53 @@ async def test_disable_rule_success(client):
         assert resp.json()["status"] == "disabled"
     finally:
         dash_mod._rule_engine.delete_rule(idx)
+
+
+# ---------------------------------------------------------------------------
+# /api/logs hides model discovery (/api/tags, /api/show) unless asked
+# ---------------------------------------------------------------------------
+
+async def test_api_logs_hides_model_discovery_by_default(client):
+    from prompt_interceptor.dashboard import _logger
+    chat = _logger.log_request("POST", "/api/chat", {}, {"model": "m"})
+    tags = _logger.log_request("GET", "/api/tags", {}, None)
+    show = _logger.log_request("POST", "/api/show", {}, {"model": "m"})
+
+    data = (await client.get("/api/logs?limit=100")).json()
+    ids = {e["request_id"] for e in data["logs"]}
+    assert chat in ids
+    assert tags not in ids and show not in ids
+    assert data["hidden_paths"] == ["/api/tags", "/api/show"]
+
+    data = (await client.get("/api/logs?limit=100&include_discovery=true")).json()
+    ids = {e["request_id"] for e in data["logs"]}
+    assert {chat, tags, show} <= ids
+
+
+async def test_dashboard_html_has_discovery_toggle(client):
+    html = (await client.get("/")).text
+    assert 'id="show-discovery"' in html
+    assert "include_discovery=true" in html
+
+
+async def test_dashboard_html_has_gpu_column_and_awaiting_rows(client):
+    html = (await client.get("/")).text
+    assert "<th>Tokens / Ctx%</th><th>GPU</th>" in html
+    assert "function offloadLabel(" in html
+    assert "tr.awaiting td" in html
+    assert "l.type !== 'response'" in html
+    assert 'colspan="10"' not in html
+
+
+async def test_dashboard_html_has_ctx_overflow_badge(client):
+    html = (await client.get("/")).text
+    assert "l._error_hint === 'context_overflow'" in html
+    assert "ctx overflow" in html
+
+
+async def test_dashboard_modal_prompt_sections(client):
+    html = (await client.get("/")).text
+    assert '<div class="modal-prompt-sections" id="modal-prompt">' in html
+    assert "function buildPromptSections(" in html
+    assert "function estTokens(" in html
+    assert "setPromptSectionsOpen(true)" in html

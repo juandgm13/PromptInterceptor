@@ -3202,3 +3202,114 @@ def test_persist_ui_config_inject_context_size_per_client(tmp_path, monkeypatch,
 
     assert saved[0].inject_context_size is expected
     assert saved[0].context_size == 4096
+
+
+# ---------------------------------------------------------------------------
+# OpenCode 2.0+: models are discovered by the client, no model selector
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("version,expected", [
+    ("1.18.34", False), ("2.0.0", True), ("2.3.1", True), (None, False),
+])
+def test_opencode_auto_models(version, expected):
+    from prompt_interceptor.launcher import _opencode_auto_models
+    assert _opencode_auto_models(version) is expected
+
+
+@pytest.mark.parametrize("version,warns", [("2.0.0", False), ("2.9.12", False), ("3.0.0", True)])
+def test_detect_clients_opencode_2x_supported(monkeypatch, version, warns):
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/opencode" if cmd == "opencode" else None)
+    from prompt_interceptor import launcher
+    monkeypatch.setattr(launcher, "_CLIENT_VERSIONS", {})
+    monkeypatch.setattr(launcher, "_get_opencode_version", lambda cmd="opencode": version)
+    clients, warnings = launcher._detect_clients()
+    assert ("Open Code (CLI)", "opencode") in clients
+    assert bool(warnings) is warns
+    assert launcher._CLIENT_VERSIONS["opencode"] == version
+
+
+def _opencode_rows_win(tmp_path):
+    cfg = Config(log_dir=str(tmp_path / "logs"))
+    win, _ = _make_headless_win(cfg, clients=[("Open Code (CLI)", "opencode"),
+                                               ("Python App (Ollama)", "__python_app__")])
+    win.client_var = MagicMock()
+    win.client_var.get.return_value = "Open Code (CLI)"
+    win._clients = [("Open Code (CLI)", "opencode"), ("Python App (Ollama)", "__python_app__")]
+    win._step2_enabled = True
+    for attr in ("_row_model", "_row_workdir", "_row_apppath", "_row_command", "_row_venv",
+                 "_row_envvar", "_work_dir_entry", "_browse_workdir_btn", "_model_cb"):
+        setattr(win, attr, MagicMock())
+    return win
+
+
+@pytest.mark.parametrize("version,shows_model", [("1.18.34", True), ("2.0.0", False), (None, True)])
+def test_refresh_client_rows_opencode_model_row(tmp_path, monkeypatch, version, shows_model):
+    from prompt_interceptor import launcher
+    monkeypatch.setattr(launcher, "_CLIENT_VERSIONS", {"opencode": version})
+    win = _opencode_rows_win(tmp_path)
+
+    win._refresh_client_rows()
+
+    assert win._row_model.pack.called is shows_model
+    win._row_workdir.pack.assert_called()
+
+
+def test_on_launch_client_opencode_2x_omits_model(tmp_path, monkeypatch):
+    """OpenCode 2.0+ is launched without --model and no model is pinned in its config."""
+    from prompt_interceptor import launcher
+    cfg = Config(log_dir=str(tmp_path / "logs"), proxy_port=8080)
+    monkeypatch.setattr("prompt_interceptor.launcher.get_config", lambda: cfg)
+    monkeypatch.setattr(launcher, "_CLIENT_VERSIONS", {"opencode": "2.1.0"})
+
+    win = _opencode_rows_win(tmp_path)
+    win.work_dir_var = MagicMock()
+    win.work_dir_var.get.return_value = "/my/repo"
+    win.model_var = MagicMock()
+    win.model_var.get.return_value = "mistral:latest"
+    win.status_var = MagicMock()
+    win._start_btn = MagicMock()
+
+    popen_calls = []
+    with patch("prompt_interceptor.launcher.subprocess.Popen",
+               side_effect=lambda *a, **kw: popen_calls.append((a[0], kw))), \
+         patch("prompt_interceptor.launcher._write_opencode_config") as mock_cfg:
+        win._on_launch_client()
+
+    cmd_str = " ".join(popen_calls[0][0])
+    assert "opencode" in cmd_str
+    assert "--model" not in cmd_str
+    assert mock_cfg.call_args[0][0] == ""
+
+
+def test_write_opencode_config_without_model(tmp_path):
+    """An empty model keeps the proxy baseURL but adds no models entry."""
+    from prompt_interceptor.launcher import _write_opencode_config
+    _write_opencode_config("", "http://localhost:8080", work_dir=str(tmp_path))
+    written = json.loads((tmp_path / ".opencode" / "opencode.json").read_text(encoding="utf-8"))
+    ollama = written["provider"]["ollama"]
+    assert ollama["options"]["baseURL"] == "http://localhost:8080/v1"
+    assert "models" not in ollama
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("2.0.29", "2.0.29"),
+    ("v2.0.29", "2.0.29"),
+    ("opencode v2.0.29\n", "2.0.29"),
+    ("opencode/2.0.29 linux-x64", "2.0.29"),
+    ("1.17.4-beta", "1.17.4"),
+    ("no version", None),
+    ("", None),
+])
+def test_extract_version(text, expected):
+    from prompt_interceptor.launcher import _extract_version
+    assert _extract_version(text) == expected
+
+
+def test_get_opencode_version_v_prefix_keeps_major(monkeypatch):
+    """'v2.0.29' was read as '0.29' because \\b does not split 'v' from '2'."""
+    from prompt_interceptor import launcher
+    result = MagicMock(stdout="v2.0.29\n", stderr="", returncode=0)
+    monkeypatch.setattr(launcher.subprocess, "run", lambda *a, **kw: result)
+    version = launcher._get_opencode_version()
+    assert version == "2.0.29"
+    assert launcher._opencode_auto_models(version) is True

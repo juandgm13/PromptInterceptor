@@ -104,6 +104,7 @@ the model (`llama-server process has terminated … CUDA error`). For vision mod
 |-------|------|---------|-------------|
 | `dashboard_enabled` | bool | `true` | Enable the web dashboard |
 | `dashboard_port` | int | `9090` | Dashboard port |
+| `dashboard_hidden_paths` | list[str] | `["/api/tags", "/api/show"]` | Paths hidden from the dashboard's Live Prompts table unless "Show model discovery" is ticked (OpenCode 2.0+ polls them constantly). They are still proxied and logged |
 
 ### Models
 

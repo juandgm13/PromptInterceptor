@@ -61,6 +61,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .green{background:#1a6b1a;color:#0f0}
   .red{background:#6b1a1a;color:#f66}
   .blue{background:#0d3b66;color:#4fc3f7}
+  /* Traffic log rows still waiting for the response from Ollama */
+  tr.awaiting td{background:rgba(79,195,247,.14)}
+  tr.awaiting td:first-child{box-shadow:inset 3px 0 0 #4fc3f7}
   .section{background:#16213e;border-radius:8px;padding:20px;margin-bottom:20px}
   table{width:100%;border-collapse:collapse;font-size:.9em}
   th,td{text-align:left;padding:8px 12px;border-bottom:1px solid #2a2a4e}
@@ -154,6 +157,21 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .modal-prompt-pre{background:#0d0d1e;padding:14px;border-radius:6px;font-size:.78em;
     overflow:auto;max-height:calc(80vh - 40px);line-height:1.5;
     white-space:pre-wrap;word-break:break-word}
+  .modal-prompt-bar{display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:.75em;color:#9a9ac0}
+  .modal-prompt-bar button{background:transparent;border:1px solid #2a2a4e;color:#9a9ac0;padding:2px 8px}
+  .modal-prompt-sections{overflow:auto;max-height:calc(80vh - 60px);display:flex;flex-direction:column;gap:4px}
+  .psec{background:#0d0d1e;border:1px solid #1f1f3a;border-radius:6px}
+  .psec>summary{cursor:pointer;padding:6px 10px;display:flex;align-items:center;gap:8px;
+    list-style:none;user-select:none}
+  .psec>summary::-webkit-details-marker{display:none}
+  .psec>summary::before{content:'▸';color:#666;font-size:.8em;transition:transform .1s}
+  .psec[open]>summary::before{transform:rotate(90deg)}
+  .psec-title{font-size:.78em;font-weight:600;text-transform:uppercase;letter-spacing:.04em;
+    flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .psec-est{font-size:.72em;color:#9a9ac0;font-style:italic;white-space:nowrap}
+  .psec-children{padding:0 6px 6px 14px;display:flex;flex-direction:column;gap:4px}
+  .psec-pre{margin:0;padding:8px 12px 12px;font-size:.76em;line-height:1.5;white-space:pre-wrap;
+    word-break:break-word;max-height:360px;overflow:auto;border-top:1px solid #1f1f3a}
   .img-badge{background:#2a1a3a;color:#c89bff;border:1px solid #4a2a6a;font-size:.75em;margin-right:4px}
   .ctx-badge{background:#2a2000;color:#ffa040;border:1px solid #5a4000;font-size:.75em}
   .modal-images-block{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
@@ -270,6 +288,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
       <h2 style="margin-bottom:0">Live Prompts</h2>
       <div style="display:flex;gap:6px">
+        <label title="/api/tags, /api/show — polled by OpenCode 2.0+ to list models" style="display:flex;align-items:center;gap:4px;font-size:.8em;color:#aaa;cursor:pointer;margin-right:6px">
+          <input type="checkbox" id="show-discovery" onchange="toggleDiscovery(this.checked)"> Show model discovery
+        </label>
         <button class="btn-add" onclick="loadFile()" style="background:#0d3b66;border-color:#1a5b8a;color:#4fc3f7">&#128193; Load</button>
         <button class="btn-add" onclick="saveLogs()" style="background:#1a4d1a;border-color:#2a6b2a;color:#5f5">&#8595; Save</button>
         <button class="btn-add" onclick="clearLogs()" style="background:#4d1a1a;border-color:#6b2a2a;color:#f88">&#x2715; Clear</button>
@@ -285,9 +306,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
     <table>
       <thead><tr>
-        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Tokens / Ctx%</th><th>Prompt</th><th>Response</th><th>Duration</th><th>Status</th><th></th>
+        <th>Time</th><th>Method</th><th>Path</th><th>Model</th><th>Tokens / Ctx%</th><th>GPU</th><th>Prompt</th><th>Response</th><th>Duration</th><th>Status</th><th></th>
       </tr></thead>
-      <tbody id="logs-body"><tr><td colspan="10" class="empty">Loading...</td></tr></tbody>
+      <tbody id="logs-body"><tr><td colspan="11" class="empty">Loading...</td></tr></tbody>
     </table>
   </div>
 
@@ -344,7 +365,13 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
           <div class="modal-images-title" id="modal-images-title"></div>
           <div class="modal-images-grid" id="modal-images-grid"></div>
         </div>
-        <pre class="modal-prompt-pre" id="modal-prompt"></pre>
+        <div class="modal-prompt-bar">
+          <span id="modal-prompt-est" title="Estimate (~4 chars/token), not Ollama's count"></span>
+          <span style="flex:1"></span>
+          <button onclick="setPromptSectionsOpen(true)">Expand all</button>
+          <button onclick="setPromptSectionsOpen(false)">Collapse all</button>
+        </div>
+        <div class="modal-prompt-sections" id="modal-prompt"></div>
       </div>
       <div class="modal-panel">
         <div id="modal-thinking-block" class="modal-thinking-block" style="display:none">
@@ -372,6 +399,11 @@ let _editModalId = null;
 let _proxyStatusData = null;
 let _fileMode = false;
 let _loadedLogs = null;
+// Model discovery calls (/api/tags, /api/show) are hidden unless the viewer opts in.
+let _showDiscovery = false;
+try { _showDiscovery = localStorage.getItem('pi.showDiscovery') === '1'; } catch (e) {}
+// Server-provided list (config.dashboard_hidden_paths); also applied to loaded files.
+let _hiddenPaths = ['/api/tags', '/api/show'];
 let _currentModalLog = null;
 let _currentModalId = null;
 let _alertSettings = { context_alert_enabled: true, context_alert_threshold: 80 };
@@ -549,6 +581,179 @@ function stripEmbeddedToolCalls(text) {
   return text ? text.replace(/<tool_call>[\\s\\S]*?<\\/tool_call>/g, '').trim() : text;
 }
 
+// --- Prompt sections (modal) -------------------------------------------------
+// Token counts here are a display-only estimate (~4 chars/token); nothing else uses them.
+function estTokens(text) {
+  return Math.ceil(String(text || '').length / 4);
+}
+
+function fmtEst(n) {
+  return '≈' + (n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n)) + ' tok';
+}
+
+function _textOf(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map(b => {
+      if (!b || typeof b !== 'object') return '';
+      if (b.type === 'text') return b.text || '';
+      if (b.type === 'tool_result') return _textOf(b.content);
+      if (b.type === 'tool_use') return (b.name || 'tool') + '(' + JSON.stringify(b.input || {}, null, 2) + ')';
+      return '';
+    }).filter(Boolean).join('\\n');
+  }
+  return content == null ? '' : JSON.stringify(content, null, 2);
+}
+
+function _fmtToolCall(tc) {
+  const fn = tc.function || {};
+  let args = fn.arguments !== undefined ? fn.arguments : (tc.input || tc.arguments || '');
+  try {
+    if (typeof args === 'string' && args) args = JSON.stringify(JSON.parse(args), null, 2);
+    else if (typeof args === 'object') args = JSON.stringify(args, null, 2);
+  } catch (_) {}
+  return (fn.name || tc.name || 'tool') + '(\\n' + args + '\\n)';
+}
+
+function _toolDef(t) {
+  const fn = t.function || t;
+  const params = fn.parameters || fn.input_schema || t.input_schema || {};
+  return {
+    name: fn.name || t.name || 'tool',
+    text: (fn.description || '') + '\\n\\nParameters:\\n' + JSON.stringify(params, null, 2),
+  };
+}
+
+function _leaf(title, color, text, open) {
+  return {title, color, text, est: estTokens(text), open: !!open};
+}
+
+function _group(title, color, children, open) {
+  return {title, color, children, est: children.reduce((s, c) => s + c.est, 0), open: !!open};
+}
+
+// Splits what was sent to Ollama into collapsible sections: System, Skills, Tools, Messages, Options.
+function buildPromptSections(body) {
+  if (!body || typeof body !== 'object') return [];
+  const sections = [];
+  const msgs = Array.isArray(body.messages) ? body.messages : [];
+
+  const systems = [];
+  if (body.system) systems.push(_textOf(body.system));
+  msgs.filter(m => m && (m.role === 'system' || m.role === 'developer'))
+      .forEach(m => systems.push(_textOf(m.content)));
+  if (systems.length === 1) sections.push(_leaf('System', '#9fb3d1', systems[0]));
+  else if (systems.length > 1) {
+    sections.push(_group('System (' + systems.length + ')', '#9fb3d1',
+      systems.map((t, i) => _leaf('System #' + (i + 1), '#9fb3d1', t))));
+  }
+
+  const tools = Array.isArray(body.tools) ? body.tools.map(_toolDef) : [];
+  const skills = tools.filter(t => /skill/i.test(t.name));
+  const others = tools.filter(t => !/skill/i.test(t.name));
+  if (skills.length) {
+    sections.push(_group('Skills (' + skills.length + ')', '#c89bff',
+      skills.map(t => _leaf(t.name, '#c89bff', t.text))));
+  }
+  if (others.length) {
+    sections.push(_group('Tools (' + others.length + ')', '#4caf88',
+      others.map(t => _leaf(t.name, '#4caf88', t.text))));
+  }
+
+  const convo = msgs.filter(m => m && m.role !== 'system' && m.role !== 'developer');
+  if (convo.length) {
+    let lastUser = -1;
+    convo.forEach((m, i) => { if (m.role === 'user') lastUser = i; });
+    let imgNo = 0;
+    const items = convo.map((m, i) => {
+      const role = m.role || 'user';
+      let text = _textOf(m.content);
+      const nImg = messageImageCount(m);
+      if (nImg) {
+        const marks = Array.from({length: nImg}, () => '[' + _IMG_ICON + ' image #' + (++imgNo) + ']').join(' ');
+        text = marks + (text ? '\\n' + text : '');
+      }
+      if (Array.isArray(m.tool_calls) && m.tool_calls.length) {
+        text += (text ? '\\n\\n' : '') + m.tool_calls.map(_fmtToolCall).join('\\n\\n');
+      }
+      let title = '[' + role.toUpperCase() + ']';
+      if (role === 'tool' && (m.name || m.tool_name || m.tool_call_id)) {
+        title += ' ' + (m.name || m.tool_name || m.tool_call_id);
+      }
+      const color = role === 'user' ? '#4fc3f7' : role === 'assistant' ? '#f0a500' : '#7dcc9a';
+      return _leaf(title, color, text || '(empty)', i === lastUser || i === convo.length - 1);
+    });
+    sections.push(_group('Messages (' + convo.length + ')', '#4fc3f7', items, true));
+  }
+
+  if (body.prompt != null) sections.push(_leaf('Prompt', '#4fc3f7', String(body.prompt), true));
+
+  const opts = {};
+  ['model', 'options', 'format', 'think', 'temperature', 'max_tokens', 'stream'].forEach(k => {
+    if (body[k] !== undefined) opts[k] = body[k];
+  });
+  if (Object.keys(opts).length) {
+    const text = JSON.stringify(opts, null, 2);
+    sections.push({title: 'Options', color: '#888', text, est: null, open: false});
+  }
+  return sections;
+}
+
+function _renderSection(s) {
+  const det = document.createElement('details');
+  det.className = 'psec';
+  det.open = s.open;
+  const sum = document.createElement('summary');
+  const title = document.createElement('span');
+  title.className = 'psec-title';
+  title.style.color = s.color;
+  title.textContent = s.title;
+  sum.appendChild(title);
+  if (s.est != null) {
+    const est = document.createElement('span');
+    est.className = 'psec-est';
+    est.title = "Estimate (~4 chars/token), not Ollama's count";
+    est.textContent = fmtEst(s.est);
+    sum.appendChild(est);
+  }
+  det.appendChild(sum);
+  if (s.children) {
+    const box = document.createElement('div');
+    box.className = 'psec-children';
+    s.children.forEach(c => box.appendChild(_renderSection(c)));
+    det.appendChild(box);
+  } else {
+    const pre = document.createElement('pre');
+    pre.className = 'psec-pre';
+    pre.textContent = s.text;
+    det.appendChild(pre);
+  }
+  return det;
+}
+
+function renderPromptSections(l) {
+  const box = document.getElementById('modal-prompt');
+  box.textContent = '';
+  const sections = buildPromptSections(l.body);
+  const total = sections.reduce((s, c) => s + (c.est || 0), 0);
+  const realTokens = l._tokens_usage && l._tokens_usage.prompt_tokens;
+  document.getElementById('modal-prompt-est').textContent = sections.length
+    ? fmtEst(total) + ' (estimate)' + (realTokens != null ? ' · real: ' + realTokens : '')
+    : '';
+  if (!sections.length) {
+    const pre = document.createElement('pre');
+    pre.className = 'modal-prompt-pre';
+    pre.textContent = '(sin prompt)';
+    box.appendChild(pre);
+    return;
+  }
+  sections.forEach(s => box.appendChild(_renderSection(s)));
+}
+
+function setPromptSectionsOpen(open) {
+  document.querySelectorAll('#modal-prompt details').forEach(d => { d.open = open; });
+}
+
 function showRaw(id) {
   const l = _logsCache[id];
   if (!l) return;
@@ -561,33 +766,9 @@ function showRaw(id) {
   document.getElementById('modal-title').textContent =
     (l.method || '') + ' ' + (l.path || '') + ' — ' + (l.timestamp || l.response_timestamp || '');
 
-  // --- Extract prompt ---
-  let promptText = '';
-  let imgNo = 0;
-  const imgMarkers = n => Array.from({length: n}, () => '[' + _IMG_ICON + ' image #' + (++imgNo) + ']').join(' ');
-  const msgs = l.body?.messages;
-  if (msgs && msgs.length) {
-    promptText = msgs.map(m => {
-      const role = (m.role || 'user').toUpperCase();
-      let content = '';
-      if (typeof m.content === 'string') {
-        content = m.content;
-      } else if (Array.isArray(m.content)) {
-        content = m.content
-          .filter(b => b.type === 'text')
-          .map(b => b.text || '')
-          .join('\\n');
-      }
-      const nImg = messageImageCount(m);
-      if (nImg) content = imgMarkers(nImg) + (content ? '\\n' + content : '');
-      return `[${role}]\\n${content}`;
-    }).join('\\n\\n---\\n\\n');
-  } else if (l.body?.prompt) {
-    const nImg = Array.isArray(l.body.images) ? l.body.images.length : 0;
-    promptText = (nImg ? imgMarkers(nImg) + '\\n' : '') + String(l.body.prompt);
-  }
+  // --- Prompt, split into collapsible sections ---
   loadModalImages(l, id);
-  document.getElementById('modal-prompt').textContent = promptText || '(sin prompt)';
+  renderPromptSections(l);
 
   // --- Extract response and thinking ---
   let thinkingText = '';
@@ -704,9 +885,8 @@ function showRaw(id) {
       parts.push('<span style="color:' + pc + '">' + ttu.context_utilization_pct + '% of context</span>');
     }
     if (ttu.offload) {
-      const offloadLabel = ttu.offload === 'gpu' ? '&#x1F7E2; GPU' : ttu.offload === 'cpu' ? '&#x1F7E1; CPU' : '&#x1F7E0; GPU+CPU';
-      const vramMB = ttu.size_vram ? Math.round(ttu.size_vram / 1024 / 1024) + ' MB VRAM' : '';
-      parts.push(offloadLabel + (vramMB ? ' (' + vramMB + ')' : ''));
+      const vramMB = vramText(ttu);
+      parts.push(offloadLabel(ttu.offload) + (vramMB ? ' (' + vramMB + ')' : ''));
     }
     if (ctxOvHtml) parts.push(ctxOvHtml);
     document.getElementById('modal-token-text').innerHTML = parts.join(' &nbsp;|&nbsp; ');
@@ -840,11 +1020,21 @@ function closeProxyModal() {
   document.getElementById('proxy-modal-overlay').style.display = 'none';
 }
 
+// Where Ollama runs the model, from /api/ps at response time ('gpu' | 'partial' | 'cpu').
+function offloadLabel(offload) {
+  if (!offload) return '';
+  return offload === 'gpu' ? '&#x1F7E2; GPU' : offload === 'cpu' ? '&#x1F7E1; CPU' : '&#x1F7E0; GPU+CPU';
+}
+
+function vramText(tu) {
+  return tu && tu.size_vram ? Math.round(tu.size_vram / 1024 / 1024) + ' MB VRAM' : '';
+}
+
 function renderLogsTable(logs) {
   const tbody = document.getElementById('logs-body');
   document.getElementById('stat-requests').textContent = logs.length;
   if (!logs.length) {
-    tbody.innerHTML = '<tr><td colspan="10" class="empty">No requests yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="empty">No requests yet.</td></tr>';
     document.getElementById('stat-ctx').textContent = '-';
     document.getElementById('stat-ctx').style.color = '';
     document.getElementById('ctx-warn-banner').style.display = 'none';
@@ -932,6 +1122,11 @@ function renderLogsTable(logs) {
     const corrBadge = l._correction_applied
       ? `<span class="badge" style="background:#0a2a1a;color:#5dba8a;border:1px solid #1a4a2a;font-size:.75em" title="Auto-corrected: ${esc(l._correction_applied)}">&#x2714; fixed</span>`
       : '';
+    // Ollama's "No user query found" 500: the conversation outgrew num_ctx (see proxy._explain_ollama_error).
+    const errMsg = typeof rb?.error === 'string' ? rb.error : (rb?.error?.message || '');
+    const overflowBadge = l._error_hint === 'context_overflow'
+      ? `<span class="badge red" title="${esc(errMsg)}">&#x26A0; ctx overflow</span>`
+      : '';
     const ctxBadge = l._num_ctx_override
       ? `<span class="badge ctx-badge" title="${esc('num_ctx overridden by proxy: ' + numCtxOverrideText(l._num_ctx_override).replace('num_ctx: ', ''))}">&#x26A0; ctx</span>`
       : '';
@@ -970,16 +1165,19 @@ function renderLogsTable(logs) {
       const durColor = dur >= 20000 ? '#f55' : dur >= 5000 ? '#ffa040' : '#9a9ac0';
       durCell = '<span style="color:' + durColor + '">' + durStr + '</span>';
     }
-    return `<tr>
+    const offloadCell = offloadLabel(tu?.offload) || '<span class="empty">-</span>';
+    const awaiting = l.type !== 'response';
+    return `<tr${awaiting ? ' class="awaiting" title="Waiting for response"' : ''}>
       <td>${ts}</td>
       <td>${esc(method)}</td>
       <td><code>${esc(path)}</code></td>
       <td><code>${esc(model)}</code>${modelModified ? ' <span class="badge blue">&#x270E; edited</span>' : ''}</td>
       <td style="white-space:nowrap;text-align:right;font-size:.85em">${tokenCell}</td>
+      <td style="white-space:nowrap;font-size:.85em" title="${esc(vramText(tu))}">${offloadCell}</td>
       <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${imgBadge}${esc(preview)}</td>
       <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${respPreview}</td>
       <td style="white-space:nowrap;text-align:right;font-size:.85em">${durCell}</td>
-      <td>${typeTag} ${statusCode} ${corrBadge} ${ctxBadge} ${interceptBadge}</td>
+      <td>${typeTag} ${statusCode} ${overflowBadge} ${corrBadge} ${ctxBadge} ${interceptBadge}</td>
       <td style="white-space:nowrap"><button class="link-show" onclick="showRaw('${esc(String(cacheKey))}')">show</button>${delBtn}</td>
     </tr>`;
   }).join('');
@@ -1001,14 +1199,25 @@ function renderLogsTable(logs) {
   }
 }
 
+function toggleDiscovery(on) {
+  _showDiscovery = on;
+  try { localStorage.setItem('pi.showDiscovery', on ? '1' : '0'); } catch (e) {}
+  loadLogs();
+}
+
+function visibleLogs(logs) {
+  return _showDiscovery ? logs : logs.filter(l => !_hiddenPaths.includes(l.path));
+}
+
 async function loadLogs() {
-  if (_fileMode) { renderLogsTable(_loadedLogs || []); return; }
+  if (_fileMode) { renderLogsTable(visibleLogs(_loadedLogs || [])); return; }
   try {
-    const data = await fetchJSON('/api/logs?limit=50');
+    const data = await fetchJSON('/api/logs?limit=50' + (_showDiscovery ? '&include_discovery=true' : ''));
+    if (Array.isArray(data.hidden_paths)) _hiddenPaths = data.hidden_paths;
     renderLogsTable(data.logs || []);
   } catch(e) {
     const tb = document.getElementById('logs-body');
-    tb.innerHTML = '<tr><td colspan="10" id="_logs-err"></td></tr>';
+    tb.innerHTML = '<tr><td colspan="11" id="_logs-err"></td></tr>';
     document.getElementById('_logs-err').textContent = 'Error: ' + e.message;
   }
 }
@@ -1223,7 +1432,7 @@ function loadFile() {
         logs.forEach((l, i) => { _logsCache[l.request_id || i] = l; });
         document.getElementById('file-mode-name').textContent = file.name;
         document.getElementById('file-mode-banner').style.display = 'flex';
-        renderLogsTable(logs);
+        renderLogsTable(visibleLogs(logs));
       } catch(err) {
         alert('Error reading the file: ' + err.message);
       }
@@ -1287,6 +1496,7 @@ function dismissAlert() {
 function refreshAll() { loadStatus(); loadRules(); loadLogs(); loadPending(); }
 
 loadAlertSettings();
+document.getElementById('show-discovery').checked = _showDiscovery;
 refreshAll();
 setInterval(refreshAll, 5000);
 setInterval(loadPending, 1000);
@@ -1386,8 +1596,17 @@ def _without_image_payloads(entry):
 
 
 @router.get("/logs")
-async def logs(limit: int = 20):
-    return {"logs": [_without_image_payloads(e) for e in _logger.get_logs(limit=limit)]}
+async def logs(limit: int = 20, include_discovery: bool = False):
+    """
+    Recent traffic. Model discovery calls (config.dashboard_hidden_paths, e.g.
+    /api/tags and /api/show) are left out unless include_discovery is set.
+    """
+    hidden = get_config().dashboard_hidden_paths
+    entries = _logger.get_logs(limit=limit, exclude_paths=None if include_discovery else hidden)
+    return {
+        "logs": [_without_image_payloads(e) for e in entries],
+        "hidden_paths": hidden,
+    }
 
 
 @router.get("/logs/{request_id}")

@@ -54,6 +54,11 @@ class Config(BaseModel):
     dashboard_enabled: bool = True
     dashboard_port: int = 9090
 
+    # Request paths left out of the dashboard's Live Prompts table unless the viewer
+    # ticks "Show model discovery". OpenCode 2.0+ polls these constantly to list models.
+    # They are still proxied and logged to disk.
+    dashboard_hidden_paths: List[str] = Field(default_factory=lambda: ["/api/tags", "/api/show"])
+
     # Context usage alert
     context_alert_enabled: bool = True
     context_alert_threshold: int = 80  # 0-100 percentage

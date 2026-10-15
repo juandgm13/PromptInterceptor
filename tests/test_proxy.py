@@ -4186,3 +4186,64 @@ def test_httpx_timeout_zero_disables_read_limit():
     assert t.read is None and t.connect == 10.0
     t = _httpx_timeout(300)
     assert t.read == 300 and t.connect == 10.0
+
+
+# ---------------------------------------------------------------------------
+# "No user query found in messages": context overflow explained to the client
+# ---------------------------------------------------------------------------
+
+_NO_USER_QUERY_ERR = "template error: No user query found in messages."
+
+
+async def test_v1_chat_completions_stream_explains_no_user_query(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(proxy_mod, "_resolve_context_size", AsyncMock(return_value=4096))
+    err = json.dumps({"error": {"message": _NO_USER_QUERY_ERR, "type": "api_error"}}).encode()
+    monkeypatch.setattr(proxy_mod, "_start_streaming_request", _make_start_streaming_mock([err], status_code=500))
+
+    req = make_req({"model": "m", "stream": True, "messages": [{"role": "user", "content": "hi"}]},
+                   path="/v1/chat/completions")
+    resp = await handle_v1_chat_completions(req, engine, logger)
+
+    assert resp.status_code == 500
+    error = json.loads(resp.body)["error"]
+    assert error["type"] == "api_error"
+    assert error["message"].startswith("Context exhausted")
+    assert "num_ctx=4096" in error["message"]
+    assert error["message"].endswith(_NO_USER_QUERY_ERR)
+    entry = logger.get_logs(limit=1)[0]
+    assert entry["_error_hint"] == "context_overflow"
+
+
+async def test_chat_non_stream_explains_no_user_query(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    err = json.dumps({"error": _NO_USER_QUERY_ERR}).encode()
+    with patch("prompt_interceptor.proxy._fetch_from_ollama",
+               new=AsyncMock(return_value=(500, {"content-type": "application/json"}, err))):
+        req = make_req({"model": "m", "messages": [{"role": "user", "content": "hi"}]})
+        resp = await handle_chat_request(req, engine, logger)
+
+    assert resp.status_code == 500
+    message = json.loads(resp.body)["error"]
+    assert message.startswith("Context exhausted")
+    assert "num_ctx=Ollama default" in message
+    assert logger.get_logs(limit=1)[0]["_error_hint"] == "context_overflow"
+
+
+async def test_other_errors_are_left_untouched(cfg, engine_and_logger, monkeypatch):
+    engine, logger = engine_and_logger
+    import prompt_interceptor.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod, "get_config", lambda: cfg)
+    err = json.dumps({"error": "model 'm' not found"}).encode()
+    monkeypatch.setattr(proxy_mod, "_start_streaming_request", _make_start_streaming_mock([err], status_code=404))
+
+    req = make_req({"model": "m", "messages": []})
+    resp = await handle_stream_chat(req, engine, logger)
+
+    assert resp.status_code == 404
+    assert json.loads(resp.body) == {"error": "model 'm' not found"}
+    assert "_error_hint" not in logger.get_logs(limit=1)[0]

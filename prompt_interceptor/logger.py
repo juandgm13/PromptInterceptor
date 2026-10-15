@@ -8,7 +8,7 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, Iterable, List, Tuple
 import uuid
 import shutil
 
@@ -357,6 +357,7 @@ class TrafficLogger:
         body: Optional[Dict[str, Any]] = None,
         correction_applied: Optional[str] = None,
         token_source_body: Optional[Dict[str, Any]] = None,
+        error_hint: Optional[str] = None,
     ) -> None:
         """
         Log a response, merging into the existing request log entry if present.
@@ -369,6 +370,8 @@ class TrafficLogger:
             correction_applied: Description of auto-corrections applied, or None
             token_source_body: Alternative body to extract token usage from (e.g. the
                 original Ollama response when body is an error dict like for 413s).
+            error_hint: Known cause of an error response (e.g. "context_overflow"),
+                shown as a badge in the dashboard.
         """
         date_dir = self._get_date_dir()
         filepath = date_dir / f"req_{request_id}.json"
@@ -395,6 +398,8 @@ class TrafficLogger:
             log_entry["_duration_ms"] = round((time.monotonic() - started) * 1000)
         if correction_applied:
             log_entry["_correction_applied"] = correction_applied
+        if error_hint:
+            log_entry["_error_hint"] = error_hint
         # Extract model name from response or request body for context size lookup
         model_name: Optional[str] = None
         token_src = token_source_body if token_source_body is not None else body
@@ -508,19 +513,31 @@ class TrafficLogger:
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(entry, f, indent=2, default=str)
 
-    def get_logs(self, limit: int = 10) -> list:
-        """Get recent log entries."""
+    def get_logs(self, limit: int = 10, exclude_paths: Optional[Iterable[str]] = None) -> list:
+        """
+        Get the most recent log entries, oldest first.
+
+        Entries whose path is in exclude_paths are skipped before the limit is
+        applied, so frequent background calls cannot push real traffic out.
+        """
         date_dir = self._get_date_dir()
         files = sorted(date_dir.glob("req_*.json"), key=lambda f: f.stat().st_mtime)
+        excluded = set(exclude_paths or ())
         logs = []
 
-        for f in files[-limit:]:
+        for f in reversed(files):
+            if len(logs) >= limit:
+                break
             try:
                 with open(f) as fp:
-                    logs.append(json.load(fp))
+                    entry = json.load(fp)
             except (json.JSONDecodeError, IOError):
                 continue
+            if excluded and entry.get("path") in excluded:
+                continue
+            logs.append(entry)
 
+        logs.reverse()
         return logs
 
     def get_stats(self) -> Dict[str, Any]:

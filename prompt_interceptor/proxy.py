@@ -327,12 +327,88 @@ async def _start_streaming_request(
         raise
 
 
+# Raised by the chat template of several models (Qwen family and others) when the
+# message list has no user turn. Behind the proxy that happens when the conversation
+# outgrows num_ctx: Ollama drops the oldest messages but keeps the system prompt and
+# the latest message (a tool result in an agent loop), so the user's request is gone.
+_NO_USER_QUERY_MARKER = "No user query found"
+
+
+def _ollama_error_text(error_json: Any) -> str:
+    """Error message from an Ollama error body: native {"error": str} or OpenAI {"error": {"message"}}."""
+    if not isinstance(error_json, dict):
+        return ""
+    err = error_json.get("error")
+    if isinstance(err, dict):
+        err = err.get("message")
+    return err if isinstance(err, str) else ""
+
+
+async def _explain_ollama_error(
+    status_code: int,
+    error_json: Any,
+    model: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """
+    Return error_json with a clearer message when Ollama's error is a known
+    context overflow in disguise, or None when the error is something else.
+
+    The body keeps Ollama's shape (string or OpenAI-style object) so clients parse it
+    as before; the original text is kept at the end of the message.
+    """
+    if status_code < 400:
+        return None
+    original = _ollama_error_text(error_json)
+    if _NO_USER_QUERY_MARKER not in original:
+        return None
+    config = get_config()
+    ctx = await _resolve_context_size(model, config.target, effective_context_size(config))
+    message = (
+        "Context exhausted: the conversation no longer fits in the model's context "
+        f"(num_ctx={ctx or 'Ollama default'}). Ollama dropped the oldest messages, including "
+        "your request, so the chat template found no user message. Increase Ollama's context "
+        "length (OLLAMA_CONTEXT_LENGTH=32768 ollama serve, or Settings > Context length in the "
+        "Ollama app) or compact / start a new session. "
+        f"Ollama said: {original}"
+    )
+    err = error_json.get("error")
+    if isinstance(err, dict):
+        return {**error_json, "error": {**err, "message": message}}
+    return {**error_json, "error": message}
+
+
+async def _explained_error_response(
+    status_code: int,
+    response_body: bytes,
+    model: Optional[str],
+    logger: Optional[TrafficLogger],
+    request_id: Optional[str],
+) -> Optional[JSONResponse]:
+    """Non-streaming counterpart of the check in _handle_error_stream; None if not applicable."""
+    if status_code < 400:
+        return None
+    try:
+        error_json = json.loads(response_body)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    explained = await _explain_ollama_error(status_code, error_json, model)
+    if explained is None:
+        return None
+    if logger and request_id:
+        logger.log_response(request_id, status_code, {}, explained, error_hint=_CONTEXT_OVERFLOW_HINT)
+    return JSONResponse(status_code=status_code, content=explained)
+
+
+_CONTEXT_OVERFLOW_HINT = "context_overflow"
+
+
 async def _handle_error_stream(
     resp: httpx.Response,
     http_client: httpx.AsyncClient,
     status_code: int,
     logger: Optional[TrafficLogger],
     request_id: Optional[str],
+    model: Optional[str] = None,
 ) -> JSONResponse:
     """Read the full error body from a non-2xx stream, log it, and return a JSONResponse."""
     try:
@@ -347,8 +423,12 @@ async def _handle_error_stream(
     except (json.JSONDecodeError, ValueError):
         raw = body.decode("utf-8", errors="replace").strip()
         error_json = {"error": raw or f"HTTP {status_code}"}
+    explained = await _explain_ollama_error(status_code, error_json, model)
+    if explained is not None:
+        error_json = explained
     if logger and request_id:
-        logger.log_response(request_id, status_code, {}, error_json)
+        logger.log_response(request_id, status_code, {}, error_json,
+                            error_hint=_CONTEXT_OVERFLOW_HINT if explained is not None else None)
     return JSONResponse(status_code=status_code, content=error_json)
 
 
@@ -398,7 +478,10 @@ async def handle_passthrough(request: Request, logger: Optional[TrafficLogger] =
             return _log_and_error(logger, request_id, 500, str(exc))
 
         if resp.status_code >= 400:
-            return await _handle_error_stream(resp, http_client, resp.status_code, logger, request_id)
+            return await _handle_error_stream(
+                resp, http_client, resp.status_code, logger, request_id,
+                model=(body_json or {}).get("model"),
+            )
 
         def _parse_passthrough(accumulated: list) -> Optional[Dict[str, Any]]:
             if path.startswith("/v1/"):
@@ -509,7 +592,10 @@ async def handle_v1_messages(
             return _error_response(500, str(exc))
 
         if resp.status_code >= 400:
-            return await _handle_error_stream(resp, http_client, resp.status_code, logger, request_id)
+            return await _handle_error_stream(
+                resp, http_client, resp.status_code, logger, request_id,
+                model=(body_json or {}).get("model"),
+            )
 
         async def generate() -> AsyncIterator[bytes]:
             accumulated = []
@@ -566,6 +652,11 @@ async def handle_v1_messages(
             config.target, "POST", request.url.path,
             dict(request.headers), body_bytes, config.timeout,
         )
+        explained = await _explained_error_response(
+            status_code, response_body, (body_json or {}).get("model"), logger, request_id
+        )
+        if explained is not None:
+            return explained
         try:
             response_json = json.loads(response_body)
         except json.JSONDecodeError:
@@ -653,7 +744,10 @@ async def handle_v1_chat_completions(
             return _error_response(500, str(exc))
 
         if resp.status_code >= 400:
-            return await _handle_error_stream(resp, http_client, resp.status_code, logger, request_id)
+            return await _handle_error_stream(
+                resp, http_client, resp.status_code, logger, request_id,
+                model=(body_json or {}).get("model"),
+            )
 
         model_name = (body_json or {}).get("model")
         resolved_ctx = await _resolve_context_size(model_name, config.target, effective_context_size(config))
@@ -718,6 +812,11 @@ async def handle_v1_chat_completions(
             config.target, "POST", request.url.path,
             dict(request.headers), body_bytes, config.timeout,
         )
+        explained = await _explained_error_response(
+            status_code, response_body, (body_json or {}).get("model"), logger, request_id
+        )
+        if explained is not None:
+            return explained
         try:
             response_json = json.loads(response_body)
         except json.JSONDecodeError:
@@ -899,6 +998,11 @@ async def handle_chat_request(
             config.target, "POST", request.url.path,
             dict(request.headers), body_bytes, config.timeout,
         )
+        explained = await _explained_error_response(
+            response_code, response_body, (body_json or {}).get("model"), logger, request_id
+        )
+        if explained is not None:
+            return explained
 
         try:
             response_json = json.loads(response_body)
@@ -979,6 +1083,11 @@ async def handle_generate_request(
             config.target, "POST", request.url.path,
             dict(request.headers), body_bytes, config.timeout,
         )
+        explained = await _explained_error_response(
+            response_code, response_body, (body_json or {}).get("model"), logger, request_id
+        )
+        if explained is not None:
+            return explained
 
         try:
             response_json = json.loads(response_body)
@@ -1071,7 +1180,10 @@ async def handle_stream_chat(
         return _error_response(500, str(exc))
 
     if resp.status_code >= 400:
-        return await _handle_error_stream(resp, http_client, resp.status_code, logger, request_id)
+        return await _handle_error_stream(
+            resp, http_client, resp.status_code, logger, request_id,
+            model=(body_json or {}).get("model"),
+        )
 
     model_name = (body_json or {}).get("model")
     resolved_ctx = await _resolve_context_size(model_name, config.target, effective_context_size(config))
@@ -1176,7 +1288,10 @@ async def handle_stream_generate(
         return _error_response(500, str(exc))
 
     if resp.status_code >= 400:
-        return await _handle_error_stream(resp, http_client, resp.status_code, logger, request_id)
+        return await _handle_error_stream(
+            resp, http_client, resp.status_code, logger, request_id,
+            model=(body_json or {}).get("model"),
+        )
 
     model_name = (body_json or {}).get("model")
     resolved_ctx = await _resolve_context_size(model_name, config.target, effective_context_size(config))

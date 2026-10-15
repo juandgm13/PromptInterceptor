@@ -16,7 +16,7 @@ Ollama (target: 11434)
 
 ### `prompt_interceptor/launcher.py`
 - tkinter desktop launcher
-- Server/client/context-size selection
+- Server/client/context-size selection (model selector hidden for OpenCode 2.0+, which lists Ollama's models itself)
 - Starts Ollama with OLLAMA_NUM_CTX env var
 - Launches AI client terminal
 - Starts proxy + opens dashboard in browser
@@ -63,6 +63,8 @@ Ollama (target: 11434)
 - Modifier management (create/enable/disable/delete)
 - Mode switching (passthrough/intercept)
 - Live prompt viewer (image badge + thumbnails/lightbox for vision requests)
+- Modal shows the prompt sent to Ollama as collapsible sections (System / Skills / Tools / Messages / Options) with a display-only token estimate (~4 chars/token)
+- Rows still waiting for a response are tinted light blue; GPU column shows GPU / GPU+CPU / CPU offload (as in the modal)
 - Intercept queue (forward/edit/drop)
 - Statistics display
 
@@ -103,6 +105,7 @@ Edit `prompt_interceptor/config.json`:
 - `rules`: List of matching/replacement modifiers
 - `dashboard_enabled`: Enable web dashboard
 - `dashboard_port`: Dashboard port (default: 9090)
+- `dashboard_hidden_paths`: Paths hidden from Live Prompts unless "Show model discovery" is ticked (default: `/api/tags`, `/api/show`)
 
 ## API Endpoints
 
@@ -127,7 +130,7 @@ Edit `prompt_interceptor/config.json`:
 - `/api/rules/{index}` - Delete modifier (DELETE)
 - `/api/enable-rule/{index}` - Enable modifier
 - `/api/disable-rule/{index}` - Disable modifier
-- `/api/logs` - Recent traffic logs (base64 images replaced by placeholders)
+- `/api/logs` - Recent traffic logs (base64 images replaced by placeholders; model discovery hidden unless `include_discovery=true`)
 - `/api/logs/{id}` - One full log entry (images included)
 - `/api/logs/{id}/images` - Images sent in a request (data URIs / URLs)
 - `/api/raw-logs` - All logs (no limit)

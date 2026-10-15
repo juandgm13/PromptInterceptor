@@ -40,7 +40,7 @@ flowchart TD
 | `proxy.py` | HTTP forwarding, streaming support, error handling |
 | `rules_engine.py` | JSONPath-based rule matching and value replacement |
 | `config.py` | Pydantic config model, load/save config.json |
-| `dashboard.py` | Web UI FastAPI app (port 9090), management API. Live Prompts table with a split-panel message detail modal (prompt left, thinking + response right). Raw toggle shows the complete JSON log entry. |
+| `dashboard.py` | Web UI FastAPI app (port 9090), management API. Live Prompts table (rows awaiting a response tinted light blue, GPU column with GPU / GPU+CPU / CPU offload) with a split-panel message detail modal (prompt left, thinking + response right). The prompt is split into collapsible sections — System, Skills (tools named `*skill*`), Tools, Messages (one per message, tool calls included) and Options — each with a token estimate (~4 chars/token, display only; the real `prompt_tokens` is shown next to the total when available). Raw toggle shows the complete JSON log entry. |
 | `launcher.py` | tkinter desktop launcher: 3-step sequential UI (Ollama → Client → Dashboard), model list from Ollama `/api/tags`, work-dir or Python app configuration |
 | `interceptor.py` | Async pause/resume of in-flight requests |
 | `logger.py` | Traffic logging to JSON files, rotation, stats |
@@ -49,6 +49,15 @@ flowchart TD
 | `models/request_model.py` | Pydantic models for Chat/Generate requests |
 | `utils/json_utils.py` | JSONPath get/set, safe JSON parsing |
 | `utils/streaming_utils.py` | Async streaming utilities (NDJSON) |
+
+## Error explanations
+
+Some Ollama errors hide their real cause. `_explain_ollama_error` (`proxy.py`) rewrites them
+before they reach the client, keeping Ollama's status code, body shape and original text:
+
+| Ollama error | Real cause | Logged hint |
+|---|---|---|
+| `No user query found in messages` (500) | The conversation outgrew `num_ctx`: Ollama trimmed the oldest messages (keeping system + latest, usually a tool result), so the chat template saw no user turn | `_error_hint: "context_overflow"` → **⚠ ctx overflow** badge |
 
 ## Proxy Modes
 
@@ -80,7 +89,7 @@ The desktop launcher (`python -m prompt_interceptor`) uses a sequential 3-step w
 
 | Field / Button | Behaviour |
 |----------------|-----------|
-| **AI Client** | Detected at startup. Available options: **Only Proxy** (always), **Open Code (CLI)** (if `opencode` is in PATH; supported versions **1.17.4–1.18.34**, defined in `prompt_interceptor/client_versions.py`; out-of-range versions appear with an `[unsupported: vX.Y.Z]` label but remain selectable), **Python App (Ollama)** (always). |
+| **AI Client** | Detected at startup. Available options: **Only Proxy** (always), **Open Code (CLI)** (if `opencode` is in PATH; supported versions **1.17.4–2.x**; from 2.0 the Model selector is hidden because OpenCode lists Ollama's models itself, defined in `prompt_interceptor/client_versions.py`; out-of-range versions appear with an `[unsupported: vX.Y.Z]` label but remain selectable), **Python App (Ollama)** (always). |
 | **Model** | Disabled until Ollama is ready. Populated from `GET /api/tags` (downloaded models only). |
 | **Work Dir** *(Open Code CLI)* | Working directory where the client terminal opens. |
 | **App Dir** *(Python App)* | Working directory for the Python app. |
