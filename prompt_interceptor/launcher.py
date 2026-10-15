@@ -124,6 +124,17 @@ def _is_version_compatible(version: str, min_v: str, max_v: str) -> bool:
     return _parse_version(min_v) <= _parse_version(version) <= _parse_version(max_v)
 
 
+def _extract_version(text: str) -> str | None:
+    """First dotted version number in text ('opencode v2.0.29' -> '2.0.29').
+
+    Anchored on "no digit or dot before it" rather than \\b: a word boundary
+    does not exist between 'v' and '2', so \\b skipped the major version and
+    read 'v2.0.29' as '0.29'.
+    """
+    match = re.search(r'(?<![\d.])(\d+(?:\.\d+)+)', text or "")
+    return match.group(1) if match else None
+
+
 def _opencode_auto_models(version: str | None) -> bool:
     """Return True if this OpenCode version discovers Ollama models by itself.
 
@@ -158,11 +169,11 @@ def _get_opencode_version(cmd: str = "opencode") -> str | None:
                 print(f"[DEBUG]   args={args}  rc={result.returncode}")
                 print(f"[DEBUG]   stdout={stdout!r}")
                 print(f"[DEBUG]   stderr={stderr!r}")
-            match = re.search(r'\b(\d+\.\d+(?:\.\d+)*)\b', output)
-            if match:
+            version = _extract_version(output)
+            if version:
                 if debug:
-                    print(f"[DEBUG]   -> version={match.group(1)!r}")
-                return match.group(1)
+                    print(f"[DEBUG]   -> version={version!r}")
+                return version
             if debug:
                 print(f"[DEBUG]   -> no version found in output")
         except Exception as exc:

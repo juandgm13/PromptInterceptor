@@ -3289,3 +3289,27 @@ def test_write_opencode_config_without_model(tmp_path):
     ollama = written["provider"]["ollama"]
     assert ollama["options"]["baseURL"] == "http://localhost:8080/v1"
     assert "models" not in ollama
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("2.0.29", "2.0.29"),
+    ("v2.0.29", "2.0.29"),
+    ("opencode v2.0.29\n", "2.0.29"),
+    ("opencode/2.0.29 linux-x64", "2.0.29"),
+    ("1.17.4-beta", "1.17.4"),
+    ("no version", None),
+    ("", None),
+])
+def test_extract_version(text, expected):
+    from prompt_interceptor.launcher import _extract_version
+    assert _extract_version(text) == expected
+
+
+def test_get_opencode_version_v_prefix_keeps_major(monkeypatch):
+    """'v2.0.29' was read as '0.29' because \\b does not split 'v' from '2'."""
+    from prompt_interceptor import launcher
+    result = MagicMock(stdout="v2.0.29\n", stderr="", returncode=0)
+    monkeypatch.setattr(launcher.subprocess, "run", lambda *a, **kw: result)
+    version = launcher._get_opencode_version()
+    assert version == "2.0.29"
+    assert launcher._opencode_auto_models(version) is True
